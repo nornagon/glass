@@ -10,19 +10,24 @@ import { loadRoomHistory, loadJoinedPlayerId, loadCameraState, saveCameraState, 
 import {
   addCardToDeck,
   advanceTurn,
+  bringObjectToFront,
   canSeeCardFace,
   createCardOnPlane,
   createDeckOnPlane,
+  createDeckFromSpriteSheetOnPlane,
   createPlayerId,
   createRoomDoc,
   deleteObject,
   drawFromDeck,
+  flipDeck,
   duplicateObject,
   flipCard,
   formatRoomTitle,
   getRootPlane,
   isCard,
   isDeck,
+  liftTopCardFromDeck,
+  mergeDeckIntoDeck,
   renameOrAddPlayer,
   rootPlaneLabel,
   sendObjectBackward,
@@ -33,6 +38,7 @@ import {
 } from '../model/room'
 import type { CameraState, Card, GameObject, RoomDoc, SpriteSpec } from '../model/types'
 import { roomHash } from '../model/repo'
+import { DEFAULT_CARD_SIZE } from '../model/types'
 
 const DEFAULT_CAMERA: CameraState = {
   centerX: 0,
@@ -55,6 +61,87 @@ function nextSpawnTransform(camera: CameraState, offset: number) {
 function normalizeMetaDraft(draft: string) {
   const parsed = JSON.parse(draft) as Record<string, string | number | boolean>
   return parsed
+}
+
+function loadImageDimensions(url: string) {
+  return new Promise<{ width: number; height: number }>((resolve, reject) => {
+    const image = new Image()
+    image.crossOrigin = 'anonymous'
+    image.decoding = 'async'
+    image.onload = () => {
+      if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+        resolve({
+          width: image.naturalWidth,
+          height: image.naturalHeight,
+        })
+      } else {
+        reject(new Error('Image loaded without dimensions'))
+      }
+    }
+    image.onerror = () => reject(new Error('Image failed to load'))
+    image.src = url
+  })
+}
+
+function cardSizeForAspect(aspect: number) {
+  const safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : DEFAULT_CARD_SIZE.width / DEFAULT_CARD_SIZE.height
+  const targetArea = DEFAULT_CARD_SIZE.width * DEFAULT_CARD_SIZE.height
+  return {
+    width: Math.max(48, Math.round(Math.sqrt(targetArea * safeAspect))),
+    height: Math.max(48, Math.round(Math.sqrt(targetArea / safeAspect))),
+  }
+}
+
+function updateSpriteCrop(value: SpriteSpec, partial: Partial<NonNullable<SpriteSpec['crop']>>): SpriteSpec {
+  return {
+    ...value,
+    crop: {
+      x: value.crop?.x ?? 0,
+      y: value.crop?.y ?? 0,
+      width: value.crop?.width ?? 1,
+      height: value.crop?.height ?? 1,
+      ...partial,
+    },
+  }
+}
+
+interface SheetDeckDraft {
+  name: string
+  faceUrl: string
+  faceRows: string
+  faceCols: string
+  faceCount: string
+  backUrl: string
+  backRows: string
+  backCols: string
+  backCount: string
+}
+
+function defaultSheetDeckDraft(): SheetDeckDraft {
+  return {
+    name: '',
+    faceUrl: '',
+    faceRows: '4',
+    faceCols: '13',
+    faceCount: '',
+    backUrl: '',
+    backRows: '1',
+    backCols: '1',
+    backCount: '',
+  }
+}
+
+function parsePositiveInteger(value: string) {
+  const parsed = Number.parseInt(value, 10)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined
+}
+
+function resolveSheetCount(countText: string, rows: number, cols: number) {
+  const trimmed = countText.trim()
+  if (!trimmed) {
+    return rows * cols
+  }
+  return parsePositiveInteger(trimmed)
 }
 
 function SpriteEditor({
@@ -88,21 +175,115 @@ function SpriteEditor({
         </select>
       </label>
       {value.kind === 'image-url' ? (
-        <label className="field">
-          <span>URL</span>
-          <input
-            disabled={disabled}
-            type="url"
-            value={value.url ?? ''}
-            onChange={(event) =>
-              onChange({
-                ...value,
-                url: event.target.value,
-              })
-            }
-            placeholder="https://example.com/card.png"
-          />
-        </label>
+        <>
+          <label className="field">
+            <span>URL</span>
+            <input
+              disabled={disabled}
+              type="url"
+              value={value.url ?? ''}
+              onChange={(event) =>
+                onChange({
+                  ...value,
+                  url: event.target.value,
+                })
+              }
+              placeholder="https://example.com/card.png"
+            />
+          </label>
+          <label className="field">
+            <span>Fit</span>
+            <select
+              disabled={disabled}
+              value={value.fit ?? 'cover'}
+              onChange={(event) =>
+                onChange({
+                  ...value,
+                  fit: event.target.value as NonNullable<SpriteSpec['fit']>,
+                })
+              }
+            >
+              <option value="cover">Cover Card</option>
+              <option value="contain">Contain Inside Border</option>
+            </select>
+          </label>
+          <div className="field-row">
+            <label className="field">
+              <span>Crop X</span>
+              <input
+                disabled={disabled}
+                type="number"
+                step="0.001"
+                min="0"
+                max="1"
+                value={value.crop?.x ?? 0}
+                onChange={(event) =>
+                  onChange(
+                    updateSpriteCrop(value, {
+                      x: Number.parseFloat(event.target.value) || 0,
+                    }),
+                  )
+                }
+              />
+            </label>
+            <label className="field">
+              <span>Crop Y</span>
+              <input
+                disabled={disabled}
+                type="number"
+                step="0.001"
+                min="0"
+                max="1"
+                value={value.crop?.y ?? 0}
+                onChange={(event) =>
+                  onChange(
+                    updateSpriteCrop(value, {
+                      y: Number.parseFloat(event.target.value) || 0,
+                    }),
+                  )
+                }
+              />
+            </label>
+          </div>
+          <div className="field-row">
+            <label className="field">
+              <span>Crop W</span>
+              <input
+                disabled={disabled}
+                type="number"
+                step="0.001"
+                min="0.001"
+                max="1"
+                value={value.crop?.width ?? 1}
+                onChange={(event) =>
+                  onChange(
+                    updateSpriteCrop(value, {
+                      width: Math.max(0.001, Number.parseFloat(event.target.value) || 1),
+                    }),
+                  )
+                }
+              />
+            </label>
+            <label className="field">
+              <span>Crop H</span>
+              <input
+                disabled={disabled}
+                type="number"
+                step="0.001"
+                min="0.001"
+                max="1"
+                value={value.crop?.height ?? 1}
+                onChange={(event) =>
+                  onChange(
+                    updateSpriteCrop(value, {
+                      height: Math.max(0.001, Number.parseFloat(event.target.value) || 1),
+                    }),
+                  )
+                }
+              />
+            </label>
+          </div>
+        </>
       ) : (
         <label className="field">
           <span>Label</span>
@@ -204,6 +385,8 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   const [joinedPlayerId, setJoinedPlayerId] = useState<string | undefined>(() => loadJoinedPlayerId(roomUrl))
   const [showRooms, setShowRooms] = useState(false)
   const [camera, setCamera] = useState<CameraState>(() => loadCameraState(roomUrl) ?? DEFAULT_CAMERA)
+  const [sheetDeckDraft, setSheetDeckDraft] = useState<SheetDeckDraft>(() => defaultSheetDeckDraft())
+  const [sheetDeckError, setSheetDeckError] = useState('')
   const spawnCountRef = useRef(0)
   const selectedObject = selectedId ? room.objects[selectedId] : undefined
   const currentPlayer = joinedPlayerId ? room.players[joinedPlayerId] : undefined
@@ -296,7 +479,119 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     })
   }
 
+  async function createDeckFromSheet() {
+    const faceUrl = sheetDeckDraft.faceUrl.trim()
+    if (!faceUrl) {
+      setSheetDeckError('A face sprite sheet URL is required.')
+      return
+    }
+
+    const faceRows = parsePositiveInteger(sheetDeckDraft.faceRows)
+    const faceCols = parsePositiveInteger(sheetDeckDraft.faceCols)
+    if (!faceRows || !faceCols) {
+      setSheetDeckError('Face rows and columns must be positive whole numbers.')
+      return
+    }
+
+    const faceCount = resolveSheetCount(sheetDeckDraft.faceCount, faceRows, faceCols)
+    if (!faceCount) {
+      setSheetDeckError('Face card count must be a positive whole number.')
+      return
+    }
+
+    const backUrl = sheetDeckDraft.backUrl.trim()
+    let backRows: number | undefined
+    let backCols: number | undefined
+    let backCount: number | undefined
+
+    if (backUrl) {
+      backRows = parsePositiveInteger(sheetDeckDraft.backRows)
+      backCols = parsePositiveInteger(sheetDeckDraft.backCols)
+      if (!backRows || !backCols) {
+        setSheetDeckError('Back rows and columns must be positive whole numbers.')
+        return
+      }
+
+      backCount = resolveSheetCount(sheetDeckDraft.backCount, backRows, backCols)
+      if (!backCount) {
+        setSheetDeckError('Back card count must be a positive whole number.')
+        return
+      }
+    }
+
+    let cardSize: { width: number; height: number } = { ...DEFAULT_CARD_SIZE }
+    try {
+      const dimensions = await loadImageDimensions(faceUrl)
+      const cellAspect = (dimensions.width / faceCols) / (dimensions.height / faceRows)
+      cardSize = cardSizeForAspect(cellAspect)
+    } catch {
+      setSheetDeckError('Could not load the face sheet to determine card aspect ratio.')
+      return
+    }
+
+    const offset = spawnCountRef.current++
+    let createdDeckId: string | undefined
+    mutate((draft) => {
+      createdDeckId = createDeckFromSpriteSheetOnPlane(
+        draft,
+        draft.rootId,
+        nextSpawnTransform(camera, offset),
+        {
+          name: sheetDeckDraft.name.trim() || undefined,
+          faces: {
+            url: faceUrl,
+            rows: faceRows,
+            cols: faceCols,
+            count: faceCount,
+          },
+          cardSize,
+          backs: backUrl && backRows && backCols && backCount
+            ? {
+                url: backUrl,
+                rows: backRows,
+                cols: backCols,
+                count: backCount,
+              }
+            : undefined,
+        },
+      )
+    })
+
+    if (!createdDeckId) {
+      setSheetDeckError('Could not create a deck from that sheet configuration.')
+      return
+    }
+
+    setSelectedId(createdDeckId)
+    setSheetDeckError('')
+    setSheetDeckDraft(defaultSheetDeckDraft())
+  }
+
   const turnPlayer = room.turnPlayerId ? room.players[room.turnPlayerId] : undefined
+  const facePreviewCount = useMemo(() => {
+    const rows = parsePositiveInteger(sheetDeckDraft.faceRows)
+    const cols = parsePositiveInteger(sheetDeckDraft.faceCols)
+    if (!rows || !cols) {
+      return undefined
+    }
+    return resolveSheetCount(sheetDeckDraft.faceCount, rows, cols)
+  }, [sheetDeckDraft.faceCols, sheetDeckDraft.faceCount, sheetDeckDraft.faceRows])
+  const backPreviewCount = useMemo(() => {
+    if (!sheetDeckDraft.backUrl.trim()) {
+      return undefined
+    }
+    const rows = parsePositiveInteger(sheetDeckDraft.backRows)
+    const cols = parsePositiveInteger(sheetDeckDraft.backCols)
+    if (!rows || !cols) {
+      return undefined
+    }
+    return resolveSheetCount(sheetDeckDraft.backCount, rows, cols)
+  }, [
+    sheetDeckDraft.backCols,
+    sheetDeckDraft.backCount,
+    sheetDeckDraft.backRows,
+    sheetDeckDraft.backUrl,
+  ])
 
   return (
     <div className="app-shell">
@@ -319,14 +614,44 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
               moveObject(draft, objectId, transform)
             })
           }
-          onDropCardToDeck={(cardId, deckId) =>
+          onBringCardToFront={(cardId) =>
             mutate((draft) => {
-              addCardToDeck(draft, cardId, deckId)
+              bringObjectToFront(draft, cardId)
             })
           }
+          onDropObjectToDeck={(objectId, deckId) => {
+            const droppedObject = room.objects[objectId]
+            mutate((draft) => {
+              if (droppedObject?.type === 'card') {
+                addCardToDeck(draft, objectId, deckId)
+                return
+              }
+              if (droppedObject?.type === 'deck') {
+                mergeDeckIntoDeck(draft, objectId, deckId)
+              }
+            })
+            if (droppedObject?.type === 'deck' && selectedId === objectId) {
+              setSelectedId(deckId)
+            }
+          }}
+          onLiftTopCardFromDeck={(deckId) => {
+            let liftedCardId: string | undefined
+            mutate((draft) => {
+              liftedCardId = liftTopCardFromDeck(draft, deckId)
+            })
+            if (liftedCardId) {
+              setSelectedId(liftedCardId)
+            }
+            return liftedCardId
+          }}
           onFlipCard={(cardId) =>
             mutate((draft) => {
               flipCard(draft, cardId)
+            })
+          }
+          onFlipDeck={(deckId) =>
+            mutate((draft) => {
+              flipDeck(draft, deckId)
             })
           }
           onDrawDeck={(deckId) =>
@@ -557,6 +882,9 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                     <strong>{selectedObject.childIds.length}</strong>
                   </div>
                   <div className="button-row">
+                    <button disabled={!canEdit} onClick={() => mutate((draft) => flipDeck(draft, selectedObject.id))}>
+                      Flip Deck
+                    </button>
                     <button disabled={!canEdit} onClick={() => mutate((draft) => shuffleDeck(draft, selectedObject.id))}>
                       Shuffle
                     </button>
@@ -631,6 +959,161 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
               </div>
 
               <section className="inspector-group">
+                <h4>Import Deck From Sprite Sheet</h4>
+                <label className="field">
+                  <span>Deck Name</span>
+                  <input
+                    disabled={!canEdit}
+                    value={sheetDeckDraft.name}
+                    onChange={(event) =>
+                      setSheetDeckDraft((current) => ({
+                        ...current,
+                        name: event.target.value,
+                      }))
+                    }
+                    placeholder="Imported Deck"
+                  />
+                </label>
+
+                <label className="field">
+                  <span>Face Sheet URL</span>
+                  <input
+                    disabled={!canEdit}
+                    type="url"
+                    value={sheetDeckDraft.faceUrl}
+                    onChange={(event) =>
+                      setSheetDeckDraft((current) => ({
+                        ...current,
+                        faceUrl: event.target.value,
+                      }))
+                    }
+                    placeholder="https://example.com/cards.png"
+                  />
+                </label>
+
+                <div className="sheet-grid">
+                  <label className="field">
+                    <span>Rows</span>
+                    <input
+                      disabled={!canEdit}
+                      inputMode="numeric"
+                      value={sheetDeckDraft.faceRows}
+                      onChange={(event) =>
+                        setSheetDeckDraft((current) => ({
+                          ...current,
+                          faceRows: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Cols</span>
+                    <input
+                      disabled={!canEdit}
+                      inputMode="numeric"
+                      value={sheetDeckDraft.faceCols}
+                      onChange={(event) =>
+                        setSheetDeckDraft((current) => ({
+                          ...current,
+                          faceCols: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Cards</span>
+                    <input
+                      disabled={!canEdit}
+                      inputMode="numeric"
+                      value={sheetDeckDraft.faceCount}
+                      onChange={(event) =>
+                        setSheetDeckDraft((current) => ({
+                          ...current,
+                          faceCount: event.target.value,
+                        }))
+                      }
+                      placeholder={facePreviewCount ? String(facePreviewCount) : 'auto'}
+                    />
+                  </label>
+                </div>
+                <p className="field-note">
+                  Faces fill left to right, top to bottom. Blank card count defaults to rows × cols.
+                </p>
+
+                <label className="field">
+                  <span>Back Sheet URL</span>
+                  <input
+                    disabled={!canEdit}
+                    type="url"
+                    value={sheetDeckDraft.backUrl}
+                    onChange={(event) =>
+                      setSheetDeckDraft((current) => ({
+                        ...current,
+                        backUrl: event.target.value,
+                      }))
+                    }
+                    placeholder="Optional"
+                  />
+                </label>
+
+                <div className="sheet-grid">
+                  <label className="field">
+                    <span>Rows</span>
+                    <input
+                      disabled={!canEdit}
+                      inputMode="numeric"
+                      value={sheetDeckDraft.backRows}
+                      onChange={(event) =>
+                        setSheetDeckDraft((current) => ({
+                          ...current,
+                          backRows: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Cols</span>
+                    <input
+                      disabled={!canEdit}
+                      inputMode="numeric"
+                      value={sheetDeckDraft.backCols}
+                      onChange={(event) =>
+                        setSheetDeckDraft((current) => ({
+                          ...current,
+                          backCols: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Backs</span>
+                    <input
+                      disabled={!canEdit}
+                      inputMode="numeric"
+                      value={sheetDeckDraft.backCount}
+                      onChange={(event) =>
+                        setSheetDeckDraft((current) => ({
+                          ...current,
+                          backCount: event.target.value,
+                        }))
+                      }
+                      placeholder={backPreviewCount ? String(backPreviewCount) : 'auto'}
+                    />
+                  </label>
+                </div>
+                <p className="field-note">
+                  If there are fewer backs than faces, the backs cycle through the deck.
+                </p>
+
+                <div className="button-row">
+                  <button disabled={!canEdit} onClick={createDeckFromSheet}>
+                    Create Deck From Sheet
+                  </button>
+                </div>
+                {sheetDeckError ? <p className="inline-error">{sheetDeckError}</p> : null}
+              </section>
+
+              <section className="inspector-group">
                 <h4>Players</h4>
                 <div className="player-list">
                   {playerList.map((player) => (
@@ -646,16 +1129,6 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                   ))}
                   {playerList.length === 0 ? <p className="empty-copy">Nobody has joined this room yet.</p> : null}
                 </div>
-              </section>
-
-              <section className="inspector-group">
-                <h4>Selection Help</h4>
-                <ul className="hint-list">
-                  <li>Drag the empty table to pan. Pinch or wheel to zoom.</li>
-                  <li>Tap a card or deck to inspect it.</li>
-                  <li>Drag cards onto decks to stack them.</li>
-                  <li>Hidden faces are honor-system only and still editable here.</li>
-                </ul>
               </section>
             </section>
           )}

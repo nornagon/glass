@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { useState } from 'react'
-import { Application, Container, FederatedPointerEvent, Graphics, Rectangle, Sprite, Text, Texture } from 'pixi.js'
+import { Application, Assets, Cache, Container, FederatedPointerEvent, Graphics, Rectangle, Sprite, Text, Texture } from 'pixi.js'
 import { Viewport } from 'pixi-viewport'
 import { BOARD_WORLD_SIZE, DEFAULT_CARD_SIZE, type CameraState, type Id, type RoomDoc, type Transform2D } from '../model/types'
 import { canSeeCardFace, getRootPlane, getTransform, isCard, isDeck } from '../model/room'
@@ -15,8 +15,11 @@ interface BoardViewProps {
   onCameraChange: (camera: CameraState) => void
   onSelect: (id?: Id) => void
   onCommitTransform: (id: Id, transform: Partial<Transform2D>) => void
-  onDropCardToDeck: (cardId: Id, deckId: Id) => void
+  onDropObjectToDeck: (objectId: Id, deckId: Id) => void
+  onBringCardToFront: (cardId: Id) => void
+  onLiftTopCardFromDeck: (deckId: Id) => Id | undefined
   onFlipCard: (cardId: Id) => void
+  onFlipDeck: (deckId: Id) => void
   onDrawDeck: (deckId: Id) => void
   onShuffleDeck: (deckId: Id) => void
   onDeleteObject: (objectId: Id) => void
@@ -35,6 +38,16 @@ interface DragState {
   startPointer: { x: number; y: number }
   startTransform: Transform2D
   moved: boolean
+  raisedToFront: boolean
+}
+
+interface PendingDeckPress {
+  deckId: Id
+  pointerId: number
+  startGlobal: { x: number; y: number }
+  startWorld: { x: number; y: number }
+  startTransform: Transform2D
+  timeoutId: number
 }
 
 interface TapCandidate {
@@ -44,6 +57,107 @@ interface TapCandidate {
 }
 
 const TAP_GRACE_DISTANCE = 10
+const DECK_LONG_PRESS_MS = 360
+interface TextureAssetEntry {
+  texture?: Texture
+  status: 'loading' | 'loaded' | 'error'
+  listeners: Set<() => void>
+}
+
+const textureAssetCache = new Map<string, TextureAssetEntry>()
+const croppedTextureCache = new Map<string, Texture>()
+
+function requestTextureAsset(url: string, onReady: () => void) {
+  if (Cache.has(url)) {
+    return Cache.get<Texture>(url)
+  }
+
+  const existing = textureAssetCache.get(url)
+  if (existing) {
+    if (existing.status === 'loaded') {
+      return existing.texture
+    }
+    if (existing.status === 'loading') {
+      existing.listeners.add(onReady)
+    }
+    return undefined
+  }
+
+  const entry: TextureAssetEntry = {
+    status: 'loading',
+    listeners: new Set([onReady]),
+  }
+
+  textureAssetCache.set(url, entry)
+  void Assets.load<Texture>({
+    alias: url,
+    src: url,
+    data: {
+      crossOrigin: 'anonymous',
+    },
+  })
+    .then((texture) => {
+      entry.texture = texture
+      entry.status = 'loaded'
+      for (const listener of entry.listeners) {
+        listener()
+      }
+      entry.listeners.clear()
+    })
+    .catch(() => {
+      entry.status = 'error'
+      entry.listeners.clear()
+    })
+
+  return undefined
+}
+
+function normalizeCrop(crop?: { x: number; y: number; width: number; height: number }) {
+  if (!crop) {
+    return undefined
+  }
+
+  const x = Math.max(0, Math.min(1, crop.x))
+  const y = Math.max(0, Math.min(1, crop.y))
+  const width = Math.max(0.001, Math.min(1 - x, crop.width))
+  const height = Math.max(0.001, Math.min(1 - y, crop.height))
+
+  if (x === 0 && y === 0 && width === 1 && height === 1) {
+    return undefined
+  }
+
+  return { x, y, width, height }
+}
+
+function textureForSpriteSpec(
+  url: string,
+  texture: Texture,
+  crop?: { x: number; y: number; width: number; height: number },
+) {
+  const normalizedCrop = normalizeCrop(crop)
+  if (!normalizedCrop) {
+    return texture
+  }
+
+  const cacheKey = `${url}|${normalizedCrop.x},${normalizedCrop.y},${normalizedCrop.width},${normalizedCrop.height}`
+  const cached = croppedTextureCache.get(cacheKey)
+  if (cached) {
+    return cached
+  }
+
+  const frame = texture.frame
+  const croppedTexture = new Texture({
+    source: texture.source,
+    frame: new Rectangle(
+      frame.x + frame.width * normalizedCrop.x,
+      frame.y + frame.height * normalizedCrop.y,
+      frame.width * normalizedCrop.width,
+      frame.height * normalizedCrop.height,
+    ),
+  })
+  croppedTextureCache.set(cacheKey, croppedTexture)
+  return croppedTexture
+}
 
 function cardDimensions(room: RoomDoc, objectId: Id) {
   const object = room.objects[objectId]
@@ -105,7 +219,66 @@ function boardBackground() {
   return grid
 }
 
-function addCardContents(container: Container, room: RoomDoc, objectId: Id, currentPlayerId?: string) {
+function addSpriteContents(
+  container: Container,
+  spec: { url?: string; crop?: { x: number; y: number; width: number; height: number }; fit?: 'cover' | 'contain' },
+  width: number,
+  height: number,
+  requestRender: () => void,
+) {
+  if (!spec.url) {
+    return
+  }
+
+  const texture = requestTextureAsset(spec.url, requestRender)
+  if (!texture) {
+    return
+  }
+
+  const displayTexture = textureForSpriteSpec(spec.url, texture, spec.crop)
+  const fit = spec.fit ?? 'cover'
+  const inset = fit === 'contain' ? 7 : 0
+  const contentWidth = width - inset * 2
+  const contentHeight = height - inset * 2
+  const sprite = new Sprite(displayTexture)
+  sprite.anchor.set(0.5)
+  const sourceAspect = displayTexture.width / displayTexture.height
+  const targetAspect = contentWidth / contentHeight
+
+  if (fit === 'contain') {
+    if (sourceAspect > targetAspect) {
+      sprite.width = contentWidth
+      sprite.height = sprite.width / sourceAspect
+    } else {
+      sprite.height = contentHeight
+      sprite.width = sprite.height * sourceAspect
+    }
+  } else {
+    if (sourceAspect > targetAspect) {
+      sprite.height = contentHeight
+      sprite.width = sprite.height * sourceAspect
+    } else {
+      sprite.width = contentWidth
+      sprite.height = sprite.width / sourceAspect
+    }
+  }
+
+  const mask = new Graphics()
+  mask
+    .roundRect(-contentWidth / 2, -contentHeight / 2, contentWidth, contentHeight, Math.max(8, 18 - inset))
+    .fill({ color: '#ffffff' })
+  container.addChild(mask)
+  sprite.mask = mask
+  container.addChild(sprite)
+}
+
+function addCardContents(
+  container: Container,
+  room: RoomDoc,
+  objectId: Id,
+  currentPlayerId: string | undefined,
+  requestRender: () => void,
+) {
   const object = room.objects[objectId]
   if (!isCard(object)) {
     return
@@ -118,15 +291,10 @@ function addCardContents(container: Container, room: RoomDoc, objectId: Id, curr
   card
     .roundRect(-width / 2, -height / 2, width, height, 18)
     .fill({ color: spec.bg ?? '#f8efe1' })
-    .stroke({ width: 2, color: '#2b1b16', alpha: 0.34 })
   container.addChild(card)
 
   if (spec.kind === 'image-url' && spec.url) {
-    const sprite = new Sprite(Texture.from(spec.url))
-    sprite.anchor.set(0.5)
-    sprite.width = width - 14
-    sprite.height = height - 14
-    container.addChild(sprite)
+    addSpriteContents(container, spec, width, height, requestRender)
   } else {
     const text = new Text({
       text: spec.label ?? object.name,
@@ -142,9 +310,21 @@ function addCardContents(container: Container, room: RoomDoc, objectId: Id, curr
     text.anchor.set(0.5)
     container.addChild(text)
   }
+
+  const border = new Graphics()
+  border
+    .roundRect(-width / 2, -height / 2, width, height, 18)
+    .stroke({ width: 2, color: '#2b1b16', alpha: 0.34 })
+  container.addChild(border)
 }
 
-function addDeckContents(container: Container, room: RoomDoc, objectId: Id, currentPlayerId?: string) {
+function addDeckContents(
+  container: Container,
+  room: RoomDoc,
+  objectId: Id,
+  currentPlayerId: string | undefined,
+  requestRender: () => void,
+) {
   const object = room.objects[objectId]
   if (!isDeck(object)) {
     return
@@ -171,7 +351,7 @@ function addDeckContents(container: Container, room: RoomDoc, objectId: Id, curr
     stackCardContainer.position.set(offsetX, offsetY)
 
     if (isCard(stackCard)) {
-      addCardContents(stackCardContainer, room, stackCard.id, currentPlayerId)
+      addCardContents(stackCardContainer, room, stackCard.id, currentPlayerId, requestRender)
     } else {
       const fallback = new Graphics()
       fallback
@@ -215,6 +395,15 @@ function addDeckContents(container: Container, room: RoomDoc, objectId: Id, curr
   container.addChild(countText)
 }
 
+function clearPendingDeckPress(pendingDeckPressRef: React.MutableRefObject<PendingDeckPress | null>) {
+  const pending = pendingDeckPressRef.current
+  if (!pending) {
+    return
+  }
+  window.clearTimeout(pending.timeoutId)
+  pendingDeckPressRef.current = null
+}
+
 function populateViewportScene(
   viewport: Viewport,
   renderedObjects: Map<Id, RenderedObject>,
@@ -225,7 +414,9 @@ function populateViewportScene(
   canEdit: boolean,
   onSelect: (id?: Id) => void,
   dragRef: React.MutableRefObject<DragState | null>,
+  pendingDeckPressRef: React.MutableRefObject<PendingDeckPress | null>,
   tapCandidateRef: React.MutableRefObject<TapCandidate | null>,
+  requestRender: () => void,
 ) {
   viewport.removeChildren()
   renderedObjects.clear()
@@ -252,9 +443,9 @@ function populateViewportScene(
     if (isCard(object)) {
       width = object.size.width
       height = object.size.height
-      addCardContents(container, room, objectId, currentPlayerId)
+      addCardContents(container, room, objectId, currentPlayerId, requestRender)
     } else if (isDeck(object)) {
-      addDeckContents(container, room, objectId, currentPlayerId)
+      addDeckContents(container, room, objectId, currentPlayerId, requestRender)
     }
 
     const hitArea = new Graphics()
@@ -276,6 +467,48 @@ function populateViewportScene(
         return
       }
 
+      if (isDeck(object) && canEdit && !object.locked) {
+        onSelect(objectId)
+        event.stopPropagation()
+
+        tapCandidateRef.current = {
+          id: objectId,
+          pointerId: event.pointerId,
+          startPointer: { x: event.global.x, y: event.global.y },
+        }
+
+        clearPendingDeckPress(pendingDeckPressRef)
+        const world = viewport.toWorld(event.global)
+        const timeoutId = window.setTimeout(() => {
+          const pending = pendingDeckPressRef.current
+          if (!pending || pending.deckId !== objectId || pending.pointerId !== event.pointerId) {
+            return
+          }
+
+          dragRef.current = {
+            id: objectId,
+            mode: 'move',
+            startPointer: pending.startWorld,
+            startTransform: pending.startTransform,
+            moved: false,
+            raisedToFront: false,
+          }
+          tapCandidateRef.current = null
+          pendingDeckPressRef.current = null
+          viewport.plugins.pause('drag')
+        }, DECK_LONG_PRESS_MS)
+
+        pendingDeckPressRef.current = {
+          deckId: objectId,
+          pointerId: event.pointerId,
+          startGlobal: { x: event.global.x, y: event.global.y },
+          startWorld: { x: world.x, y: world.y },
+          startTransform: { ...transform },
+          timeoutId,
+        }
+        return
+      }
+
       if (!isTouchPointer) {
         onSelect(objectId)
         event.stopPropagation()
@@ -291,6 +524,7 @@ function populateViewportScene(
           startPointer: { x: world.x, y: world.y },
           startTransform: { ...transform },
           moved: false,
+          raisedToFront: false,
         }
         viewport.plugins.pause('drag')
         return
@@ -319,10 +553,16 @@ function populateViewportScene(
         startPointer: { x: world.x, y: world.y },
         startTransform: { ...transform },
         moved: false,
+        raisedToFront: false,
       }
       viewport.plugins.pause('drag')
     })
     container.on('pointerup', (event) => {
+      const pendingDeckPress = pendingDeckPressRef.current
+      if (pendingDeckPress?.deckId === objectId && pendingDeckPress.pointerId === event.pointerId) {
+        clearPendingDeckPress(pendingDeckPressRef)
+      }
+
       if (event.pointerType !== 'touch') {
         return
       }
@@ -342,7 +582,11 @@ function populateViewportScene(
         onSelect(objectId)
       }
     })
-    container.on('pointerupoutside', () => {
+    container.on('pointerupoutside', (event) => {
+      const pendingDeckPress = pendingDeckPressRef.current
+      if (pendingDeckPress?.deckId === objectId && pendingDeckPress.pointerId === event.pointerId) {
+        clearPendingDeckPress(pendingDeckPressRef)
+      }
       if (tapCandidateRef.current?.id === objectId) {
         tapCandidateRef.current = null
       }
@@ -365,6 +609,7 @@ function populateViewportScene(
           startPointer: { x: world.x, y: world.y },
           startTransform: { ...transform },
           moved: false,
+          raisedToFront: false,
         }
         viewport.plugins.pause('drag')
       })
@@ -391,8 +636,11 @@ export function BoardView({
   onCameraChange,
   onSelect,
   onCommitTransform,
-  onDropCardToDeck,
+  onDropObjectToDeck,
+  onBringCardToFront,
+  onLiftTopCardFromDeck,
   onFlipCard,
+  onFlipDeck,
   onDrawDeck,
   onShuffleDeck,
   onDeleteObject,
@@ -402,26 +650,34 @@ export function BoardView({
   const viewportRef = useRef<Viewport | null>(null)
   const renderedRef = useRef<Map<Id, RenderedObject>>(new Map())
   const dragRef = useRef<DragState | null>(null)
+  const pendingDeckPressRef = useRef<PendingDeckPress | null>(null)
   const tapCandidateRef = useRef<TapCandidate | null>(null)
   const roomRef = useRef(room)
   const selectedIdRef = useRef(selectedId)
   const initialCameraRef = useRef(initialCamera)
   const currentPlayerIdRef = useRef(currentPlayerId)
   const canEditRef = useRef(canEdit)
+  const [assetVersion, setAssetVersion] = useState(0)
   const [hoverDeckId, setHoverDeckId] = useState<Id | undefined>()
   const hoverDeckIdRef = useRef<Id | undefined>(hoverDeckId)
   const quickActionsRef = useRef<HTMLDivElement | null>(null)
   const callbacksRef = useRef({
     onCameraChange,
     onCommitTransform,
+    onBringCardToFront,
     onDeleteObject,
     onDrawDeck,
-    onDropCardToDeck,
+    onFlipDeck,
+    onLiftTopCardFromDeck,
+    onDropObjectToDeck,
     onFlipCard,
     onSelect,
     onShuffleDeck,
   })
   const cameraSnapshot = useRef<string>('')
+  const requestRenderRef = useRef(() => {
+    setAssetVersion((current) => current + 1)
+  })
 
   roomRef.current = room
   selectedIdRef.current = selectedId
@@ -432,9 +688,12 @@ export function BoardView({
   callbacksRef.current = {
     onCameraChange,
     onCommitTransform,
+    onBringCardToFront,
     onDeleteObject,
     onDrawDeck,
-    onDropCardToDeck,
+    onFlipDeck,
+    onLiftTopCardFromDeck,
+    onDropObjectToDeck,
     onFlipCard,
     onSelect,
     onShuffleDeck,
@@ -458,13 +717,14 @@ export function BoardView({
 
     if (object.type === 'deck') {
       return [
+        { label: 'Flip', onClick: () => onFlipDeck(object.id) },
         { label: 'Draw', onClick: () => onDrawDeck(object.id) },
         { label: 'Shuffle', onClick: () => onShuffleDeck(object.id) },
       ]
     }
 
     return []
-  }, [canEdit, onDeleteObject, onDrawDeck, onFlipCard, onShuffleDeck, room.objects, selectedId])
+  }, [canEdit, onDeleteObject, onDrawDeck, onFlipCard, onFlipDeck, onShuffleDeck, room.objects, selectedId])
 
   useEffect(() => {
     let cancelled = false
@@ -579,6 +839,39 @@ export function BoardView({
       }
 
       const onPointerMove = (event: FederatedPointerEvent) => {
+        const pendingDeckPress = pendingDeckPressRef.current
+        if (!dragRef.current && pendingDeckPress && pendingDeckPress.pointerId === event.pointerId) {
+          const pointerDistance = Math.hypot(
+            event.global.x - pendingDeckPress.startGlobal.x,
+            event.global.y - pendingDeckPress.startGlobal.y,
+          )
+
+          if (pointerDistance > TAP_GRACE_DISTANCE) {
+            tapCandidateRef.current = null
+          }
+
+          if (pointerDistance > TAP_GRACE_DISTANCE) {
+            clearPendingDeckPress(pendingDeckPressRef)
+
+            const liftedCardId = callbacksRef.current.onLiftTopCardFromDeck(pendingDeckPress.deckId)
+            const dragId = liftedCardId ?? pendingDeckPress.deckId
+            if (liftedCardId) {
+              callbacksRef.current.onBringCardToFront(liftedCardId)
+              callbacksRef.current.onSelect(liftedCardId)
+            }
+
+            dragRef.current = {
+              id: dragId,
+              mode: 'move',
+              startPointer: pendingDeckPress.startWorld,
+              startTransform: pendingDeckPress.startTransform,
+              moved: false,
+              raisedToFront: Boolean(liftedCardId),
+            }
+            viewport.plugins.pause('drag')
+          }
+        }
+
         const drag = dragRef.current
         if (!drag) {
           return
@@ -593,6 +886,16 @@ export function BoardView({
         const distance = Math.hypot(world.x - drag.startPointer.x, world.y - drag.startPointer.y)
         drag.moved ||= distance > 8
 
+        if (
+          drag.mode === 'move' &&
+          drag.moved &&
+          !drag.raisedToFront &&
+          roomRef.current.objects[drag.id]?.type === 'card'
+        ) {
+          callbacksRef.current.onBringCardToFront(drag.id)
+          drag.raisedToFront = true
+        }
+
         if (drag.mode === 'move') {
           const nextX = drag.startTransform.x + (world.x - drag.startPointer.x)
           const nextY = drag.startTransform.y + (world.y - drag.startPointer.y)
@@ -602,7 +905,7 @@ export function BoardView({
           const liveRoom = roomRef.current
           const draggingObject = liveRoom.objects[drag.id]
           const nextHoverDeckId =
-            draggingObject?.type === 'card'
+            draggingObject && (draggingObject.type === 'card' || draggingObject.type === 'deck')
               ? findDeckAtPoint(liveRoom, { x: nextX, y: nextY }, drag.id)
               : undefined
           setHoverDeckId((current) => (current === nextHoverDeckId ? current : nextHoverDeckId))
@@ -640,10 +943,13 @@ export function BoardView({
           }
           const liveRoom = roomRef.current
           const object = liveRoom.objects[drag.id]
-          const targetDeckId = object?.type === 'card' ? findDeckAtPoint(liveRoom, world, drag.id) : undefined
+          const targetDeckId =
+            object && (object.type === 'card' || object.type === 'deck')
+              ? findDeckAtPoint(liveRoom, world, drag.id)
+              : undefined
 
           if (targetDeckId) {
-            callbacksRef.current.onDropCardToDeck(drag.id, targetDeckId)
+            callbacksRef.current.onDropObjectToDeck(drag.id, targetDeckId)
           } else {
             callbacksRef.current.onCommitTransform(drag.id, nextTransform)
           }
@@ -682,7 +988,9 @@ export function BoardView({
         canEditRef.current,
         callbacksRef.current.onSelect,
         dragRef,
+        pendingDeckPressRef,
         tapCandidateRef,
+        requestRenderRef.current,
       )
 
       return () => {
@@ -698,6 +1006,7 @@ export function BoardView({
     return () => {
       cancelled = true
       cleanup?.()
+      clearPendingDeckPress(pendingDeckPressRef)
       host.removeEventListener('touchstart', suppressNativeTouch)
       host.removeEventListener('touchmove', suppressNativeTouch)
       host.removeEventListener('contextmenu', suppressNativeTouch)
@@ -727,9 +1036,11 @@ export function BoardView({
       canEdit,
       onSelect,
       dragRef,
+      pendingDeckPressRef,
       tapCandidateRef,
+      requestRenderRef.current,
     )
-  }, [canEdit, currentPlayerId, hoverDeckId, onSelect, room, selectedId])
+  }, [assetVersion, canEdit, currentPlayerId, hoverDeckId, onSelect, room, selectedId])
 
   return (
     <div className="board-root">

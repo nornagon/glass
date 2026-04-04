@@ -317,10 +317,21 @@ textarea {
 }
 
 .preview-note,
-.empty-copy {
+.empty-copy,
+.field-note {
   margin: 0;
   color: rgba(255, 241, 218, 0.78);
   font-size: 0.88rem;
+}
+
+.field-note {
+  margin-top: -0.2rem;
+}
+
+.sheet-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.8rem;
 }
 
 .stats-card {
@@ -376,14 +387,6 @@ button,
 .board-root {
   -webkit-user-select: none;
   user-select: none;
-}
-
-.hint-list {
-  margin: 0;
-  padding-left: 1.2rem;
-  display: grid;
-  gap: 0.55rem;
-  color: rgba(255, 241, 218, 0.85);
 }
 
 @media (max-width: 900px) {
@@ -505,11 +508,16 @@ button,
     font-size: 0.84rem;
   }
 
+  .sheet-grid {
+    gap: 0.5rem;
+  }
+
   .field span,
   .toggle-row span,
   .inspector-group h4,
   .preview-note,
-  .empty-copy {
+  .empty-copy,
+  .field-note {
     font-size: 0.78rem;
   }
 

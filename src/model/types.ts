@@ -15,6 +15,12 @@ export interface SpriteSpec {
   bg?: string
   fg?: string
   fit?: 'cover' | 'contain'
+  crop?: {
+    x: number
+    y: number
+    width: number
+    height: number
+  }
 }
 
 export interface Player {

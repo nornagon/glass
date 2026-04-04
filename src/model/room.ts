@@ -195,6 +195,31 @@ export function addCardToDeck(room: RoomDoc, cardId: Id, deckId: Id, index?: num
   }
 }
 
+export function mergeDeckIntoDeck(room: RoomDoc, sourceDeckId: Id, targetDeckId: Id) {
+  if (sourceDeckId === targetDeckId) {
+    return
+  }
+
+  const sourceDeck = room.objects[sourceDeckId]
+  const targetDeck = room.objects[targetDeckId]
+  if (!isDeck(sourceDeck) || !isDeck(targetDeck)) {
+    return
+  }
+
+  for (const cardId of sourceDeck.childIds) {
+    const card = room.objects[cardId]
+    if (!isCard(card)) {
+      continue
+    }
+    card.parentId = targetDeck.id
+    targetDeck.childIds.push(card.id)
+  }
+
+  sourceDeck.childIds = []
+  detachObject(room, sourceDeckId)
+  delete room.objects[sourceDeckId]
+}
+
 export function placeObjectOnPlane(
   room: RoomDoc,
   objectId: Id,
@@ -224,6 +249,86 @@ export function createDeckOnPlane(room: RoomDoc, planeId: Id, transform: Transfo
   const deck = createDeck(name)
   room.objects[deck.id] = deck
   placeObjectOnPlane(room, deck.id, planeId, transform)
+  return deck.id
+}
+
+interface SpriteSheetOptions {
+  url: string
+  rows: number
+  cols: number
+  count: number
+}
+
+interface DeckFromSpriteSheetOptions {
+  name?: string
+  faces: SpriteSheetOptions
+  backs?: SpriteSheetOptions
+  cardSize?: {
+    width: number
+    height: number
+  }
+}
+
+function normalizeSheetCount(rows: number, cols: number, count: number) {
+  const maxCount = Math.max(0, Math.floor(rows) * Math.floor(cols))
+  return Math.max(0, Math.min(Math.floor(count), maxCount))
+}
+
+function spriteSpecFromSheet(sheet: SpriteSheetOptions, index: number): SpriteSpec {
+  const col = index % sheet.cols
+  const row = Math.floor(index / sheet.cols)
+
+  return {
+    kind: 'image-url',
+    url: sheet.url,
+    crop: {
+      x: col / sheet.cols,
+      y: row / sheet.rows,
+      width: 1 / sheet.cols,
+      height: 1 / sheet.rows,
+    },
+  }
+}
+
+export function createDeckFromSpriteSheetOnPlane(
+  room: RoomDoc,
+  planeId: Id,
+  transform: Transform2D,
+  options: DeckFromSpriteSheetOptions,
+) {
+  const faceCount = normalizeSheetCount(options.faces.rows, options.faces.cols, options.faces.count)
+  if (faceCount <= 0) {
+    return undefined
+  }
+
+  const backCount = options.backs
+    ? normalizeSheetCount(options.backs.rows, options.backs.cols, options.backs.count)
+    : 0
+
+  const deck = createDeck(options.name?.trim() || 'Imported Deck')
+  room.objects[deck.id] = deck
+  placeObjectOnPlane(room, deck.id, planeId, transform)
+  const insertedDeck = room.objects[deck.id]
+  if (!isDeck(insertedDeck)) {
+    return undefined
+  }
+
+  for (let index = 0; index < faceCount; index += 1) {
+    const card = createCard(`Card ${index + 1}`)
+    card.parentId = deck.id
+    if (options.cardSize) {
+      card.size = { ...options.cardSize }
+    }
+    card.face = spriteSpecFromSheet(options.faces, index)
+
+    if (options.backs && backCount > 0) {
+      card.back = spriteSpecFromSheet(options.backs, index % backCount)
+    }
+
+    room.objects[card.id] = card
+    insertedDeck.childIds.push(card.id)
+  }
+
   return deck.id
 }
 
@@ -258,6 +363,22 @@ export function bringObjectForward(room: RoomDoc, objectId: Id) {
     parent.childOrder[index + 1],
     parent.childOrder[index],
   ]
+}
+
+export function bringObjectToFront(room: RoomDoc, objectId: Id) {
+  const object = room.objects[objectId]
+  const parent = object?.parentId ? room.objects[object.parentId] : undefined
+  if (parent?.type !== 'plane') {
+    return
+  }
+
+  const index = parent.childOrder.indexOf(objectId)
+  if (index === -1 || index === parent.childOrder.length - 1) {
+    return
+  }
+
+  parent.childOrder.splice(index, 1)
+  parent.childOrder.push(objectId)
 }
 
 export function sendObjectBackward(room: RoomDoc, objectId: Id) {
@@ -311,6 +432,45 @@ export function shuffleDeck(room: RoomDoc, deckId: Id, random = Math.random) {
       deck.childIds[index],
     ]
   }
+}
+
+export function flipDeck(room: RoomDoc, deckId: Id) {
+  const deck = room.objects[deckId]
+  if (!isDeck(deck)) {
+    return
+  }
+
+  for (const cardId of deck.childIds) {
+    const card = room.objects[cardId]
+    if (!isCard(card)) {
+      continue
+    }
+    card.meta.faceUp = card.meta.faceUp === false
+  }
+}
+
+export function liftTopCardFromDeck(room: RoomDoc, deckId: Id) {
+  const deck = room.objects[deckId]
+  if (!isDeck(deck) || deck.childIds.length === 0 || !deck.parentId) {
+    return undefined
+  }
+
+  const parent = room.objects[deck.parentId]
+  if (!isPlane(parent)) {
+    return undefined
+  }
+
+  const cardId = deck.childIds[deck.childIds.length - 1]
+  deck.childIds.pop()
+
+  const baseTransform = parent.childTransforms[deck.id] ?? { x: 0, y: 0, rotation: 0 }
+  placeObjectOnPlane(room, cardId, parent.id, {
+    x: baseTransform.x,
+    y: baseTransform.y,
+    rotation: baseTransform.rotation,
+  })
+
+  return cardId
 }
 
 export function drawFromDeck(room: RoomDoc, deckId: Id) {
