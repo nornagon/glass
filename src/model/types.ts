@@ -46,6 +46,10 @@ export interface Plane extends GameObjectBase {
 
 export interface Deck extends GameObjectBase {
   type: 'deck'
+  size: {
+    width: number
+    height: number
+  }
   childIds: Id[]
 }
 
@@ -69,6 +73,7 @@ export interface RoomDoc {
   players: Record<PlayerId, Player>
   playerOrder: PlayerId[]
   turnPlayerId?: PlayerId
+  sourceTemplateId?: string
 }
 
 export interface CameraState {
@@ -83,6 +88,13 @@ export interface RoomHistoryEntry {
   lastOpenedAt: number
   lastKnownTurnPlayerId?: PlayerId
   lastKnownPlayerName?: string
+}
+
+export interface RoomTemplateEntry {
+  id: string
+  title: string
+  savedAt: number
+  room: RoomDoc
 }
 
 export const DEFAULT_CARD_SIZE = {

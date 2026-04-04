@@ -1,12 +1,11 @@
 import {
   useDocument,
-  useRepo,
   type AutomergeUrl,
 } from '@automerge/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { BoardView } from '../board/BoardView'
 import { syncTurnBadge } from './badge'
-import { loadRoomHistory, loadJoinedPlayerId, loadCameraState, saveCameraState, saveJoinedPlayerId, saveRoomHistoryEntry } from '../model/local'
+import { loadJoinedPlayerId, loadCameraState, loadRoomTemplates, saveCameraState, saveJoinedPlayerId, saveRoomHistoryEntry, saveRoomTemplate } from '../model/local'
 import {
   addCardToDeck,
   advanceTurn,
@@ -16,7 +15,6 @@ import {
   createDeckOnPlane,
   createDeckFromSpriteSheetOnPlane,
   createPlayerId,
-  createRoomDoc,
   deleteObject,
   drawFromDeck,
   flipDeck,
@@ -29,7 +27,6 @@ import {
   liftTopCardFromDeck,
   mergeDeckIntoDeck,
   renameOrAddPlayer,
-  rootPlaneLabel,
   sendObjectBackward,
   setTurnPlayer,
   shuffleDeck,
@@ -116,6 +113,8 @@ interface SheetDeckDraft {
   backCols: string
   backCount: string
 }
+
+type PanelMode = 'room' | 'selection'
 
 function defaultSheetDeckDraft(): SheetDeckDraft {
   return {
@@ -379,11 +378,10 @@ export function RoomScreen({ roomUrl }: { roomUrl: AutomergeUrl }) {
 }
 
 function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
-  const repo = useRepo()
   const [room, changeRoom] = useDocument<RoomDoc>(roomUrl, { suspense: true })
   const [selectedId, setSelectedId] = useState<string>()
   const [joinedPlayerId, setJoinedPlayerId] = useState<string | undefined>(() => loadJoinedPlayerId(roomUrl))
-  const [showRooms, setShowRooms] = useState(false)
+  const [panelMode, setPanelMode] = useState<PanelMode | undefined>()
   const [camera, setCamera] = useState<CameraState>(() => loadCameraState(roomUrl) ?? DEFAULT_CAMERA)
   const [sheetDeckDraft, setSheetDeckDraft] = useState<SheetDeckDraft>(() => defaultSheetDeckDraft())
   const [sheetDeckError, setSheetDeckError] = useState('')
@@ -392,7 +390,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   const currentPlayer = joinedPlayerId ? room.players[joinedPlayerId] : undefined
   const canEdit = Boolean(currentPlayer)
   const roomTitle = formatRoomTitle(room)
-  const roomHistory = loadRoomHistory()
+  const linkedTemplate = room.sourceTemplateId ? loadRoomTemplates().find((template) => template.id === room.sourceTemplateId) : undefined
 
   useEffect(() => {
     const entry = {
@@ -419,6 +417,12 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     return () => document.removeEventListener('visibilitychange', onVisibilityChange)
   }, [joinedPlayerId, room.turnPlayerId])
 
+  useEffect(() => {
+    if (panelMode === 'selection' && !selectedObject) {
+      setPanelMode(undefined)
+    }
+  }, [panelMode, selectedObject])
+
   const playerList = useMemo(
     () =>
       room.playerOrder
@@ -434,13 +438,60 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     changeRoom(change)
   }
 
-  function createNewRoom() {
-    const handle = repo.create<RoomDoc>(createRoomDoc())
-    window.location.hash = roomHash(handle.url)
-  }
-
   async function copyRoomLink() {
     await navigator.clipboard.writeText(currentOriginUrl(roomUrl))
+  }
+
+  function toggleRoomPanel() {
+    setPanelMode((current) => (current === 'room' ? undefined : 'room'))
+  }
+
+  function openSelectionPanel() {
+    if (selectedObject) {
+      setPanelMode('selection')
+    }
+  }
+
+  function closePanel() {
+    setPanelMode(undefined)
+  }
+
+  function returnToLobby() {
+    window.location.hash = ''
+  }
+
+  function saveCurrentRoomAsTemplate() {
+    const nextTitle = window.prompt('Save room as template', roomTitle)?.trim()
+    if (!nextTitle) {
+      return
+    }
+
+    const nextTemplate = saveRoomTemplate({
+      title: nextTitle,
+      room,
+    })
+    if (nextTemplate) {
+      mutate((draft) => {
+        draft.sourceTemplateId = nextTemplate.id
+      })
+    }
+  }
+
+  function updateLinkedTemplate() {
+    if (!linkedTemplate) {
+      return
+    }
+
+    const confirmed = window.confirm(`Update template "${linkedTemplate.title}" from the current room?`)
+    if (!confirmed) {
+      return
+    }
+
+    saveRoomTemplate({
+      id: linkedTemplate.id,
+      title: linkedTemplate.title,
+      room,
+    })
   }
 
   function joinRoom() {
@@ -664,31 +715,20 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
               shuffleDeck(draft, deckId)
             })
           }
-          onDeleteObject={(objectId) =>
-            mutate((draft) => {
-              deleteObject(draft, objectId)
-              if (selectedId === objectId) {
-                setSelectedId(undefined)
-              }
-            })
-          }
+          onOpenSelectionPanel={openSelectionPanel}
         />
       </main>
 
       <div className="overlay-layer">
         <header className="topbar">
-          <div className="topbar-cluster">
-            <button onClick={createNewRoom}>New Room</button>
-            <button onClick={() => void copyRoomLink()}>Share</button>
-            <button onClick={() => setShowRooms((current) => !current)}>
-              {showRooms ? 'Board' : 'Rooms'}
-            </button>
-          </div>
-          <div className="topbar-title">
+          <button
+            className={`topbar-title topbar-title-button ${panelMode === 'room' ? 'active' : ''}`}
+            onClick={toggleRoomPanel}
+          >
             <p className="eyebrow">Glass Sandbox</p>
             <h1>{roomTitle}</h1>
-          </div>
-          <div className="topbar-cluster align-end">
+          </button>
+          <div className="topbar-cluster topbar-actions">
             <div className="turn-pill">
               <span>Turn</span>
               <strong>{turnPlayer?.name ?? 'Unset'}</strong>
@@ -705,434 +745,427 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
           </div>
         </header>
 
-        <aside className="inspector">
-          {showRooms ? (
+        {panelMode && (panelMode !== 'selection' || selectedObject) ? (
+          <aside className="inspector">
             <section className="inspector-section">
-              <div className="section-header">
-                <div>
-                  <p className="eyebrow">Recent Rooms</p>
-                  <h2>Room Index</h2>
-                </div>
-              </div>
-              <div className="room-list">
-                {roomHistory.map((entry) => (
-                  <button
-                    className={`room-list-item ${entry.roomUrl === roomUrl ? 'current' : ''}`}
-                    key={entry.roomUrl}
-                    onClick={() => {
-                      window.location.hash = roomHash(entry.roomUrl)
-                    }}
-                  >
-                    <span>{entry.title}</span>
-                    <small>{new Date(entry.lastOpenedAt).toLocaleString()}</small>
-                  </button>
-                ))}
-              </div>
-            </section>
-          ) : selectedObject ? (
-            <section className="inspector-section">
-              <div className="section-header">
-                <div>
-                  <p className="eyebrow">{selectedObject.type}</p>
-                  <h2>{selectedObject.name}</h2>
-                </div>
-                <div className="button-row">
-                  <button disabled={!canEdit} onClick={() => mutate((draft) => bringObjectForward(draft, selectedObject.id))}>
-                    Forward
-                  </button>
-                  <button disabled={!canEdit} onClick={() => mutate((draft) => sendObjectBackward(draft, selectedObject.id))}>
-                    Back
-                  </button>
-                  <button
-                    disabled={!canEdit}
-                    onClick={() =>
-                      mutate((draft) => {
-                        const duplicateId = duplicateObject(draft, selectedObject.id)
-                        if (duplicateId) {
-                          setSelectedId(duplicateId)
-                        }
-                      })
-                    }
-                  >
-                    Duplicate
-                  </button>
-                </div>
+              <div className="inspector-toolbar">
+                {panelMode === 'selection' && selectedObject ? (
+                  <div>
+                    <p className="eyebrow">{selectedObject.type}</p>
+                    <h2>{selectedObject.name}</h2>
+                  </div>
+                ) : (
+                  <div>
+                    <p className="eyebrow">Room</p>
+                    <h2>{roomTitle}</h2>
+                  </div>
+                )}
+                <button className="panel-close" onClick={closePanel}>
+                  Close
+                </button>
               </div>
 
-              <label className="field">
-                <span>Name</span>
-                <input
-                  disabled={!canEdit}
-                  value={selectedObject.name}
-                  onChange={(event) =>
-                    mutate((draft) => {
-                      draft.objects[selectedObject.id].name = event.target.value
-                    })
-                  }
-                />
-              </label>
-
-              <label className="toggle-row">
-                <span>Locked</span>
-                <input
-                  disabled={!canEdit}
-                  type="checkbox"
-                  checked={selectedObject.locked}
-                  onChange={(event) =>
-                    mutate((draft) => {
-                      draft.objects[selectedObject.id].locked = event.target.checked
-                    })
-                  }
-                />
-              </label>
-
-              {isCard(selectedObject) ? (
+              {panelMode === 'selection' && selectedObject ? (
                 <>
                   <div className="button-row">
-                    <button disabled={!canEdit} onClick={() => mutate((draft) => flipCard(draft, selectedObject.id))}>
-                      {selectedObject.meta.faceUp === false ? 'Show Face' : 'Show Back'}
+                    <button disabled={!canEdit} onClick={() => mutate((draft) => bringObjectForward(draft, selectedObject.id))}>
+                      Forward
+                    </button>
+                    <button disabled={!canEdit} onClick={() => mutate((draft) => sendObjectBackward(draft, selectedObject.id))}>
+                      Back
                     </button>
                     <button
                       disabled={!canEdit}
                       onClick={() =>
                         mutate((draft) => {
-                          ;(draft.objects[selectedObject.id] as Card).visibility = true
+                          const duplicateId = duplicateObject(draft, selectedObject.id)
+                          if (duplicateId) {
+                            setSelectedId(duplicateId)
+                          }
                         })
                       }
                     >
-                      Reveal To All
+                      Duplicate
                     </button>
                   </div>
 
                   <label className="field">
-                    <span>Visibility</span>
-                    <select
+                    <span>Name</span>
+                    <input
                       disabled={!canEdit}
-                      value={selectedObject.visibility === true ? 'all' : 'limited'}
+                      value={selectedObject.name}
                       onChange={(event) =>
                         mutate((draft) => {
-                          ;(draft.objects[selectedObject.id] as Card).visibility =
-                            event.target.value === 'all' ? true : currentPlayer ? [currentPlayer.id] : []
+                          draft.objects[selectedObject.id].name = event.target.value
+                        })
+                      }
+                    />
+                  </label>
+
+                  <label className="toggle-row">
+                    <span>Locked</span>
+                    <input
+                      disabled={!canEdit}
+                      type="checkbox"
+                      checked={selectedObject.locked}
+                      onChange={(event) =>
+                        mutate((draft) => {
+                          draft.objects[selectedObject.id].locked = event.target.checked
+                        })
+                      }
+                    />
+                  </label>
+
+                  {isCard(selectedObject) ? (
+                    <>
+                      <div className="button-row">
+                        <button disabled={!canEdit} onClick={() => mutate((draft) => flipCard(draft, selectedObject.id))}>
+                          {selectedObject.meta.faceUp === false ? 'Show Face' : 'Show Back'}
+                        </button>
+                        <button
+                          disabled={!canEdit}
+                          onClick={() =>
+                            mutate((draft) => {
+                              ;(draft.objects[selectedObject.id] as Card).visibility = true
+                            })
+                          }
+                        >
+                          Reveal To All
+                        </button>
+                      </div>
+
+                      <label className="field">
+                        <span>Visibility</span>
+                        <select
+                          disabled={!canEdit}
+                          value={selectedObject.visibility === true ? 'all' : 'limited'}
+                          onChange={(event) =>
+                            mutate((draft) => {
+                              ;(draft.objects[selectedObject.id] as Card).visibility =
+                                event.target.value === 'all' ? true : currentPlayer ? [currentPlayer.id] : []
+                            })
+                          }
+                        >
+                          <option value="all">Everyone sees the face</option>
+                          <option value="limited">Only selected players see the face</option>
+                        </select>
+                      </label>
+
+                      {selectedObject.visibility !== true ? (
+                        <div className="player-visibility-list">
+                          {playerList.map((player) => {
+                            const checked = selectedObject.visibility !== true && selectedObject.visibility.includes(player.id)
+                            return (
+                              <label className="toggle-row" key={player.id}>
+                                <span>{player.name}</span>
+                                <input
+                                  disabled={!canEdit}
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() =>
+                                    mutate((draft) => {
+                                      const card = draft.objects[selectedObject.id] as Card
+                                      const current = card.visibility === true ? [] : [...card.visibility]
+                                      card.visibility = checked
+                                        ? current.filter((playerId) => playerId !== player.id)
+                                        : [...current, player.id]
+                                    })
+                                  }
+                                />
+                              </label>
+                            )
+                          })}
+                        </div>
+                      ) : null}
+
+                      <div className="preview-note">
+                        Normal view: {canSeeCardFace(selectedObject, currentPlayer?.id) ? 'face visible' : 'back only'}
+                      </div>
+
+                      <SpriteEditor
+                        label="Face"
+                        value={selectedObject.face}
+                        disabled={!canEdit}
+                        onChange={(next) =>
+                          mutate((draft) => {
+                            ;(draft.objects[selectedObject.id] as Card).face = next
+                          })
+                        }
+                      />
+                      <SpriteEditor
+                        label="Back"
+                        value={selectedObject.back}
+                        disabled={!canEdit}
+                        onChange={(next) =>
+                          mutate((draft) => {
+                            ;(draft.objects[selectedObject.id] as Card).back = next
+                          })
+                        }
+                      />
+                    </>
+                  ) : null}
+
+                  {isDeck(selectedObject) ? (
+                    <>
+                      <div className="stats-card">
+                        <span>Cards</span>
+                        <strong>{selectedObject.childIds.length}</strong>
+                      </div>
+                      <div className="button-row">
+                        <button disabled={!canEdit} onClick={() => mutate((draft) => flipDeck(draft, selectedObject.id))}>
+                          Flip Deck
+                        </button>
+                        <button disabled={!canEdit} onClick={() => mutate((draft) => shuffleDeck(draft, selectedObject.id))}>
+                          Shuffle
+                        </button>
+                        <button disabled={!canEdit} onClick={() => mutate((draft) => drawFromDeck(draft, selectedObject.id))}>
+                          Draw Top Card
+                        </button>
+                      </div>
+                    </>
+                  ) : null}
+
+                  <MetaEditor
+                    key={`${selectedObject.id}:${JSON.stringify(selectedObject.meta)}`}
+                    object={selectedObject}
+                    disabled={!canEdit}
+                    onCommit={(meta) =>
+                      mutate((draft) => {
+                        draft.objects[selectedObject.id].meta = meta
+                      })
+                    }
+                  />
+
+                  <div className="button-row">
+                    <button
+                      className="danger"
+                      disabled={!canEdit}
+                      onClick={() =>
+                        mutate((draft) => {
+                          deleteObject(draft, selectedObject.id)
+                          setSelectedId(undefined)
                         })
                       }
                     >
-                      <option value="all">Everyone sees the face</option>
-                      <option value="limited">Only selected players see the face</option>
-                    </select>
-                  </label>
-
-                  {selectedObject.visibility !== true ? (
-                    <div className="player-visibility-list">
-                      {playerList.map((player) => {
-                        const checked = selectedObject.visibility !== true && selectedObject.visibility.includes(player.id)
-                        return (
-                          <label className="toggle-row" key={player.id}>
-                            <span>{player.name}</span>
-                            <input
-                              disabled={!canEdit}
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() =>
-                                mutate((draft) => {
-                                  const card = draft.objects[selectedObject.id] as Card
-                                  const current = card.visibility === true ? [] : [...card.visibility]
-                                  card.visibility = checked
-                                    ? current.filter((playerId) => playerId !== player.id)
-                                    : [...current, player.id]
-                                })
-                              }
-                            />
-                          </label>
-                        )
-                      })}
-                    </div>
-                  ) : null}
-
-                  <div className="preview-note">
-                    Normal view: {canSeeCardFace(selectedObject, currentPlayer?.id) ? 'face visible' : 'back only'}
+                      Delete
+                    </button>
                   </div>
-
-                  <SpriteEditor
-                    label="Face"
-                    value={selectedObject.face}
-                    disabled={!canEdit}
-                    onChange={(next) =>
-                      mutate((draft) => {
-                        ;(draft.objects[selectedObject.id] as Card).face = next
-                      })
-                    }
-                  />
-                  <SpriteEditor
-                    label="Back"
-                    value={selectedObject.back}
-                    disabled={!canEdit}
-                    onChange={(next) =>
-                      mutate((draft) => {
-                        ;(draft.objects[selectedObject.id] as Card).back = next
-                      })
-                    }
-                  />
                 </>
-              ) : null}
-
-              {isDeck(selectedObject) ? (
+              ) : (
                 <>
-                  <div className="stats-card">
-                    <span>Cards</span>
-                    <strong>{selectedObject.childIds.length}</strong>
+                  <div className={`presence-pill ${canEdit ? 'active' : ''}`}>
+                    {canEdit ? `Editing as ${currentPlayer?.name}` : 'Observe only'}
                   </div>
+
                   <div className="button-row">
-                    <button disabled={!canEdit} onClick={() => mutate((draft) => flipDeck(draft, selectedObject.id))}>
-                      Flip Deck
+                    <button onClick={() => void copyRoomLink()}>Share</button>
+                    <button onClick={saveCurrentRoomAsTemplate}>Save As New Template</button>
+                    {linkedTemplate ? <button onClick={updateLinkedTemplate}>Update Template</button> : null}
+                    <button onClick={returnToLobby}>Return To Lobby</button>
+                  </div>
+
+                  <label className="field">
+                    <span>Table Name</span>
+                    <input
+                      disabled={!canEdit}
+                      value={getRootPlane(room).name}
+                      onChange={(event) =>
+                        mutate((draft) => {
+                          getRootPlane(draft).name = event.target.value
+                        })
+                      }
+                    />
+                  </label>
+
+                  <div className="button-row">
+                    <button disabled={!canEdit} onClick={createCardHere}>
+                      Create Card
                     </button>
-                    <button disabled={!canEdit} onClick={() => mutate((draft) => shuffleDeck(draft, selectedObject.id))}>
-                      Shuffle
+                    <button disabled={!canEdit} onClick={createDeckHere}>
+                      Create Deck
                     </button>
-                    <button disabled={!canEdit} onClick={() => mutate((draft) => drawFromDeck(draft, selectedObject.id))}>
-                      Draw Top Card
+                    <button disabled={!canEdit} onClick={() => mutate((draft) => advanceTurn(draft))}>
+                      Advance Turn
                     </button>
                   </div>
-                </>
-              ) : null}
 
-              <MetaEditor
-                key={`${selectedObject.id}:${JSON.stringify(selectedObject.meta)}`}
-                object={selectedObject}
-                disabled={!canEdit}
-                onCommit={(meta) =>
-                  mutate((draft) => {
-                    draft.objects[selectedObject.id].meta = meta
-                  })
-                }
-              />
+                  <section className="inspector-group">
+                    <h4>Import Deck From Sprite Sheet</h4>
+                    <label className="field">
+                      <span>Deck Name</span>
+                      <input
+                        disabled={!canEdit}
+                        value={sheetDeckDraft.name}
+                        onChange={(event) =>
+                          setSheetDeckDraft((current) => ({
+                            ...current,
+                            name: event.target.value,
+                          }))
+                        }
+                        placeholder="Imported Deck"
+                      />
+                    </label>
 
-              <div className="button-row">
-                <button
-                  className="danger"
-                  disabled={!canEdit}
-                  onClick={() =>
-                    mutate((draft) => {
-                      deleteObject(draft, selectedObject.id)
-                      setSelectedId(undefined)
-                    })
-                  }
-                >
-                  Delete
-                </button>
-              </div>
-            </section>
-          ) : (
-            <section className="inspector-section">
-              <div className="section-header">
-                <div>
-                  <p className="eyebrow">Room</p>
-                  <h2>{roomTitle}</h2>
-                </div>
-                <div className={`presence-pill ${canEdit ? 'active' : ''}`}>
-                  {canEdit ? `Editing as ${currentPlayer?.name}` : 'Observe only'}
-                </div>
-              </div>
+                    <label className="field">
+                      <span>Face Sheet URL</span>
+                      <input
+                        disabled={!canEdit}
+                        type="url"
+                        value={sheetDeckDraft.faceUrl}
+                        onChange={(event) =>
+                          setSheetDeckDraft((current) => ({
+                            ...current,
+                            faceUrl: event.target.value,
+                          }))
+                        }
+                        placeholder="https://example.com/cards.png"
+                      />
+                    </label>
 
-              <label className="field">
-                <span>Table Name</span>
-                <input
-                  disabled={!canEdit}
-                  value={rootPlaneLabel(room)}
-                  onChange={(event) =>
-                    mutate((draft) => {
-                      getRootPlane(draft).name = event.target.value
-                    })
-                  }
-                />
-              </label>
+                    <div className="sheet-grid">
+                      <label className="field">
+                        <span>Rows</span>
+                        <input
+                          disabled={!canEdit}
+                          inputMode="numeric"
+                          value={sheetDeckDraft.faceRows}
+                          onChange={(event) =>
+                            setSheetDeckDraft((current) => ({
+                              ...current,
+                              faceRows: event.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Cols</span>
+                        <input
+                          disabled={!canEdit}
+                          inputMode="numeric"
+                          value={sheetDeckDraft.faceCols}
+                          onChange={(event) =>
+                            setSheetDeckDraft((current) => ({
+                              ...current,
+                              faceCols: event.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Cards</span>
+                        <input
+                          disabled={!canEdit}
+                          inputMode="numeric"
+                          value={sheetDeckDraft.faceCount}
+                          onChange={(event) =>
+                            setSheetDeckDraft((current) => ({
+                              ...current,
+                              faceCount: event.target.value,
+                            }))
+                          }
+                          placeholder={facePreviewCount ? String(facePreviewCount) : 'auto'}
+                        />
+                      </label>
+                    </div>
+                    <p className="field-note">
+                      Faces fill left to right, top to bottom. Blank card count defaults to rows × cols.
+                    </p>
 
-              <div className="button-row">
-                <button disabled={!canEdit} onClick={createCardHere}>
-                  Create Card
-                </button>
-                <button disabled={!canEdit} onClick={createDeckHere}>
-                  Create Deck
-                </button>
-                <button disabled={!canEdit} onClick={() => mutate((draft) => advanceTurn(draft))}>
-                  Advance Turn
-                </button>
-              </div>
+                    <label className="field">
+                      <span>Back Sheet URL</span>
+                      <input
+                        disabled={!canEdit}
+                        type="url"
+                        value={sheetDeckDraft.backUrl}
+                        onChange={(event) =>
+                          setSheetDeckDraft((current) => ({
+                            ...current,
+                            backUrl: event.target.value,
+                          }))
+                        }
+                        placeholder="Optional"
+                      />
+                    </label>
 
-              <section className="inspector-group">
-                <h4>Import Deck From Sprite Sheet</h4>
-                <label className="field">
-                  <span>Deck Name</span>
-                  <input
-                    disabled={!canEdit}
-                    value={sheetDeckDraft.name}
-                    onChange={(event) =>
-                      setSheetDeckDraft((current) => ({
-                        ...current,
-                        name: event.target.value,
-                      }))
-                    }
-                    placeholder="Imported Deck"
-                  />
-                </label>
+                    <div className="sheet-grid">
+                      <label className="field">
+                        <span>Rows</span>
+                        <input
+                          disabled={!canEdit}
+                          inputMode="numeric"
+                          value={sheetDeckDraft.backRows}
+                          onChange={(event) =>
+                            setSheetDeckDraft((current) => ({
+                              ...current,
+                              backRows: event.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Cols</span>
+                        <input
+                          disabled={!canEdit}
+                          inputMode="numeric"
+                          value={sheetDeckDraft.backCols}
+                          onChange={(event) =>
+                            setSheetDeckDraft((current) => ({
+                              ...current,
+                              backCols: event.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Backs</span>
+                        <input
+                          disabled={!canEdit}
+                          inputMode="numeric"
+                          value={sheetDeckDraft.backCount}
+                          onChange={(event) =>
+                            setSheetDeckDraft((current) => ({
+                              ...current,
+                              backCount: event.target.value,
+                            }))
+                          }
+                          placeholder={backPreviewCount ? String(backPreviewCount) : 'auto'}
+                        />
+                      </label>
+                    </div>
+                    <p className="field-note">
+                      If there are fewer backs than faces, the backs cycle through the deck.
+                    </p>
 
-                <label className="field">
-                  <span>Face Sheet URL</span>
-                  <input
-                    disabled={!canEdit}
-                    type="url"
-                    value={sheetDeckDraft.faceUrl}
-                    onChange={(event) =>
-                      setSheetDeckDraft((current) => ({
-                        ...current,
-                        faceUrl: event.target.value,
-                      }))
-                    }
-                    placeholder="https://example.com/cards.png"
-                  />
-                </label>
-
-                <div className="sheet-grid">
-                  <label className="field">
-                    <span>Rows</span>
-                    <input
-                      disabled={!canEdit}
-                      inputMode="numeric"
-                      value={sheetDeckDraft.faceRows}
-                      onChange={(event) =>
-                        setSheetDeckDraft((current) => ({
-                          ...current,
-                          faceRows: event.target.value,
-                        }))
-                      }
-                    />
-                  </label>
-                  <label className="field">
-                    <span>Cols</span>
-                    <input
-                      disabled={!canEdit}
-                      inputMode="numeric"
-                      value={sheetDeckDraft.faceCols}
-                      onChange={(event) =>
-                        setSheetDeckDraft((current) => ({
-                          ...current,
-                          faceCols: event.target.value,
-                        }))
-                      }
-                    />
-                  </label>
-                  <label className="field">
-                    <span>Cards</span>
-                    <input
-                      disabled={!canEdit}
-                      inputMode="numeric"
-                      value={sheetDeckDraft.faceCount}
-                      onChange={(event) =>
-                        setSheetDeckDraft((current) => ({
-                          ...current,
-                          faceCount: event.target.value,
-                        }))
-                      }
-                      placeholder={facePreviewCount ? String(facePreviewCount) : 'auto'}
-                    />
-                  </label>
-                </div>
-                <p className="field-note">
-                  Faces fill left to right, top to bottom. Blank card count defaults to rows × cols.
-                </p>
-
-                <label className="field">
-                  <span>Back Sheet URL</span>
-                  <input
-                    disabled={!canEdit}
-                    type="url"
-                    value={sheetDeckDraft.backUrl}
-                    onChange={(event) =>
-                      setSheetDeckDraft((current) => ({
-                        ...current,
-                        backUrl: event.target.value,
-                      }))
-                    }
-                    placeholder="Optional"
-                  />
-                </label>
-
-                <div className="sheet-grid">
-                  <label className="field">
-                    <span>Rows</span>
-                    <input
-                      disabled={!canEdit}
-                      inputMode="numeric"
-                      value={sheetDeckDraft.backRows}
-                      onChange={(event) =>
-                        setSheetDeckDraft((current) => ({
-                          ...current,
-                          backRows: event.target.value,
-                        }))
-                      }
-                    />
-                  </label>
-                  <label className="field">
-                    <span>Cols</span>
-                    <input
-                      disabled={!canEdit}
-                      inputMode="numeric"
-                      value={sheetDeckDraft.backCols}
-                      onChange={(event) =>
-                        setSheetDeckDraft((current) => ({
-                          ...current,
-                          backCols: event.target.value,
-                        }))
-                      }
-                    />
-                  </label>
-                  <label className="field">
-                    <span>Backs</span>
-                    <input
-                      disabled={!canEdit}
-                      inputMode="numeric"
-                      value={sheetDeckDraft.backCount}
-                      onChange={(event) =>
-                        setSheetDeckDraft((current) => ({
-                          ...current,
-                          backCount: event.target.value,
-                        }))
-                      }
-                      placeholder={backPreviewCount ? String(backPreviewCount) : 'auto'}
-                    />
-                  </label>
-                </div>
-                <p className="field-note">
-                  If there are fewer backs than faces, the backs cycle through the deck.
-                </p>
-
-                <div className="button-row">
-                  <button disabled={!canEdit} onClick={createDeckFromSheet}>
-                    Create Deck From Sheet
-                  </button>
-                </div>
-                {sheetDeckError ? <p className="inline-error">{sheetDeckError}</p> : null}
-              </section>
-
-              <section className="inspector-group">
-                <h4>Players</h4>
-                <div className="player-list">
-                  {playerList.map((player) => (
-                    <div className="player-card" key={player.id}>
-                      <div>
-                        <strong>{player.name}</strong>
-                        <small>{player.id === room.turnPlayerId ? 'Current turn' : 'Waiting'}</small>
-                      </div>
-                      <button disabled={!canEdit} onClick={() => mutate((draft) => setTurnPlayer(draft, player.id))}>
-                        Make Active
+                    <div className="button-row">
+                      <button disabled={!canEdit} onClick={createDeckFromSheet}>
+                        Create Deck From Sheet
                       </button>
                     </div>
-                  ))}
-                  {playerList.length === 0 ? <p className="empty-copy">Nobody has joined this room yet.</p> : null}
-                </div>
-              </section>
+                    {sheetDeckError ? <p className="inline-error">{sheetDeckError}</p> : null}
+                  </section>
+
+                  <section className="inspector-group">
+                    <h4>Players</h4>
+                    <div className="player-list">
+                      {playerList.map((player) => (
+                        <div className="player-card" key={player.id}>
+                          <div>
+                            <strong>{player.name}</strong>
+                            <small>{player.id === room.turnPlayerId ? 'Current turn' : 'Waiting'}</small>
+                          </div>
+                          <button disabled={!canEdit} onClick={() => mutate((draft) => setTurnPlayer(draft, player.id))}>
+                            Make Active
+                          </button>
+                        </div>
+                      ))}
+                      {playerList.length === 0 ? <p className="empty-copy">Nobody has joined this room yet.</p> : null}
+                    </div>
+                  </section>
+                </>
+              )}
             </section>
-          )}
-        </aside>
+          </aside>
+        ) : null}
       </div>
     </div>
   )

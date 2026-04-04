@@ -3,6 +3,7 @@ import {
   addCardToDeck,
   createCardOnPlane,
   createDeckOnPlane,
+  createDeckFromSpriteSheetOnPlane,
   createRoomDoc,
   drawFromDeck,
   duplicateObject,
@@ -34,6 +35,83 @@ describe('room model', () => {
     const drawn = drawFromDeck(room, deckId)
     expect(drawn).toBe(cardId)
     expect(getRootPlane(room).childOrder).toContain(cardId)
+  })
+
+  it('adopts the first inserted card size for an empty deck', () => {
+    const room = createRoomDoc()
+    const cardId = createCardOnPlane(room, room.rootId, { x: 10, y: 20, rotation: 0 })
+    const deckId = createDeckOnPlane(room, room.rootId, { x: 30, y: 40, rotation: 0 })
+
+    expect(room.objects[cardId].type).toBe('card')
+    expect(room.objects[deckId].type).toBe('deck')
+
+    if (room.objects[cardId].type === 'card') {
+      room.objects[cardId].size = { width: 200, height: 96 }
+    }
+
+    addCardToDeck(room, cardId, deckId)
+
+    expect(room.objects[deckId].type).toBe('deck')
+    expect(room.objects[deckId].type === 'deck' ? room.objects[deckId].size : undefined).toEqual({
+      width: 200,
+      height: 96,
+    })
+  })
+
+  it('keeps deck size until a new card is added to an empty deck', () => {
+    const room = createRoomDoc()
+    const cardA = createCardOnPlane(room, room.rootId, { x: 0, y: 0, rotation: 0 }, 'A')
+    const cardB = createCardOnPlane(room, room.rootId, { x: 0, y: 0, rotation: 0 }, 'B')
+    const deckId = createDeckOnPlane(room, room.rootId, { x: 30, y: 40, rotation: 0 })
+
+    if (room.objects[cardA].type === 'card') {
+      room.objects[cardA].size = { width: 180, height: 120 }
+    }
+    if (room.objects[cardB].type === 'card') {
+      room.objects[cardB].size = { width: 90, height: 200 }
+    }
+
+    addCardToDeck(room, cardA, deckId)
+    expect(room.objects[deckId].type === 'deck' ? room.objects[deckId].size : undefined).toEqual({
+      width: 180,
+      height: 120,
+    })
+
+    expect(drawFromDeck(room, deckId)).toBe(cardA)
+    expect(room.objects[deckId].type === 'deck' ? room.objects[deckId].size : undefined).toEqual({
+      width: 180,
+      height: 120,
+    })
+
+    addCardToDeck(room, cardB, deckId)
+    expect(room.objects[deckId].type === 'deck' ? room.objects[deckId].size : undefined).toEqual({
+      width: 90,
+      height: 200,
+    })
+  })
+
+  it('adopts imported card size when creating a deck from a sprite sheet', () => {
+    const room = createRoomDoc()
+    const deckId = createDeckFromSpriteSheetOnPlane(room, room.rootId, { x: 0, y: 0, rotation: 0 }, {
+      faces: {
+        url: 'https://example.com/cards.png',
+        rows: 2,
+        cols: 2,
+        count: 4,
+      },
+      cardSize: {
+        width: 144,
+        height: 92,
+      },
+    })
+
+    expect(deckId).toBeTruthy()
+    const deck = room.objects[deckId!]
+    expect(deck.type).toBe('deck')
+    expect(deck.type === 'deck' ? deck.size : undefined).toEqual({
+      width: 144,
+      height: 92,
+    })
   })
 
   it('duplicates deck contents recursively', () => {

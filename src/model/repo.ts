@@ -6,7 +6,6 @@ import {
   type AutomergeUrl,
   WebSocketClientAdapter,
 } from '@automerge/react'
-import { createRoomDoc } from './room'
 
 const ROOM_HASH_PREFIX = '#room='
 
@@ -27,14 +26,24 @@ export function roomHash(roomUrl: string) {
   return `${ROOM_HASH_PREFIX}${encodeURIComponent(roomUrl)}`
 }
 
-export async function ensureRoomUrl() {
-  const existing = parseRoomUrlFromHash()
-  if (existing) {
-    return existing
+export function parseRoomReference(rawValue: string) {
+  const trimmed = rawValue.trim()
+  if (!trimmed) {
+    return undefined
   }
 
-  const handle = repo.create(createRoomDoc())
-  const url = handle.url as AutomergeUrl
-  window.location.hash = roomHash(url)
-  return url
+  if (isValidAutomergeUrl(trimmed)) {
+    return trimmed as AutomergeUrl
+  }
+
+  if (trimmed.startsWith(ROOM_HASH_PREFIX)) {
+    return parseRoomUrlFromHash(trimmed)
+  }
+
+  try {
+    const url = new URL(trimmed)
+    return parseRoomUrlFromHash(url.hash)
+  } catch {
+    return undefined
+  }
 }

@@ -2,15 +2,12 @@ import { useEffect, useState } from 'react'
 import type { AutomergeUrl } from '@automerge/react'
 import { parseRoomUrlFromHash } from '../model/repo'
 
-export function useRoomHash(initialRoomUrl: AutomergeUrl) {
-  const [roomUrl, setRoomUrl] = useState<AutomergeUrl>(parseRoomUrlFromHash() ?? initialRoomUrl)
+export function useRoomHash() {
+  const [roomUrl, setRoomUrl] = useState<AutomergeUrl | undefined>(() => parseRoomUrlFromHash())
 
   useEffect(() => {
     const onHashChange = () => {
-      const next = parseRoomUrlFromHash()
-      if (next) {
-        setRoomUrl(next)
-      }
+      setRoomUrl(parseRoomUrlFromHash())
     }
 
     window.addEventListener('hashchange', onHashChange)

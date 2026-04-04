@@ -124,8 +124,13 @@ export function createDeck(name = 'Deck'): Deck {
     parentId: null,
     locked: false,
     meta: {},
+    size: { ...DEFAULT_CARD_SIZE },
     childIds: [],
   }
+}
+
+function setDeckSizeFromCard(deck: Deck, card: Card) {
+  deck.size = { ...card.size }
 }
 
 function addChildToPlane(
@@ -181,6 +186,8 @@ export function addCardToDeck(room: RoomDoc, cardId: Id, deckId: Id, index?: num
     return
   }
 
+  const shouldAdoptCardSize = deck.childIds.length === 0
+
   detachObject(room, cardId)
   card.parentId = deck.id
 
@@ -192,6 +199,10 @@ export function addCardToDeck(room: RoomDoc, cardId: Id, deckId: Id, index?: num
     deck.childIds.push(card.id)
   } else {
     deck.childIds.splice(index, 0, card.id)
+  }
+
+  if (shouldAdoptCardSize) {
+    setDeckSizeFromCard(deck, card)
   }
 }
 
@@ -206,6 +217,8 @@ export function mergeDeckIntoDeck(room: RoomDoc, sourceDeckId: Id, targetDeckId:
     return
   }
 
+  const shouldAdoptSourceSize = targetDeck.childIds.length === 0 && sourceDeck.childIds.length > 0
+
   for (const cardId of sourceDeck.childIds) {
     const card = room.objects[cardId]
     if (!isCard(card)) {
@@ -213,6 +226,10 @@ export function mergeDeckIntoDeck(room: RoomDoc, sourceDeckId: Id, targetDeckId:
     }
     card.parentId = targetDeck.id
     targetDeck.childIds.push(card.id)
+  }
+
+  if (shouldAdoptSourceSize) {
+    targetDeck.size = { ...sourceDeck.size }
   }
 
   sourceDeck.childIds = []
@@ -315,7 +332,6 @@ export function createDeckFromSpriteSheetOnPlane(
 
   for (let index = 0; index < faceCount; index += 1) {
     const card = createCard(`Card ${index + 1}`)
-    card.parentId = deck.id
     if (options.cardSize) {
       card.size = { ...options.cardSize }
     }
@@ -326,7 +342,7 @@ export function createDeckFromSpriteSheetOnPlane(
     }
 
     room.objects[card.id] = card
-    insertedDeck.childIds.push(card.id)
+    addCardToDeck(room, card.id, insertedDeck.id)
   }
 
   return deck.id
@@ -516,6 +532,7 @@ function duplicateDeck(deck: Deck): Deck {
     id: createObjectId('deck'),
     name: `${deck.name} Copy`,
     meta: { ...deck.meta },
+    size: { ...deck.size },
     childIds: [] as Id[],
     parentId: null,
   }
