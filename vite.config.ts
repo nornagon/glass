@@ -3,7 +3,11 @@ import { defineConfig } from 'vite'
 import { VitePWA } from 'vite-plugin-pwa'
 import wasm from 'vite-plugin-wasm'
 
+const repoName = process.env.GITHUB_REPOSITORY?.split('/')[1]
+const base = process.env.GITHUB_ACTIONS === 'true' && repoName ? `/${repoName}/` : '/'
+
 export default defineConfig({
+  base,
   build: {
     chunkSizeWarningLimit: 600,
     rollupOptions: {
@@ -47,7 +51,8 @@ export default defineConfig({
         theme_color: '#c96b2c',
         background_color: '#f2ead9',
         display: 'standalone',
-        start_url: '/',
+        start_url: base,
+        scope: base,
         icons: [
           {
             src: 'icon.svg',
