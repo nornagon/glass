@@ -76,7 +76,7 @@ interface AuxiliaryTouchState {
 
 const TAP_GRACE_DISTANCE = 10
 const DECK_LONG_PRESS_MS = 360
-const MIN_ZOOM_SCALE = 0.35
+const MIN_ZOOM_SCALE = 0.2
 const MAX_ZOOM_SCALE = 2.5
 
 function snapRotationAngle(angle: number) {
@@ -1041,14 +1041,8 @@ export function BoardView({
         .pinch()
         .wheel({ smooth: 6, trackpadPinch: true })
         .decelerate({ friction: 0.92 })
-        .clampZoom({ minScale: 0.35, maxScale: 2.5 })
+        .clampZoom({ minScale: MIN_ZOOM_SCALE, maxScale: MAX_ZOOM_SCALE })
 
-      viewport.forceHitArea = new Rectangle(
-        -BOARD_WORLD_SIZE / 2,
-        -BOARD_WORLD_SIZE / 2,
-        BOARD_WORLD_SIZE,
-        BOARD_WORLD_SIZE,
-      )
       viewport.eventMode = 'static'
       viewport.on('pointerdown', (event) => {
         if (dragRef.current) {

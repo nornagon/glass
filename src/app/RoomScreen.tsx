@@ -36,7 +36,7 @@ import {
   bringObjectForward,
   moveObject,
 } from '../model/room'
-import type { CameraState, Card, GameObject, RoomDoc, SpriteSpec } from '../model/types'
+import type { Board, CameraState, Card, GameObject, RoomDoc, SpriteSpec } from '../model/types'
 import { roomHash } from '../model/repo'
 import { DEFAULT_BOARD_SIZE, DEFAULT_CARD_SIZE } from '../model/types'
 
@@ -90,6 +90,38 @@ function cardSizeForAspect(aspect: number) {
     width: Math.max(48, Math.round(Math.sqrt(targetArea * safeAspect))),
     height: Math.max(48, Math.round(Math.sqrt(targetArea / safeAspect))),
   }
+}
+
+async function resolveSpriteAspectRatio(spec: SpriteSpec) {
+  if (spec.kind !== 'image-url' || !spec.url) {
+    return undefined
+  }
+
+  const dimensions = await loadImageDimensions(spec.url)
+  const cropWidth = spec.crop?.width ?? 1
+  const cropHeight = spec.crop?.height ?? 1
+  const aspect = (dimensions.width * cropWidth) / (dimensions.height * cropHeight)
+  return Number.isFinite(aspect) && aspect > 0 ? aspect : undefined
+}
+
+async function resolveBoardResizeAspectRatio(board: Board) {
+  const faceAspect = await resolveSpriteAspectRatio(board.face).catch(() => undefined)
+  if (faceAspect) {
+    return faceAspect
+  }
+
+  const metaAspect = typeof board.meta.aspectRatio === 'number' && board.meta.aspectRatio > 0
+    ? board.meta.aspectRatio
+    : undefined
+  if (metaAspect) {
+    return metaAspect
+  }
+
+  if (board.size.width > 0 && board.size.height > 0) {
+    return board.size.width / board.size.height
+  }
+
+  return DEFAULT_BOARD_SIZE.width / DEFAULT_BOARD_SIZE.height
 }
 
 function updateSpriteCrop(value: SpriteSpec, partial: Partial<NonNullable<SpriteSpec['crop']>>): SpriteSpec {
@@ -391,6 +423,83 @@ function MetaEditor({
   )
 }
 
+function BoardSizeEditor({
+  width,
+  height,
+  disabled,
+  onCommitWidth,
+  onCommitHeight,
+}: {
+  width: number
+  height: number
+  disabled: boolean
+  onCommitWidth: (width: number) => void | Promise<void>
+  onCommitHeight: (height: number) => void | Promise<void>
+}) {
+  const [widthDraft, setWidthDraft] = useState(() => String(width))
+  const [heightDraft, setHeightDraft] = useState(() => String(height))
+
+  useEffect(() => {
+    setWidthDraft(String(width))
+  }, [width])
+
+  useEffect(() => {
+    setHeightDraft(String(height))
+  }, [height])
+
+  function commitWidth() {
+    const nextWidth = Math.max(48, Number.parseInt(widthDraft, 10) || width)
+    void onCommitWidth(nextWidth)
+  }
+
+  function commitHeight() {
+    const nextHeight = Math.max(48, Number.parseInt(heightDraft, 10) || height)
+    void onCommitHeight(nextHeight)
+  }
+
+  return (
+    <>
+      <div className="field-row">
+        <label className="field">
+          <span>Width</span>
+          <input
+            disabled={disabled}
+            type="number"
+            min="48"
+            step="1"
+            value={widthDraft}
+            onChange={(event) => setWidthDraft(event.target.value)}
+            onBlur={commitWidth}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.currentTarget.blur()
+              }
+            }}
+          />
+        </label>
+        <label className="field">
+          <span>Height</span>
+          <input
+            disabled={disabled}
+            type="number"
+            min="48"
+            step="1"
+            value={heightDraft}
+            onChange={(event) => setHeightDraft(event.target.value)}
+            onBlur={commitHeight}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.currentTarget.blur()
+              }
+            }}
+          />
+        </label>
+      </div>
+      <p className="field-note">Aspect ratio is locked while resizing boards.</p>
+    </>
+  )
+}
+
 export function RoomScreen({ roomUrl }: { roomUrl: AutomergeUrl }) {
   return <RoomScreenInner key={roomUrl} roomUrl={roomUrl} />
 }
@@ -462,6 +571,13 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
 
   function toggleRoomPanel() {
     setPanelMode((current) => (current === 'room' ? undefined : 'room'))
+  }
+
+  function updateSelection(nextId?: string) {
+    setSelectedId(nextId)
+    if (!nextId) {
+      setPanelMode((current) => (current === 'selection' ? undefined : current))
+    }
   }
 
   function openSelectionPanel() {
@@ -607,6 +723,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
       }
 
       createdBoard.size = size
+      createdBoard.meta.aspectRatio = size.width / size.height
       createdBoard.face = {
         kind: 'image-url',
         url: faceUrl,
@@ -766,7 +883,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
             setCamera(next)
             saveCameraState(roomUrl, next)
           }}
-          onSelect={setSelectedId}
+          onSelect={updateSelection}
           onCommitTransform={(objectId, transform) =>
             mutate((draft) => {
               moveObject(draft, objectId, transform)
@@ -789,7 +906,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
               }
             })
             if (droppedObject?.type === 'deck' && selectedId === objectId) {
-              setSelectedId(deckId)
+              updateSelection(deckId)
             }
           }}
           onLiftTopCardFromDeck={(deckId) => {
@@ -798,7 +915,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
               liftedCardId = liftTopCardFromDeck(draft, deckId)
             })
             if (liftedCardId) {
-              setSelectedId(liftedCardId)
+              updateSelection(liftedCardId)
             }
             return liftedCardId
           }}
@@ -892,7 +1009,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                         mutate((draft) => {
                           const duplicateId = duplicateObject(draft, selectedObject.id)
                           if (duplicateId) {
-                            setSelectedId(duplicateId)
+                            updateSelection(duplicateId)
                           }
                         })
                       }
@@ -1045,46 +1162,41 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                         </button>
                       </div>
 
-                      <div className="field-row">
-                        <label className="field">
-                          <span>Width</span>
-                          <input
-                            disabled={!canEdit}
-                            type="number"
-                            min="48"
-                            step="1"
-                            value={selectedObject.size.width}
-                            onChange={(event) =>
-                              mutate((draft) => {
-                                const width = Math.max(48, Number.parseInt(event.target.value, 10) || 48)
-                                const board = draft.objects[selectedObject.id]
-                                if (isBoard(board)) {
-                                  board.size.width = width
-                                }
-                              })
+                      <BoardSizeEditor
+                        width={selectedObject.size.width}
+                        height={selectedObject.size.height}
+                        disabled={!canEdit}
+                        onCommitWidth={async (width) => {
+                          const board = room.objects[selectedObject.id]
+                          if (!isBoard(board)) {
+                            return
+                          }
+
+                          const aspectRatio = await resolveBoardResizeAspectRatio(board)
+                          mutate((draft) => {
+                            const nextBoard = draft.objects[selectedObject.id]
+                            if (isBoard(nextBoard)) {
+                              nextBoard.size.width = width
+                              nextBoard.size.height = Math.max(48, Math.round(width / aspectRatio))
                             }
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Height</span>
-                          <input
-                            disabled={!canEdit}
-                            type="number"
-                            min="48"
-                            step="1"
-                            value={selectedObject.size.height}
-                            onChange={(event) =>
-                              mutate((draft) => {
-                                const height = Math.max(48, Number.parseInt(event.target.value, 10) || 48)
-                                const board = draft.objects[selectedObject.id]
-                                if (isBoard(board)) {
-                                  board.size.height = height
-                                }
-                              })
+                          })
+                        }}
+                        onCommitHeight={async (height) => {
+                          const board = room.objects[selectedObject.id]
+                          if (!isBoard(board)) {
+                            return
+                          }
+
+                          const aspectRatio = await resolveBoardResizeAspectRatio(board)
+                          mutate((draft) => {
+                            const nextBoard = draft.objects[selectedObject.id]
+                            if (isBoard(nextBoard)) {
+                              nextBoard.size.width = Math.max(48, Math.round(height * aspectRatio))
+                              nextBoard.size.height = height
                             }
-                          />
-                        </label>
-                      </div>
+                          })
+                        }}
+                      />
 
                       <SpriteEditor
                         label="Face"
@@ -1133,7 +1245,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                       onClick={() =>
                         mutate((draft) => {
                           deleteObject(draft, selectedObject.id)
-                          setSelectedId(undefined)
+                          updateSelection(undefined)
                         })
                       }
                     >
