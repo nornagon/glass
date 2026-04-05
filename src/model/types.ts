@@ -31,7 +31,7 @@ export interface Player {
 
 export interface GameObjectBase {
   id: Id
-  type: 'plane' | 'deck' | 'card'
+  type: 'plane' | 'deck' | 'card' | 'board'
   name: string
   parentId: Id | null
   locked: boolean
@@ -64,7 +64,17 @@ export interface Card extends GameObjectBase {
   visibility: true | PlayerId[]
 }
 
-export type GameObject = Plane | Deck | Card
+export interface Board extends GameObjectBase {
+  type: 'board'
+  size: {
+    width: number
+    height: number
+  }
+  face: SpriteSpec
+  back: SpriteSpec
+}
+
+export type GameObject = Plane | Deck | Card | Board
 
 export interface RoomDoc {
   version: 1
@@ -100,6 +110,11 @@ export interface RoomTemplateEntry {
 export const DEFAULT_CARD_SIZE = {
   width: 120,
   height: 168,
+} as const
+
+export const DEFAULT_BOARD_SIZE = {
+  width: 960,
+  height: 720,
 } as const
 
 export const BOARD_WORLD_SIZE = 5000

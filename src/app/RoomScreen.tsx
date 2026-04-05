@@ -11,17 +11,20 @@ import {
   advanceTurn,
   bringObjectToFront,
   canSeeCardFace,
+  createBoardOnPlane,
   createCardOnPlane,
   createDeckOnPlane,
   createDeckFromSpriteSheetOnPlane,
   createPlayerId,
   deleteObject,
   drawFromDeck,
+  flipBoard,
   flipDeck,
   duplicateObject,
   flipCard,
   formatRoomTitle,
   getRootPlane,
+  isBoard,
   isCard,
   isDeck,
   liftTopCardFromDeck,
@@ -35,7 +38,7 @@ import {
 } from '../model/room'
 import type { CameraState, Card, GameObject, RoomDoc, SpriteSpec } from '../model/types'
 import { roomHash } from '../model/repo'
-import { DEFAULT_CARD_SIZE } from '../model/types'
+import { DEFAULT_BOARD_SIZE, DEFAULT_CARD_SIZE } from '../model/types'
 
 const DEFAULT_CAMERA: CameraState = {
   centerX: 0,
@@ -114,7 +117,14 @@ interface SheetDeckDraft {
   backCount: string
 }
 
+interface BoardDraft {
+  name: string
+  faceUrl: string
+  backUrl: string
+}
+
 type PanelMode = 'room' | 'selection'
+type CreationMode = 'board' | 'deck-sheet'
 
 function defaultSheetDeckDraft(): SheetDeckDraft {
   return {
@@ -127,6 +137,14 @@ function defaultSheetDeckDraft(): SheetDeckDraft {
     backRows: '1',
     backCols: '1',
     backCount: '',
+  }
+}
+
+function defaultBoardDraft(): BoardDraft {
+  return {
+    name: '',
+    faceUrl: '',
+    backUrl: '',
   }
 }
 
@@ -382,11 +400,17 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   const [selectedId, setSelectedId] = useState<string>()
   const [joinedPlayerId, setJoinedPlayerId] = useState<string | undefined>(() => loadJoinedPlayerId(roomUrl))
   const [panelMode, setPanelMode] = useState<PanelMode | undefined>()
+  const [creationMode, setCreationMode] = useState<CreationMode | undefined>()
   const [camera, setCamera] = useState<CameraState>(() => loadCameraState(roomUrl) ?? DEFAULT_CAMERA)
+  const [allowSelectLocked, setAllowSelectLocked] = useState(false)
+  const [boardDraft, setBoardDraft] = useState<BoardDraft>(() => defaultBoardDraft())
+  const [boardDraftError, setBoardDraftError] = useState('')
   const [sheetDeckDraft, setSheetDeckDraft] = useState<SheetDeckDraft>(() => defaultSheetDeckDraft())
   const [sheetDeckError, setSheetDeckError] = useState('')
   const spawnCountRef = useRef(0)
   const selectedObject = selectedId ? room.objects[selectedId] : undefined
+  const boardSelectedId = selectedObject?.id
+  const visiblePanelMode = panelMode === 'selection' && !selectedObject ? undefined : panelMode
   const currentPlayer = joinedPlayerId ? room.players[joinedPlayerId] : undefined
   const canEdit = Boolean(currentPlayer)
   const roomTitle = formatRoomTitle(room)
@@ -416,12 +440,6 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     document.addEventListener('visibilitychange', onVisibilityChange)
     return () => document.removeEventListener('visibilitychange', onVisibilityChange)
   }, [joinedPlayerId, room.turnPlayerId])
-
-  useEffect(() => {
-    if (panelMode === 'selection' && !selectedObject) {
-      setPanelMode(undefined)
-    }
-  }, [panelMode, selectedObject])
 
   const playerList = useMemo(
     () =>
@@ -454,6 +472,12 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
 
   function closePanel() {
     setPanelMode(undefined)
+  }
+
+  function closeCreationFlow() {
+    setCreationMode(undefined)
+    setBoardDraftError('')
+    setSheetDeckError('')
   }
 
   function returnToLobby() {
@@ -528,6 +552,87 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     mutate((draft) => {
       createDeckOnPlane(draft, draft.rootId, nextSpawnTransform(camera, offset))
     })
+  }
+
+  function createBoardHere() {
+    const offset = spawnCountRef.current++
+    let createdBoardId: string | undefined
+    mutate((draft) => {
+      createdBoardId = createBoardOnPlane(draft, draft.rootId, nextSpawnTransform(camera, offset))
+    })
+
+    if (createdBoardId) {
+      setSelectedId(createdBoardId)
+      setPanelMode('selection')
+      setCreationMode(undefined)
+    }
+  }
+
+  async function createBoardFromImage() {
+    const faceUrl = boardDraft.faceUrl.trim()
+    if (!faceUrl) {
+      setBoardDraftError('A board image URL is required.')
+      return
+    }
+
+    let size: { width: number; height: number } = { ...DEFAULT_BOARD_SIZE }
+    try {
+      const dimensions = await loadImageDimensions(faceUrl)
+      size = {
+        width: Math.max(160, Math.round(dimensions.width)),
+        height: Math.max(160, Math.round(dimensions.height)),
+      }
+    } catch {
+      setBoardDraftError('Could not load the board image to determine board size.')
+      return
+    }
+
+    const offset = spawnCountRef.current++
+    let createdBoardId: string | undefined
+    mutate((draft) => {
+      createdBoardId = createBoardOnPlane(
+        draft,
+        draft.rootId,
+        nextSpawnTransform(camera, offset),
+        boardDraft.name.trim() || undefined,
+      )
+
+      if (!createdBoardId) {
+        return
+      }
+
+      const createdBoard = draft.objects[createdBoardId]
+      if (!isBoard(createdBoard)) {
+        return
+      }
+
+      createdBoard.size = size
+      createdBoard.face = {
+        kind: 'image-url',
+        url: faceUrl,
+        fit: 'cover',
+      }
+
+      const backUrl = boardDraft.backUrl.trim()
+      if (backUrl) {
+        createdBoard.back = {
+          kind: 'image-url',
+          url: backUrl,
+          fit: 'cover',
+        }
+      }
+    })
+
+    if (!createdBoardId) {
+      setBoardDraftError('Could not create the board from that image.')
+      return
+    }
+
+    setBoardDraft(defaultBoardDraft())
+    setBoardDraftError('')
+    setSelectedId(createdBoardId)
+    setPanelMode('selection')
+    setCreationMode(undefined)
   }
 
   async function createDeckFromSheet() {
@@ -616,6 +721,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     setSelectedId(createdDeckId)
     setSheetDeckError('')
     setSheetDeckDraft(defaultSheetDeckDraft())
+    setCreationMode(undefined)
   }
 
   const turnPlayer = room.turnPlayerId ? room.players[room.turnPlayerId] : undefined
@@ -651,9 +757,10 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
           key={roomUrl}
           room={room}
           roomUrl={roomUrl}
-          selectedId={selectedObject?.id}
+          selectedId={boardSelectedId}
           currentPlayerId={currentPlayer?.id}
           canEdit={canEdit}
+          allowSelectLocked={allowSelectLocked}
           initialCamera={camera}
           onCameraChange={(next) => {
             setCamera(next)
@@ -698,6 +805,11 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
           onFlipCard={(cardId) =>
             mutate((draft) => {
               flipCard(draft, cardId)
+            })
+          }
+          onFlipBoard={(boardId) =>
+            mutate((draft) => {
+              flipBoard(draft, boardId)
             })
           }
           onFlipDeck={(deckId) =>
@@ -745,11 +857,11 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
           </div>
         </header>
 
-        {panelMode && (panelMode !== 'selection' || selectedObject) ? (
+        {visiblePanelMode && (visiblePanelMode !== 'selection' || selectedObject) ? (
           <aside className="inspector">
             <section className="inspector-section">
               <div className="inspector-toolbar">
-                {panelMode === 'selection' && selectedObject ? (
+                {visiblePanelMode === 'selection' && selectedObject ? (
                   <div>
                     <p className="eyebrow">{selectedObject.type}</p>
                     <h2>{selectedObject.name}</h2>
@@ -765,7 +877,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                 </button>
               </div>
 
-              {panelMode === 'selection' && selectedObject ? (
+              {visiblePanelMode === 'selection' && selectedObject ? (
                 <>
                   <div className="button-row">
                     <button disabled={!canEdit} onClick={() => mutate((draft) => bringObjectForward(draft, selectedObject.id))}>
@@ -925,6 +1037,84 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                     </>
                   ) : null}
 
+                  {isBoard(selectedObject) ? (
+                    <>
+                      <div className="button-row">
+                        <button disabled={!canEdit} onClick={() => mutate((draft) => flipBoard(draft, selectedObject.id))}>
+                          {selectedObject.meta.faceUp === false ? 'Show Face' : 'Show Back'}
+                        </button>
+                      </div>
+
+                      <div className="field-row">
+                        <label className="field">
+                          <span>Width</span>
+                          <input
+                            disabled={!canEdit}
+                            type="number"
+                            min="48"
+                            step="1"
+                            value={selectedObject.size.width}
+                            onChange={(event) =>
+                              mutate((draft) => {
+                                const width = Math.max(48, Number.parseInt(event.target.value, 10) || 48)
+                                const board = draft.objects[selectedObject.id]
+                                if (isBoard(board)) {
+                                  board.size.width = width
+                                }
+                              })
+                            }
+                          />
+                        </label>
+                        <label className="field">
+                          <span>Height</span>
+                          <input
+                            disabled={!canEdit}
+                            type="number"
+                            min="48"
+                            step="1"
+                            value={selectedObject.size.height}
+                            onChange={(event) =>
+                              mutate((draft) => {
+                                const height = Math.max(48, Number.parseInt(event.target.value, 10) || 48)
+                                const board = draft.objects[selectedObject.id]
+                                if (isBoard(board)) {
+                                  board.size.height = height
+                                }
+                              })
+                            }
+                          />
+                        </label>
+                      </div>
+
+                      <SpriteEditor
+                        label="Face"
+                        value={selectedObject.face}
+                        disabled={!canEdit}
+                        onChange={(next) =>
+                          mutate((draft) => {
+                            const board = draft.objects[selectedObject.id]
+                            if (isBoard(board)) {
+                              board.face = next
+                            }
+                          })
+                        }
+                      />
+                      <SpriteEditor
+                        label="Back"
+                        value={selectedObject.back}
+                        disabled={!canEdit}
+                        onChange={(next) =>
+                          mutate((draft) => {
+                            const board = draft.objects[selectedObject.id]
+                            if (isBoard(board)) {
+                              board.back = next
+                            }
+                          })
+                        }
+                      />
+                    </>
+                  ) : null}
+
                   <MetaEditor
                     key={`${selectedObject.id}:${JSON.stringify(selectedObject.meta)}`}
                     object={selectedObject}
@@ -956,6 +1146,15 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                   <div className={`presence-pill ${canEdit ? 'active' : ''}`}>
                     {canEdit ? `Editing as ${currentPlayer?.name}` : 'Observe only'}
                   </div>
+
+                  <label className="toggle-row">
+                    <span>Select Locked Objects</span>
+                    <input
+                      type="checkbox"
+                      checked={allowSelectLocked}
+                      onChange={(event) => setAllowSelectLocked(event.target.checked)}
+                    />
+                  </label>
 
                   <div className="button-row">
                     <button onClick={() => void copyRoomLink()}>Share</button>
@@ -990,158 +1189,15 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                   </div>
 
                   <section className="inspector-group">
-                    <h4>Import Deck From Sprite Sheet</h4>
-                    <label className="field">
-                      <span>Deck Name</span>
-                      <input
-                        disabled={!canEdit}
-                        value={sheetDeckDraft.name}
-                        onChange={(event) =>
-                          setSheetDeckDraft((current) => ({
-                            ...current,
-                            name: event.target.value,
-                          }))
-                        }
-                        placeholder="Imported Deck"
-                      />
-                    </label>
-
-                    <label className="field">
-                      <span>Face Sheet URL</span>
-                      <input
-                        disabled={!canEdit}
-                        type="url"
-                        value={sheetDeckDraft.faceUrl}
-                        onChange={(event) =>
-                          setSheetDeckDraft((current) => ({
-                            ...current,
-                            faceUrl: event.target.value,
-                          }))
-                        }
-                        placeholder="https://example.com/cards.png"
-                      />
-                    </label>
-
-                    <div className="sheet-grid">
-                      <label className="field">
-                        <span>Rows</span>
-                        <input
-                          disabled={!canEdit}
-                          inputMode="numeric"
-                          value={sheetDeckDraft.faceRows}
-                          onChange={(event) =>
-                            setSheetDeckDraft((current) => ({
-                              ...current,
-                              faceRows: event.target.value,
-                            }))
-                          }
-                        />
-                      </label>
-                      <label className="field">
-                        <span>Cols</span>
-                        <input
-                          disabled={!canEdit}
-                          inputMode="numeric"
-                          value={sheetDeckDraft.faceCols}
-                          onChange={(event) =>
-                            setSheetDeckDraft((current) => ({
-                              ...current,
-                              faceCols: event.target.value,
-                            }))
-                          }
-                        />
-                      </label>
-                      <label className="field">
-                        <span>Cards</span>
-                        <input
-                          disabled={!canEdit}
-                          inputMode="numeric"
-                          value={sheetDeckDraft.faceCount}
-                          onChange={(event) =>
-                            setSheetDeckDraft((current) => ({
-                              ...current,
-                              faceCount: event.target.value,
-                            }))
-                          }
-                          placeholder={facePreviewCount ? String(facePreviewCount) : 'auto'}
-                        />
-                      </label>
-                    </div>
-                    <p className="field-note">
-                      Faces fill left to right, top to bottom. Blank card count defaults to rows × cols.
-                    </p>
-
-                    <label className="field">
-                      <span>Back Sheet URL</span>
-                      <input
-                        disabled={!canEdit}
-                        type="url"
-                        value={sheetDeckDraft.backUrl}
-                        onChange={(event) =>
-                          setSheetDeckDraft((current) => ({
-                            ...current,
-                            backUrl: event.target.value,
-                          }))
-                        }
-                        placeholder="Optional"
-                      />
-                    </label>
-
-                    <div className="sheet-grid">
-                      <label className="field">
-                        <span>Rows</span>
-                        <input
-                          disabled={!canEdit}
-                          inputMode="numeric"
-                          value={sheetDeckDraft.backRows}
-                          onChange={(event) =>
-                            setSheetDeckDraft((current) => ({
-                              ...current,
-                              backRows: event.target.value,
-                            }))
-                          }
-                        />
-                      </label>
-                      <label className="field">
-                        <span>Cols</span>
-                        <input
-                          disabled={!canEdit}
-                          inputMode="numeric"
-                          value={sheetDeckDraft.backCols}
-                          onChange={(event) =>
-                            setSheetDeckDraft((current) => ({
-                              ...current,
-                              backCols: event.target.value,
-                            }))
-                          }
-                        />
-                      </label>
-                      <label className="field">
-                        <span>Backs</span>
-                        <input
-                          disabled={!canEdit}
-                          inputMode="numeric"
-                          value={sheetDeckDraft.backCount}
-                          onChange={(event) =>
-                            setSheetDeckDraft((current) => ({
-                              ...current,
-                              backCount: event.target.value,
-                            }))
-                          }
-                          placeholder={backPreviewCount ? String(backPreviewCount) : 'auto'}
-                        />
-                      </label>
-                    </div>
-                    <p className="field-note">
-                      If there are fewer backs than faces, the backs cycle through the deck.
-                    </p>
-
+                    <h4>Create Components</h4>
                     <div className="button-row">
-                      <button disabled={!canEdit} onClick={createDeckFromSheet}>
-                        Create Deck From Sheet
+                      <button disabled={!canEdit} onClick={() => setCreationMode('board')}>
+                        Board From Image
+                      </button>
+                      <button disabled={!canEdit} onClick={() => setCreationMode('deck-sheet')}>
+                        Deck From Sheet
                       </button>
                     </div>
-                    {sheetDeckError ? <p className="inline-error">{sheetDeckError}</p> : null}
                   </section>
 
                   <section className="inspector-group">
@@ -1165,6 +1221,241 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
               )}
             </section>
           </aside>
+        ) : null}
+
+        {creationMode ? (
+          <div className="modal-scrim">
+            <section className="modal-card">
+              <div className="inspector-toolbar">
+                <div>
+                  <p className="eyebrow">Create</p>
+                  <h2>{creationMode === 'board' ? 'Board From Image' : 'Deck From Sprite Sheet'}</h2>
+                </div>
+                <button className="panel-close" onClick={closeCreationFlow}>
+                  Close
+                </button>
+              </div>
+
+              {creationMode === 'board' ? (
+                <div className="creation-flow">
+                  <label className="field">
+                    <span>Board Name</span>
+                    <input
+                      disabled={!canEdit}
+                      value={boardDraft.name}
+                      onChange={(event) =>
+                        setBoardDraft((current) => ({
+                          ...current,
+                          name: event.target.value,
+                        }))
+                      }
+                      placeholder="Board"
+                    />
+                  </label>
+
+                  <label className="field">
+                    <span>Face Image URL</span>
+                    <input
+                      disabled={!canEdit}
+                      type="url"
+                      value={boardDraft.faceUrl}
+                      onChange={(event) =>
+                        setBoardDraft((current) => ({
+                          ...current,
+                          faceUrl: event.target.value,
+                        }))
+                      }
+                      placeholder="https://example.com/board.png"
+                    />
+                  </label>
+
+                  <label className="field">
+                    <span>Back Image URL</span>
+                    <input
+                      disabled={!canEdit}
+                      type="url"
+                      value={boardDraft.backUrl}
+                      onChange={(event) =>
+                        setBoardDraft((current) => ({
+                          ...current,
+                          backUrl: event.target.value,
+                        }))
+                      }
+                      placeholder="Optional"
+                    />
+                  </label>
+
+                  <p className="field-note">
+                    The board size is derived from the face image aspect ratio and starts locked by default.
+                  </p>
+
+                  <div className="button-row">
+                    <button disabled={!canEdit} onClick={() => void createBoardFromImage()}>
+                      Create Board From Image
+                    </button>
+                    <button disabled={!canEdit} onClick={createBoardHere}>
+                      Blank Board
+                    </button>
+                  </div>
+                  {boardDraftError ? <p className="inline-error">{boardDraftError}</p> : null}
+                </div>
+              ) : (
+                <div className="creation-flow">
+                  <label className="field">
+                    <span>Deck Name</span>
+                    <input
+                      disabled={!canEdit}
+                      value={sheetDeckDraft.name}
+                      onChange={(event) =>
+                        setSheetDeckDraft((current) => ({
+                          ...current,
+                          name: event.target.value,
+                        }))
+                      }
+                      placeholder="Imported Deck"
+                    />
+                  </label>
+
+                  <label className="field">
+                    <span>Face Sheet URL</span>
+                    <input
+                      disabled={!canEdit}
+                      type="url"
+                      value={sheetDeckDraft.faceUrl}
+                      onChange={(event) =>
+                        setSheetDeckDraft((current) => ({
+                          ...current,
+                          faceUrl: event.target.value,
+                        }))
+                      }
+                      placeholder="https://example.com/cards.png"
+                    />
+                  </label>
+
+                  <div className="sheet-grid">
+                    <label className="field">
+                      <span>Rows</span>
+                      <input
+                        disabled={!canEdit}
+                        inputMode="numeric"
+                        value={sheetDeckDraft.faceRows}
+                        onChange={(event) =>
+                          setSheetDeckDraft((current) => ({
+                            ...current,
+                            faceRows: event.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Cols</span>
+                      <input
+                        disabled={!canEdit}
+                        inputMode="numeric"
+                        value={sheetDeckDraft.faceCols}
+                        onChange={(event) =>
+                          setSheetDeckDraft((current) => ({
+                            ...current,
+                            faceCols: event.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Cards</span>
+                      <input
+                        disabled={!canEdit}
+                        inputMode="numeric"
+                        value={sheetDeckDraft.faceCount}
+                        onChange={(event) =>
+                          setSheetDeckDraft((current) => ({
+                            ...current,
+                            faceCount: event.target.value,
+                          }))
+                        }
+                        placeholder={facePreviewCount ? String(facePreviewCount) : 'auto'}
+                      />
+                    </label>
+                  </div>
+                  <p className="field-note">
+                    Faces fill left to right, top to bottom. Blank card count defaults to rows × cols.
+                  </p>
+
+                  <label className="field">
+                    <span>Back Sheet URL</span>
+                    <input
+                      disabled={!canEdit}
+                      type="url"
+                      value={sheetDeckDraft.backUrl}
+                      onChange={(event) =>
+                        setSheetDeckDraft((current) => ({
+                          ...current,
+                          backUrl: event.target.value,
+                        }))
+                      }
+                      placeholder="Optional"
+                    />
+                  </label>
+
+                  <div className="sheet-grid">
+                    <label className="field">
+                      <span>Rows</span>
+                      <input
+                        disabled={!canEdit}
+                        inputMode="numeric"
+                        value={sheetDeckDraft.backRows}
+                        onChange={(event) =>
+                          setSheetDeckDraft((current) => ({
+                            ...current,
+                            backRows: event.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Cols</span>
+                      <input
+                        disabled={!canEdit}
+                        inputMode="numeric"
+                        value={sheetDeckDraft.backCols}
+                        onChange={(event) =>
+                          setSheetDeckDraft((current) => ({
+                            ...current,
+                            backCols: event.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Backs</span>
+                      <input
+                        disabled={!canEdit}
+                        inputMode="numeric"
+                        value={sheetDeckDraft.backCount}
+                        onChange={(event) =>
+                          setSheetDeckDraft((current) => ({
+                            ...current,
+                            backCount: event.target.value,
+                          }))
+                        }
+                        placeholder={backPreviewCount ? String(backPreviewCount) : 'auto'}
+                      />
+                    </label>
+                  </div>
+                  <p className="field-note">
+                    If there are fewer backs than faces, the backs cycle through the deck.
+                  </p>
+
+                  <div className="button-row">
+                    <button disabled={!canEdit} onClick={() => void createDeckFromSheet()}>
+                      Create Deck From Sheet
+                    </button>
+                  </div>
+                  {sheetDeckError ? <p className="inline-error">{sheetDeckError}</p> : null}
+                </div>
+              )}
+            </section>
+          </div>
         ) : null}
       </div>
     </div>

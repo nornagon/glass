@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { Application, Assets, Cache, Container, FederatedPointerEvent, Graphics, Rectangle, Sprite, Text, Texture } from 'pixi.js'
 import { Viewport } from 'pixi-viewport'
 import { BOARD_WORLD_SIZE, DEFAULT_CARD_SIZE, type CameraState, type Id, type RoomDoc, type Transform2D } from '../model/types'
-import { canSeeCardFace, getRootPlane, getTransform, isCard, isDeck } from '../model/room'
+import { canSeeCardFace, getRootPlane, getTransform, isBoard, isBoardFaceUp, isCard, isDeck } from '../model/room'
 
 interface BoardViewProps {
   room: RoomDoc
@@ -11,6 +11,7 @@ interface BoardViewProps {
   selectedId?: Id
   currentPlayerId?: string
   canEdit: boolean
+  allowSelectLocked: boolean
   initialCamera: CameraState
   onCameraChange: (camera: CameraState) => void
   onSelect: (id?: Id) => void
@@ -19,10 +20,16 @@ interface BoardViewProps {
   onBringCardToFront: (cardId: Id) => void
   onLiftTopCardFromDeck: (deckId: Id) => Id | undefined
   onFlipCard: (cardId: Id) => void
+  onFlipBoard: (boardId: Id) => void
   onFlipDeck: (deckId: Id) => void
   onDrawDeck: (deckId: Id) => void
   onShuffleDeck: (deckId: Id) => void
   onOpenSelectionPanel: () => void
+}
+
+function isMovableObjectType(room: RoomDoc, objectId: Id) {
+  const object = room.objects[objectId]
+  return Boolean(isCard(object) || isDeck(object) || isBoard(object))
 }
 
 interface RenderedObject {
@@ -196,9 +203,12 @@ function textureForSpriteSpec(
   return croppedTexture
 }
 
-function cardDimensions(room: RoomDoc, objectId: Id) {
+function objectDimensions(room: RoomDoc, objectId: Id) {
   const object = room.objects[objectId]
   if (isCard(object)) {
+    return object.size
+  }
+  if (isBoard(object)) {
     return object.size
   }
   if (isDeck(object)) {
@@ -223,7 +233,7 @@ function pointInObjectRect(room: RoomDoc, objectId: Id, point: { x: number; y: n
     return false
   }
 
-  const { width, height } = cardDimensions(room, objectId)
+  const { width, height } = objectDimensions(room, objectId)
   const dx = point.x - transform.x
   const dy = point.y - transform.y
   const sin = Math.sin(-transform.rotation)
@@ -273,6 +283,7 @@ function addSpriteContents(
   spec: { url?: string; crop?: { x: number; y: number; width: number; height: number }; fit?: 'cover' | 'contain' },
   width: number,
   height: number,
+  cornerRadius: number,
   requestRender: () => void,
 ) {
   if (!spec.url) {
@@ -313,9 +324,15 @@ function addSpriteContents(
   }
 
   const mask = new Graphics()
-  mask
-    .roundRect(-contentWidth / 2, -contentHeight / 2, contentWidth, contentHeight, Math.max(8, 18 - inset))
-    .fill({ color: '#ffffff' })
+  if (cornerRadius > 0) {
+    mask
+      .roundRect(-contentWidth / 2, -contentHeight / 2, contentWidth, contentHeight, Math.max(0, cornerRadius - inset))
+      .fill({ color: '#ffffff' })
+  } else {
+    mask
+      .rect(-contentWidth / 2, -contentHeight / 2, contentWidth, contentHeight)
+      .fill({ color: '#ffffff' })
+  }
   container.addChild(mask)
   sprite.mask = mask
   container.addChild(sprite)
@@ -333,7 +350,7 @@ function addCardContents(
     return
   }
 
-  const { width, height } = cardDimensions(room, objectId)
+  const { width, height } = objectDimensions(room, objectId)
   const spec = canSeeCardFace(object, currentPlayerId) ? object.face : object.back
 
   const card = new Graphics()
@@ -343,7 +360,7 @@ function addCardContents(
   container.addChild(card)
 
   if (spec.kind === 'image-url' && spec.url) {
-    addSpriteContents(container, spec, width, height, requestRender)
+    addSpriteContents(container, spec, width, height, 18, requestRender)
   } else {
     const text = new Text({
       text: spec.label ?? object.name,
@@ -365,6 +382,51 @@ function addCardContents(
     .roundRect(-width / 2, -height / 2, width, height, 18)
     .stroke({ width: 2, color: '#2b1b16', alpha: 0.34 })
   container.addChild(border)
+}
+
+function addBoardContents(
+  container: Container,
+  room: RoomDoc,
+  objectId: Id,
+  requestRender: () => void,
+) {
+  const object = room.objects[objectId]
+  if (!isBoard(object)) {
+    return
+  }
+
+  const { width, height } = object.size
+  const spec = isBoardFaceUp(object) ? object.face : object.back
+
+  if (spec.kind === 'image-url' && spec.url) {
+    addSpriteContents(container, spec, width, height, 0, requestRender)
+  } else {
+    const board = new Graphics()
+    board
+      .rect(-width / 2, -height / 2, width, height)
+      .fill({ color: spec.bg ?? '#d8d2c1' })
+    container.addChild(board)
+
+    const text = new Text({
+      text: spec.label ?? object.name,
+      style: {
+        fontFamily: 'Avenir Next, Trebuchet MS, sans-serif',
+        fontSize: Math.max(24, Math.min(width, height) * 0.08),
+        fill: spec.fg ?? '#1d2428',
+        align: 'center',
+        wordWrap: true,
+        wordWrapWidth: Math.max(120, width - 48),
+      },
+    })
+    text.anchor.set(0.5)
+    container.addChild(text)
+
+    const border = new Graphics()
+    border
+      .rect(-width / 2, -height / 2, width, height)
+      .stroke({ width: 2, color: '#2b1b16', alpha: 0.28 })
+    container.addChild(border)
+  }
 }
 
 function addDeckContents(
@@ -534,6 +596,7 @@ function populateViewportScene(
   selectedId: Id | undefined,
   hoverDeckId: Id | undefined,
   canEdit: boolean,
+  allowSelectLocked: boolean,
   onSelect: (id?: Id) => void,
   dragRef: React.MutableRefObject<DragState | null>,
   auxiliaryTouchRef: React.MutableRefObject<AuxiliaryTouchState>,
@@ -558,7 +621,12 @@ function populateViewportScene(
     container.position.set(transform.x, transform.y)
     container.rotation = transform.rotation
     container.eventMode = 'static'
-    container.cursor = canEdit && !object.locked ? 'grab' : 'pointer'
+    container.cursor =
+      canEdit && !object.locked
+        ? 'grab'
+        : object.locked && allowSelectLocked
+          ? 'pointer'
+          : 'default'
 
     let width = Number(DEFAULT_CARD_SIZE.width)
     let height = Number(DEFAULT_CARD_SIZE.height)
@@ -567,21 +635,35 @@ function populateViewportScene(
       width = object.size.width
       height = object.size.height
       addCardContents(container, room, objectId, currentPlayerId, requestRender)
+    } else if (isBoard(object)) {
+      width = object.size.width
+      height = object.size.height
+      addBoardContents(container, room, objectId, requestRender)
     } else if (isDeck(object)) {
-      const dimensions = cardDimensions(room, objectId)
+      const dimensions = objectDimensions(room, objectId)
       width = dimensions.width
       height = dimensions.height
       addDeckContents(container, room, objectId, currentPlayerId, requestRender)
     }
 
     const hitArea = new Graphics()
-    hitArea
-      .roundRect(-width / 2, -height / 2, width, height, 18)
-      .stroke({
-        width: hoverDeckId === objectId ? 5 : selectedId === objectId ? 4 : 0,
-        color: hoverDeckId === objectId ? '#ff8d47' : '#ffcb72',
-        alpha: hoverDeckId === objectId ? 1 : 0.95,
-      })
+    if (isBoard(object)) {
+      hitArea
+        .rect(-width / 2, -height / 2, width, height)
+        .stroke({
+          width: hoverDeckId === objectId ? 5 : selectedId === objectId ? 4 : 0,
+          color: hoverDeckId === objectId ? '#ff8d47' : '#ffcb72',
+          alpha: hoverDeckId === objectId ? 1 : 0.95,
+        })
+    } else {
+      hitArea
+        .roundRect(-width / 2, -height / 2, width, height, 18)
+        .stroke({
+          width: hoverDeckId === objectId ? 5 : selectedId === objectId ? 4 : 0,
+          color: hoverDeckId === objectId ? '#ff8d47' : '#ffcb72',
+          alpha: hoverDeckId === objectId ? 1 : 0.95,
+        })
+    }
     container.addChild(hitArea)
 
     const showsRotateHandle = selectedId === objectId && canEdit && !object.locked
@@ -613,6 +695,19 @@ function populateViewportScene(
       const isMiddleMouse = event.pointerType === 'mouse' && event.button === 1
 
       if (isMiddleMouse) {
+        return
+      }
+
+      if (object.locked) {
+        if (!allowSelectLocked) {
+          return
+        }
+
+        tapCandidateRef.current = {
+          id: objectId,
+          pointerId: event.pointerId,
+          startPointer: { x: event.global.x, y: event.global.y },
+        }
         return
       }
 
@@ -664,7 +759,7 @@ function populateViewportScene(
         onSelect(objectId)
         event.stopPropagation()
 
-        if (!canEdit || object.locked || (!isCard(object) && !isDeck(object))) {
+        if (!canEdit || object.locked || !isMovableObjectType(room, objectId)) {
           return
         }
 
@@ -695,7 +790,7 @@ function populateViewportScene(
 
       event.stopPropagation()
 
-      if (!canEdit || object.locked || (!isCard(object) && !isDeck(object))) {
+      if (!canEdit || object.locked || !isMovableObjectType(room, objectId)) {
         return
       }
 
@@ -716,10 +811,6 @@ function populateViewportScene(
       const pendingDeckPress = pendingDeckPressRef.current
       if (pendingDeckPress?.deckId === objectId && pendingDeckPress.pointerId === event.pointerId) {
         clearPendingDeckPress(pendingDeckPressRef)
-      }
-
-      if (event.pointerType !== 'touch') {
-        return
       }
 
       const candidate = tapCandidateRef.current
@@ -789,6 +880,7 @@ export function BoardView({
   selectedId,
   currentPlayerId,
   canEdit,
+  allowSelectLocked,
   initialCamera,
   onCameraChange,
   onSelect,
@@ -797,6 +889,7 @@ export function BoardView({
   onBringCardToFront,
   onLiftTopCardFromDeck,
   onFlipCard,
+  onFlipBoard,
   onFlipDeck,
   onDrawDeck,
   onShuffleDeck,
@@ -816,6 +909,7 @@ export function BoardView({
   const initialCameraRef = useRef(initialCamera)
   const currentPlayerIdRef = useRef(currentPlayerId)
   const canEditRef = useRef(canEdit)
+  const allowSelectLockedRef = useRef(allowSelectLocked)
   const [assetVersion, setAssetVersion] = useState(0)
   const [hoverDeckId, setHoverDeckId] = useState<Id | undefined>()
   const hoverDeckIdRef = useRef<Id | undefined>(hoverDeckId)
@@ -829,6 +923,7 @@ export function BoardView({
     onLiftTopCardFromDeck,
     onDropObjectToDeck,
     onFlipCard,
+    onFlipBoard,
     onSelect,
     onShuffleDeck,
   })
@@ -842,6 +937,7 @@ export function BoardView({
   initialCameraRef.current = initialCamera
   currentPlayerIdRef.current = currentPlayerId
   canEditRef.current = canEdit
+  allowSelectLockedRef.current = allowSelectLocked
   hoverDeckIdRef.current = hoverDeckId
   callbacksRef.current = {
     onCameraChange,
@@ -852,6 +948,7 @@ export function BoardView({
     onLiftTopCardFromDeck,
     onDropObjectToDeck,
     onFlipCard,
+    onFlipBoard,
     onSelect,
     onShuffleDeck,
   }
@@ -861,7 +958,7 @@ export function BoardView({
       return []
     }
     const object = room.objects[selectedId]
-    if (!object || !canEdit || object.locked) {
+    if (!object || !canEdit) {
       return []
     }
 
@@ -881,8 +978,15 @@ export function BoardView({
       ]
     }
 
+    if (object.type === 'board') {
+      return [
+        { label: 'Flip', onClick: () => onFlipBoard(object.id) },
+        { label: '...', onClick: onOpenSelectionPanel },
+      ]
+    }
+
     return []
-  }, [canEdit, onDrawDeck, onFlipCard, onFlipDeck, onOpenSelectionPanel, onShuffleDeck, room.objects, selectedId])
+  }, [canEdit, onDrawDeck, onFlipBoard, onFlipCard, onFlipDeck, onOpenSelectionPanel, onShuffleDeck, room.objects, selectedId])
 
   useEffect(() => {
     let cancelled = false
@@ -1203,6 +1307,7 @@ export function BoardView({
         selectedIdRef.current,
         hoverDeckIdRef.current,
         canEditRef.current,
+        allowSelectLockedRef.current,
         callbacksRef.current.onSelect,
         dragRef,
         auxiliaryTouchRef,
@@ -1252,6 +1357,7 @@ export function BoardView({
       selectedId,
       hoverDeckId,
       canEdit,
+      allowSelectLocked,
       onSelect,
       dragRef,
       auxiliaryTouchRef,
@@ -1259,7 +1365,7 @@ export function BoardView({
       tapCandidateRef,
       requestRenderRef.current,
     )
-  }, [assetVersion, canEdit, currentPlayerId, hoverDeckId, onSelect, room, selectedId])
+  }, [allowSelectLocked, assetVersion, canEdit, currentPlayerId, hoverDeckId, onSelect, room, selectedId])
 
   return (
     <div className="board-root">

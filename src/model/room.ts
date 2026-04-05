@@ -1,5 +1,5 @@
-import type { Card, Deck, GameObject, Id, Plane, PlayerId, RoomDoc, SpriteSpec, Transform2D } from './types'
-import { DEFAULT_CARD_SIZE } from './types'
+import type { Board, Card, Deck, GameObject, Id, Plane, PlayerId, RoomDoc, SpriteSpec, Transform2D } from './types'
+import { DEFAULT_BOARD_SIZE, DEFAULT_CARD_SIZE } from './types'
 
 const DEFAULT_FACE: SpriteSpec = {
   kind: 'label',
@@ -12,6 +12,20 @@ const DEFAULT_BACK: SpriteSpec = {
   kind: 'label',
   label: 'Back',
   bg: '#bb6939',
+  fg: '#fff6eb',
+}
+
+const DEFAULT_BOARD_FACE: SpriteSpec = {
+  kind: 'label',
+  label: 'Board',
+  bg: '#d8d2c1',
+  fg: '#20262b',
+}
+
+const DEFAULT_BOARD_BACK: SpriteSpec = {
+  kind: 'label',
+  label: 'Board Back',
+  bg: '#796f5f',
   fg: '#fff6eb',
 }
 
@@ -89,6 +103,10 @@ export function isCard(object: GameObject | undefined): object is Card {
   return object?.type === 'card'
 }
 
+export function isBoard(object: GameObject | undefined): object is Board {
+  return object?.type === 'board'
+}
+
 export function getTransform(room: RoomDoc, id: Id) {
   const object = room.objects[id]
   if (!object || !object.parentId) {
@@ -126,6 +144,22 @@ export function createDeck(name = 'Deck'): Deck {
     meta: {},
     size: { ...DEFAULT_CARD_SIZE },
     childIds: [],
+  }
+}
+
+export function createBoard(name = 'Board'): Board {
+  return {
+    id: createObjectId('board'),
+    type: 'board',
+    name,
+    parentId: null,
+    locked: true,
+    meta: {
+      faceUp: true,
+    },
+    size: { ...DEFAULT_BOARD_SIZE },
+    face: { ...DEFAULT_BOARD_FACE, label: name },
+    back: { ...DEFAULT_BOARD_BACK },
   }
 }
 
@@ -267,6 +301,13 @@ export function createDeckOnPlane(room: RoomDoc, planeId: Id, transform: Transfo
   room.objects[deck.id] = deck
   placeObjectOnPlane(room, deck.id, planeId, transform)
   return deck.id
+}
+
+export function createBoardOnPlane(room: RoomDoc, planeId: Id, transform: Transform2D, name?: string) {
+  const board = createBoard(name)
+  room.objects[board.id] = board
+  placeObjectOnPlane(room, board.id, planeId, transform)
+  return board.id
 }
 
 interface SpriteSheetOptions {
@@ -421,6 +462,14 @@ export function flipCard(room: RoomDoc, cardId: Id) {
   card.meta.faceUp = card.meta.faceUp === false
 }
 
+export function flipBoard(room: RoomDoc, boardId: Id) {
+  const board = room.objects[boardId]
+  if (!isBoard(board)) {
+    return
+  }
+  board.meta.faceUp = board.meta.faceUp === false
+}
+
 export function isCardFaceUp(card: Card) {
   return card.meta.faceUp !== false
 }
@@ -433,6 +482,10 @@ export function canSeeCardFace(card: Card, playerId?: PlayerId) {
     return true
   }
   return playerId ? card.visibility.includes(playerId) : false
+}
+
+export function isBoardFaceUp(board: Board) {
+  return board.meta.faceUp !== false
 }
 
 export function shuffleDeck(room: RoomDoc, deckId: Id, random = Math.random) {
@@ -526,6 +579,19 @@ function duplicateCard(card: Card): Card {
   }
 }
 
+function duplicateBoard(board: Board): Board {
+  return {
+    ...board,
+    id: createObjectId('board'),
+    name: `${board.name} Copy`,
+    meta: { ...board.meta },
+    size: { ...board.size },
+    face: { ...board.face },
+    back: { ...board.back },
+    parentId: null,
+  }
+}
+
 function duplicateDeck(deck: Deck): Deck {
   return {
     ...deck,
@@ -575,6 +641,20 @@ export function duplicateObject(room: RoomDoc, objectId: Id) {
         ...transform,
         x: transform.x + 42,
         y: transform.y + 30,
+      })
+    }
+    return copy.id
+  }
+
+  if (object.type === 'board') {
+    const copy = duplicateBoard(object)
+    room.objects[copy.id] = copy
+    const transform = getTransform(room, objectId)
+    if (transform && object.parentId) {
+      placeObjectOnPlane(room, copy.id, object.parentId, {
+        ...transform,
+        x: transform.x + 48,
+        y: transform.y + 48,
       })
     }
     return copy.id
