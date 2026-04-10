@@ -78,6 +78,23 @@ const TAP_GRACE_DISTANCE = 10
 const DECK_LONG_PRESS_MS = 360
 const MIN_ZOOM_SCALE = 0.2
 const MAX_ZOOM_SCALE = 2.5
+const PAN_CLAMP_MARGIN = 640
+const VIEWPORT_WORLD_SIZE = BOARD_WORLD_SIZE + PAN_CLAMP_MARGIN * 2
+const VIEWPORT_WORLD_OFFSET = VIEWPORT_WORLD_SIZE / 2
+
+function logicalToViewportPoint(point: { x: number; y: number }) {
+  return {
+    x: point.x + VIEWPORT_WORLD_OFFSET,
+    y: point.y + VIEWPORT_WORLD_OFFSET,
+  }
+}
+
+function viewportToLogicalPoint(point: { x: number; y: number }) {
+  return {
+    x: point.x - VIEWPORT_WORLD_OFFSET,
+    y: point.y - VIEWPORT_WORLD_OFFSET,
+  }
+}
 
 function snapRotationAngle(angle: number) {
   const fullTurn = Math.PI * 2
@@ -522,7 +539,7 @@ function reanchorDragToViewport(
     return
   }
 
-  const world = viewport.toWorld(drag.currentGlobal)
+  const world = viewportToLogicalPoint(viewport.toWorld(drag.currentGlobal))
   if (drag.mode === 'move') {
     const offsetX = drag.startTransform.x - drag.startPointer.x
     const offsetY = drag.startTransform.y - drag.startPointer.y
@@ -606,7 +623,10 @@ function populateViewportScene(
 ) {
   viewport.removeChildren()
   renderedObjects.clear()
-  viewport.addChild(boardBackground())
+  const scene = new Container()
+  scene.position.set(VIEWPORT_WORLD_OFFSET, VIEWPORT_WORLD_OFFSET)
+  viewport.addChild(scene)
+  scene.addChild(boardBackground())
 
   const root = getRootPlane(room)
 
@@ -722,7 +742,7 @@ function populateViewportScene(
         }
 
         clearPendingDeckPress(pendingDeckPressRef)
-        const world = viewport.toWorld(event.global)
+        const world = viewportToLogicalPoint(viewport.toWorld(event.global))
         const timeoutId = window.setTimeout(() => {
           const pending = pendingDeckPressRef.current
           if (!pending || pending.deckId !== objectId || pending.pointerId !== event.pointerId) {
@@ -763,7 +783,7 @@ function populateViewportScene(
           return
         }
 
-        const world = viewport.toWorld(event.global)
+        const world = viewportToLogicalPoint(viewport.toWorld(event.global))
         dragRef.current = {
           id: objectId,
           pointerId: event.pointerId,
@@ -794,7 +814,7 @@ function populateViewportScene(
         return
       }
 
-      const world = viewport.toWorld(event.global)
+      const world = viewportToLogicalPoint(viewport.toWorld(event.global))
       dragRef.current = {
         id: objectId,
         pointerId: event.pointerId,
@@ -848,7 +868,7 @@ function populateViewportScene(
       handle.cursor = 'grab'
       handle.on('pointerdown', (event) => {
         event.stopPropagation()
-        const world = viewport.toWorld(event.global)
+        const world = viewportToLogicalPoint(viewport.toWorld(event.global))
         dragRef.current = {
           id: objectId,
           pointerId: event.pointerId,
@@ -864,7 +884,7 @@ function populateViewportScene(
       container.addChild(handle)
     }
 
-    viewport.addChild(container)
+    scene.addChild(container)
     renderedObjects.set(objectId, {
       container,
       width,
@@ -1030,8 +1050,8 @@ export function BoardView({
         ticker: app.ticker,
         screenWidth: host.clientWidth,
         screenHeight: host.clientHeight,
-        worldWidth: BOARD_WORLD_SIZE,
-        worldHeight: BOARD_WORLD_SIZE,
+        worldWidth: VIEWPORT_WORLD_SIZE,
+        worldHeight: VIEWPORT_WORLD_SIZE,
         passiveWheel: false,
         stopPropagation: true,
       })
@@ -1042,6 +1062,13 @@ export function BoardView({
         .wheel({ smooth: 6, trackpadPinch: true })
         .decelerate({ friction: 0.92 })
         .clampZoom({ minScale: MIN_ZOOM_SCALE, maxScale: MAX_ZOOM_SCALE })
+        .clamp({
+          left: 0,
+          top: 0,
+          right: VIEWPORT_WORLD_SIZE,
+          bottom: VIEWPORT_WORLD_SIZE,
+          underflow: 'center',
+        })
 
       viewport.eventMode = 'static'
       viewport.on('pointerdown', (event) => {
@@ -1068,7 +1095,12 @@ export function BoardView({
         }
       })
 
-      viewport.moveCenter(initialCameraRef.current.centerX, initialCameraRef.current.centerY)
+      viewport.moveCenter(
+        logicalToViewportPoint({
+          x: initialCameraRef.current.centerX,
+          y: initialCameraRef.current.centerY,
+        }),
+      )
       viewport.setZoom(initialCameraRef.current.zoom, true)
 
       app.stage.addChild(viewport)
@@ -1078,8 +1110,8 @@ export function BoardView({
 
       const emitCamera = () => {
         const snapshot = JSON.stringify({
-          centerX: Number(viewport.center.x.toFixed(1)),
-          centerY: Number(viewport.center.y.toFixed(1)),
+          centerX: Number((viewport.center.x - VIEWPORT_WORLD_OFFSET).toFixed(1)),
+          centerY: Number((viewport.center.y - VIEWPORT_WORLD_OFFSET).toFixed(1)),
           zoom: Number(viewport.scaled.toFixed(3)),
         })
         if (snapshot !== cameraSnapshot.current) {
@@ -1103,10 +1135,12 @@ export function BoardView({
           overlay.style.opacity = '0'
           return
         }
-        const screen = viewport.toScreen({
-          x: rendered.container.position.x,
-          y: rendered.container.position.y - rendered.height / 2 - 24,
-        })
+        const screen = viewport.toScreen(
+          logicalToViewportPoint({
+            x: rendered.container.position.x,
+            y: rendered.container.position.y - rendered.height / 2 - 24,
+          }),
+        )
         overlay.style.left = `${screen.x}px`
         overlay.style.top = `${screen.y}px`
         overlay.style.opacity = '1'
@@ -1168,7 +1202,7 @@ export function BoardView({
         }
 
         drag.currentGlobal = { x: event.global.x, y: event.global.y }
-        const world = viewport.toWorld(event.global)
+        const world = viewportToLogicalPoint(viewport.toWorld(event.global))
         const distance = Math.hypot(world.x - drag.startPointer.x, world.y - drag.startPointer.y)
         drag.moved ||= distance > 8
 
@@ -1245,7 +1279,7 @@ export function BoardView({
           return
         }
 
-        const world = viewport.toWorld(event.global)
+        const world = viewportToLogicalPoint(viewport.toWorld(event.global))
         if (drag.mode === 'move') {
           const nextTransform = {
             x: rendered.container.position.x,
@@ -1287,7 +1321,7 @@ export function BoardView({
       })
 
       const observer = new ResizeObserver(() => {
-        viewport.resize(host.clientWidth, host.clientHeight, BOARD_WORLD_SIZE, BOARD_WORLD_SIZE)
+        viewport.resize(host.clientWidth, host.clientHeight, VIEWPORT_WORLD_SIZE, VIEWPORT_WORLD_SIZE)
       })
       observer.observe(host)
 
