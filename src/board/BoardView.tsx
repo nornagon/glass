@@ -23,7 +23,7 @@ interface BoardViewProps {
   onAddToGroupSelection: (ids: Id[]) => void
   onCommitTransform: (id: Id, transform: Partial<Transform2D>) => void
   onPreviewTransform: (id: Id, transform: Transform2D) => void
-  onClearPreviewTransform: (id: Id) => void
+  onClearPreviewTransform: (id: Id, finalTransform?: Transform2D) => void
   onDropObjectToDeck: (objectId: Id, deckId: Id) => void
   onBringCardToFront: (cardId: Id) => void
   onLiftTopCardFromDeck: (deckId: Id) => Id | undefined
@@ -2039,15 +2039,8 @@ export function BoardView({
           dragRef.current = null
           if (drag.groupMembers && drag.groupMembers.length > 0) {
             for (const member of drag.groupMembers) {
-              callbacksRef.current.onClearPreviewTransform(member.id)
-            }
-          } else {
-            callbacksRef.current.onClearPreviewTransform(drag.id)
-          }
-          const liveRoom = roomRef.current
-          if (drag.groupMembers && drag.groupMembers.length > 0) {
-            for (const member of drag.groupMembers) {
               const memberRendered = renderedRef.current.get(member.id)
+              callbacksRef.current.onClearPreviewTransform(member.id, memberRendered?.transform)
               if (!memberRendered) {
                 continue
               }
@@ -2058,11 +2051,13 @@ export function BoardView({
               })
             }
           } else {
+            const liveRoom = roomRef.current
             const nextTransform = {
               x: rendered.container.position.x,
               y: rendered.container.position.y,
               rotation: drag.startTransform.rotation,
             }
+            callbacksRef.current.onClearPreviewTransform(drag.id, nextTransform)
             const object = liveRoom.objects[drag.id]
             const targetDeckId =
               object && (object.type === 'card' || object.type === 'deck')
@@ -2082,9 +2077,8 @@ export function BoardView({
             ...rendered.transform,
             rotation: snappedRotation,
           }
-          callbacksRef.current.onPreviewTransform(drag.id, rendered.transform)
           dragRef.current = null
-          callbacksRef.current.onClearPreviewTransform(drag.id)
+          callbacksRef.current.onClearPreviewTransform(drag.id, rendered.transform)
           callbacksRef.current.onCommitTransform(drag.id, {
             rotation: snappedRotation,
           })
