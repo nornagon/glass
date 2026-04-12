@@ -2,6 +2,8 @@
 
 ## 2026-04-12
 
+- Made `Escape` exit group selection mode and clear the current single selection.
+- Added `Shift`-click promotion from a single selected card or deck into group selection.
 - Restored the add button's open/close rotation animation and fixed the add-menu scrim layering so the menu stays above the backdrop.
 - Reworked the multiselect design around a bottom-right `Select` mode, then implemented the first pass with a selection tray, explicit lasso tool, grouped drag for cards and decks, and multi-object ephemeral drag previews.
 - Persisted joined player IDs in `localStorage` so reopening the browser keeps the same player identity for each room.

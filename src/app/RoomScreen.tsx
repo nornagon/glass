@@ -104,6 +104,19 @@ function dragTransformsByObject(sessions: Map<string, RemoteDragSession>) {
 function remoteDragSessionKey(clientId: string, objectId: Id) {
   return `${clientId}:${objectId}`
 }
+
+function isEditableKeyboardTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false
+  }
+
+  return (
+    target.isContentEditable ||
+    target.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]') !==
+      null
+  )
+}
+
 function nextSpawnTransform(camera: CameraState, offset: number) {
   return {
     x: camera.centerX + offset * 26,
@@ -969,6 +982,36 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   function closeRightPanel() {
     setRightPanelMode(undefined)
   }
+
+  const handleSelectionEscape = useEffectEvent((event: KeyboardEvent) => {
+    if (event.key !== 'Escape' || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) {
+      return
+    }
+
+    if (isEditableKeyboardTarget(event.target)) {
+      return
+    }
+
+    if (selectionMode === 'group') {
+      event.preventDefault()
+      exitGroupSelectionMode()
+      return
+    }
+
+    if (selectedId) {
+      event.preventDefault()
+      updateSelection(undefined)
+    }
+  })
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      handleSelectionEscape(event)
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   function toggleAddMenu() {
     setIsAddMenuOpen((current) => {

@@ -954,6 +954,7 @@ function populateViewportScene(
   allowSelectLocked: boolean,
   onSelect: (id?: Id) => void,
   onToggleGroupSelection: (id: Id) => void,
+  onAddToGroupSelection: (ids: Id[]) => void,
   dragRef: React.MutableRefObject<DragState | null>,
   auxiliaryTouchRef: React.MutableRefObject<AuxiliaryTouchState>,
   pendingDeckPressRef: React.MutableRefObject<PendingDeckPress | null>,
@@ -1136,6 +1137,21 @@ function populateViewportScene(
       const isMiddleMouse = event.pointerType === 'mouse' && event.button === 1
 
       if (isMiddleMouse) {
+        return
+      }
+
+      const shouldPromoteToGroupSelection =
+        event.shiftKey &&
+        selectionMode === 'normal' &&
+        selectedId !== undefined &&
+        selectedId !== objectId &&
+        isMultiselectObjectType(room, selectedId) &&
+        isMultiselectObjectType(room, objectId) &&
+        (!object.locked || allowSelectLocked)
+
+      if (shouldPromoteToGroupSelection) {
+        onAddToGroupSelection([selectedId, objectId])
+        event.stopPropagation()
         return
       }
 
@@ -1562,6 +1578,7 @@ export function BoardView({
       allowSelectLockedRef.current,
       callbacksRef.current.onSelect,
       callbacksRef.current.onToggleGroupSelection,
+      callbacksRef.current.onAddToGroupSelection,
       dragRef,
       auxiliaryTouchRef,
       pendingDeckPressRef,
@@ -2098,6 +2115,7 @@ export function BoardView({
         allowSelectLockedRef.current,
         callbacksRef.current.onSelect,
         callbacksRef.current.onToggleGroupSelection,
+        callbacksRef.current.onAddToGroupSelection,
         dragRef,
         auxiliaryTouchRef,
         pendingDeckPressRef,
