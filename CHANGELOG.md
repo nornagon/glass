@@ -5,7 +5,9 @@
 - Ignored Playwright capture output under `output/playwright/` and removed those generated artifacts from version control.
 - Added a more three-dimensional flip animation for cards so face changes now animate with lift and a card-turn motion instead of swapping instantly.
 - Added Automerge ephemeral drag previews so connected clients see in-flight object movement and rotation in real time without persisting every pointer move to room history.
+- Reworked the in-room control chrome into anchored room and turn panels with a floating add menu, and iterated on the room panel hierarchy and styling.
 - Let header drags pass through the non-interactive top bar chrome so panning can start from empty header space and the turn pill again.
+- Simplified the header and turn panel with a single expanding turn pill, inline room/player name editing, explicit observer join affordances, and denser player rows.
 
 ## 2026-04-05
 
