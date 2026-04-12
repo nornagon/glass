@@ -8,6 +8,7 @@ import { canSeeCardFace, getRootPlane, getTransform, isBoard, isBoardFaceUp, isC
 interface BoardViewProps {
   room: RoomDoc
   roomUrl: string
+  ephemeralTransforms?: Partial<Record<Id, Transform2D>>
   selectedId?: Id
   currentPlayerId?: string
   canEdit: boolean
@@ -16,6 +17,8 @@ interface BoardViewProps {
   onCameraChange: (camera: CameraState) => void
   onSelect: (id?: Id) => void
   onCommitTransform: (id: Id, transform: Partial<Transform2D>) => void
+  onPreviewTransform: (id: Id, transform: Transform2D) => void
+  onClearPreviewTransform: (id: Id) => void
   onDropObjectToDeck: (objectId: Id, deckId: Id) => void
   onBringCardToFront: (cardId: Id) => void
   onLiftTopCardFromDeck: (deckId: Id) => Id | undefined
@@ -81,6 +84,8 @@ const MAX_ZOOM_SCALE = 2.5
 const PAN_CLAMP_MARGIN = 640
 const VIEWPORT_WORLD_SIZE = BOARD_WORLD_SIZE + PAN_CLAMP_MARGIN * 2
 const VIEWPORT_WORLD_OFFSET = VIEWPORT_WORLD_SIZE / 2
+
+type EphemeralTransformMap = Partial<Record<Id, Transform2D>>
 
 function logicalToViewportPoint(point: { x: number; y: number }) {
   return {
@@ -243,8 +248,17 @@ function objectDimensions(room: RoomDoc, objectId: Id) {
   return DEFAULT_CARD_SIZE
 }
 
-function pointInObjectRect(room: RoomDoc, objectId: Id, point: { x: number; y: number }) {
-  const transform = getTransform(room, objectId)
+function transformForObject(room: RoomDoc, objectId: Id, ephemeralTransforms: EphemeralTransformMap) {
+  return ephemeralTransforms[objectId] ?? getTransform(room, objectId)
+}
+
+function pointInObjectRect(
+  room: RoomDoc,
+  objectId: Id,
+  point: { x: number; y: number },
+  ephemeralTransforms: EphemeralTransformMap,
+) {
+  const transform = transformForObject(room, objectId, ephemeralTransforms)
   const object = room.objects[objectId]
   if (!transform || !object) {
     return false
@@ -260,7 +274,12 @@ function pointInObjectRect(room: RoomDoc, objectId: Id, point: { x: number; y: n
   return localX >= -width / 2 && localX <= width / 2 && localY >= -height / 2 && localY <= height / 2
 }
 
-function findDeckAtPoint(room: RoomDoc, point: { x: number; y: number }, ignoreId?: Id) {
+function findDeckAtPoint(
+  room: RoomDoc,
+  point: { x: number; y: number },
+  ephemeralTransforms: EphemeralTransformMap,
+  ignoreId?: Id,
+) {
   const root = getRootPlane(room)
 
   for (let index = root.childOrder.length - 1; index >= 0; index -= 1) {
@@ -269,7 +288,7 @@ function findDeckAtPoint(room: RoomDoc, point: { x: number; y: number }, ignoreI
       continue
     }
     const object = room.objects[objectId]
-    if (isDeck(object) && pointInObjectRect(room, objectId, point)) {
+    if (isDeck(object) && pointInObjectRect(room, objectId, point, ephemeralTransforms)) {
       return objectId
     }
   }
@@ -609,6 +628,7 @@ function populateViewportScene(
   viewport: Viewport,
   renderedObjects: Map<Id, RenderedObject>,
   room: RoomDoc,
+  ephemeralTransforms: EphemeralTransformMap,
   currentPlayerId: string | undefined,
   selectedId: Id | undefined,
   hoverDeckId: Id | undefined,
@@ -621,6 +641,12 @@ function populateViewportScene(
   tapCandidateRef: React.MutableRefObject<TapCandidate | null>,
   requestRender: () => void,
 ) {
+  const activeDragId = dragRef.current?.id
+  const priorTransforms = new Map<Id, Transform2D>()
+  for (const [objectId, rendered] of renderedObjects) {
+    priorTransforms.set(objectId, rendered.transform)
+  }
+
   viewport.removeChildren()
   renderedObjects.clear()
   const scene = new Container()
@@ -632,7 +658,8 @@ function populateViewportScene(
 
   for (const objectId of root.childOrder) {
     const object = room.objects[objectId]
-    const transform = root.childTransforms[objectId]
+    const baseTransform = ephemeralTransforms[objectId] ?? root.childTransforms[objectId]
+    const transform = activeDragId === objectId ? priorTransforms.get(objectId) ?? baseTransform : baseTransform
     if (!object || !transform) {
       continue
     }
@@ -894,9 +921,34 @@ function populateViewportScene(
   }
 }
 
+function applyDisplayedTransforms(
+  renderedObjects: Map<Id, RenderedObject>,
+  room: RoomDoc,
+  ephemeralTransforms: EphemeralTransformMap,
+  dragRef: React.MutableRefObject<DragState | null>,
+) {
+  const activeDragId = dragRef.current?.id
+
+  for (const [objectId, rendered] of renderedObjects) {
+    if (objectId === activeDragId) {
+      continue
+    }
+
+    const transform = transformForObject(room, objectId, ephemeralTransforms)
+    if (!transform) {
+      continue
+    }
+
+    rendered.container.position.set(transform.x, transform.y)
+    rendered.container.rotation = transform.rotation
+    rendered.transform = { ...transform }
+  }
+}
+
 export function BoardView({
   room,
   roomUrl,
+  ephemeralTransforms = {},
   selectedId,
   currentPlayerId,
   canEdit,
@@ -905,6 +957,8 @@ export function BoardView({
   onCameraChange,
   onSelect,
   onCommitTransform,
+  onPreviewTransform,
+  onClearPreviewTransform,
   onDropObjectToDeck,
   onBringCardToFront,
   onLiftTopCardFromDeck,
@@ -925,6 +979,7 @@ export function BoardView({
   const backgroundTapCandidateRef = useRef<BackgroundTapCandidate | null>(null)
   const auxiliaryTouchRef = useRef<AuxiliaryTouchState>({ pointers: new Map() })
   const roomRef = useRef(room)
+  const ephemeralTransformsRef = useRef(ephemeralTransforms)
   const selectedIdRef = useRef(selectedId)
   const initialCameraRef = useRef(initialCamera)
   const currentPlayerIdRef = useRef(currentPlayerId)
@@ -937,6 +992,8 @@ export function BoardView({
   const callbacksRef = useRef({
     onCameraChange,
     onCommitTransform,
+    onPreviewTransform,
+    onClearPreviewTransform,
     onBringCardToFront,
     onDrawDeck,
     onFlipDeck,
@@ -953,6 +1010,7 @@ export function BoardView({
   })
 
   roomRef.current = room
+  ephemeralTransformsRef.current = ephemeralTransforms
   selectedIdRef.current = selectedId
   initialCameraRef.current = initialCamera
   currentPlayerIdRef.current = currentPlayerId
@@ -962,6 +1020,8 @@ export function BoardView({
   callbacksRef.current = {
     onCameraChange,
     onCommitTransform,
+    onPreviewTransform,
+    onClearPreviewTransform,
     onBringCardToFront,
     onDrawDeck,
     onFlipDeck,
@@ -1226,7 +1286,7 @@ export function BoardView({
           const draggingObject = liveRoom.objects[drag.id]
           const nextHoverDeckId =
             draggingObject && (draggingObject.type === 'card' || draggingObject.type === 'deck')
-              ? findDeckAtPoint(liveRoom, { x: nextX, y: nextY }, drag.id)
+              ? findDeckAtPoint(liveRoom, { x: nextX, y: nextY }, ephemeralTransformsRef.current, drag.id)
               : undefined
           setHoverDeckId((current) => (current === nextHoverDeckId ? current : nextHoverDeckId))
         } else {
@@ -1237,6 +1297,7 @@ export function BoardView({
           rendered.transform = { ...drag.startTransform, rotation: angle }
         }
 
+        callbacksRef.current.onPreviewTransform(drag.id, rendered.transform)
         updateOverlayPosition()
       }
 
@@ -1274,6 +1335,7 @@ export function BoardView({
         resumeViewportCameraGestures(viewport)
         const rendered = renderedRef.current.get(drag.id)
         dragRef.current = null
+        callbacksRef.current.onClearPreviewTransform(drag.id)
 
         if (!rendered) {
           return
@@ -1290,7 +1352,7 @@ export function BoardView({
           const object = liveRoom.objects[drag.id]
           const targetDeckId =
             object && (object.type === 'card' || object.type === 'deck')
-              ? findDeckAtPoint(liveRoom, world, drag.id)
+              ? findDeckAtPoint(liveRoom, world, ephemeralTransformsRef.current, drag.id)
               : undefined
 
           if (targetDeckId) {
@@ -1331,6 +1393,7 @@ export function BoardView({
         viewport,
         renderedRef.current,
         roomRef.current,
+        ephemeralTransformsRef.current,
         currentPlayerIdRef.current,
         selectedIdRef.current,
         hoverDeckIdRef.current,
@@ -1381,6 +1444,7 @@ export function BoardView({
       viewport,
       renderedRef.current,
       room,
+      ephemeralTransformsRef.current,
       currentPlayerId,
       selectedId,
       hoverDeckId,
@@ -1394,6 +1458,10 @@ export function BoardView({
       requestRenderRef.current,
     )
   }, [allowSelectLocked, assetVersion, canEdit, currentPlayerId, hoverDeckId, onSelect, room, selectedId])
+
+  useEffect(() => {
+    applyDisplayedTransforms(renderedRef.current, room, ephemeralTransforms, dragRef)
+  }, [ephemeralTransforms, room])
 
   return (
     <div className="board-root">
