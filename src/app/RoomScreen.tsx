@@ -8,7 +8,6 @@ import { syncTurnBadge } from './badge'
 import { loadJoinedPlayerId, loadCameraState, loadRoomTemplates, saveCameraState, saveJoinedPlayerId, saveRoomHistoryEntry, saveRoomTemplate } from '../model/local'
 import {
   addCardToDeck,
-  advanceTurn,
   bringObjectToFront,
   canSeeCardFace,
   createBoardOnPlane,
@@ -678,19 +677,6 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     setJoinedPlayerId(playerId)
   }
 
-  function renamePlayer() {
-    if (!currentPlayer) {
-      return
-    }
-    const next = window.prompt('Rename your player', currentPlayer.name)?.trim()
-    if (!next) {
-      return
-    }
-    mutate((draft) => {
-      renameOrAddPlayer(draft, currentPlayer.id, next)
-    })
-  }
-
   function createCardHere() {
     const offset = spawnCountRef.current++
     mutate((draft) => {
@@ -881,6 +867,8 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   }
 
   const turnPlayer = room.turnPlayerId ? room.players[room.turnPlayerId] : undefined
+  const isTurnPanelOpen = rightPanelMode === 'turn'
+  const isMyTurn = Boolean(currentPlayer && turnPlayer && currentPlayer.id === turnPlayer.id)
   const facePreviewCount = useMemo(() => {
     const rows = parsePositiveInteger(sheetDeckDraft.faceRows)
     const cols = parsePositiveInteger(sheetDeckDraft.faceCols)
@@ -994,20 +982,22 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
               <h1>{roomTitle}</h1>
             </button>
           ) : null}
-          <div className="topbar-cluster topbar-actions">
-            <button className={`turn-pill turn-button ${rightPanelMode === 'turn' ? 'active' : ''}`} onClick={toggleTurnPanel}>
-              <span>Turn</span>
-              <strong>{turnPlayer?.name ?? 'Unset'}</strong>
-            </button>
-            {currentPlayer ? (
-              <button className="join-button active" onClick={renamePlayer}>
-                {currentPlayer.name}
-              </button>
-            ) : (
-              <button className="join-button" onClick={joinRoom}>
+          <div className="topbar-status">
+            {!currentPlayer && !isTurnPanelOpen ? (
+              <button className="topbar-action-button" onClick={joinRoom}>
                 Join Room
               </button>
-            )}
+            ) : null}
+            {!isTurnPanelOpen ? (
+              <button
+                aria-label={`Turn: ${turnPlayer?.name ?? 'Unset'}`}
+                className={`turn-pill-button ${isMyTurn ? 'is-self-turn' : ''}`}
+                onClick={toggleTurnPanel}
+                title={turnPlayer?.name ? `Turn: ${turnPlayer.name}` : 'Open turn panel'}
+              >
+                <strong>{turnPlayer?.name ?? 'No Turn Set'}</strong>
+              </button>
+            ) : null}
           </div>
         </header>
 
@@ -1075,315 +1065,356 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
           </aside>
         ) : null}
 
-        {visibleRightPanelMode && (visibleRightPanelMode !== 'selection' || selectedObject) ? (
-          <aside className={`inspector inspector-right ${visibleRightPanelMode === 'turn' ? 'inspector-compact' : ''}`}>
-            <section className="inspector-section">
-              <div className="inspector-toolbar">
-                {visibleRightPanelMode === 'selection' && selectedObject ? (
-                  <div>
-                    <p className="eyebrow">{selectedObject.type}</p>
-                    <h2>{selectedObject.name}</h2>
-                  </div>
+        {isTurnPanelOpen ? (
+          <aside className="turn-panel">
+            <section className="turn-panel-card">
+              <div className="turn-panel-header">
+                {currentPlayer ? (
+                  <textarea
+                    aria-label="Your player name"
+                    className="drawer-title-input"
+                    placeholder="Player Name"
+                    rows={1}
+                    spellCheck={false}
+                    wrap="off"
+                    value={currentPlayer.name}
+                    onChange={(event) =>
+                      mutate((draft) => {
+                        const player = draft.players[currentPlayer.id]
+                        if (player) {
+                          player.name = event.target.value.replaceAll('\n', ' ')
+                        }
+                      })
+                    }
+                    onBlur={(event) =>
+                      mutate((draft) => {
+                        const player = draft.players[currentPlayer.id]
+                        if (player) {
+                          const trimmed = event.target.value.trim()
+                          const fallbackIndex = Math.max(0, draft.playerOrder.indexOf(currentPlayer.id))
+                          player.name = trimmed || `Player ${fallbackIndex + 1}`
+                        }
+                      })
+                    }
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        event.currentTarget.blur()
+                      }
+                    }}
+                  />
                 ) : (
-                  <div>
-                    <p className="eyebrow">Turn</p>
-                    <h2>{turnPlayer?.name ?? 'Turn Order'}</h2>
+                  <div className="turn-panel-join-copy">
+                    <h2 className="turn-panel-title">Join This Room</h2>
+                    <p className="field-note">Join to take turns and edit the table.</p>
                   </div>
                 )}
+                <button aria-label="Close turn panel" className="panel-close" onClick={closeRightPanel} title="Close turn panel" />
+              </div>
+              {!currentPlayer ? (
+                <div className="button-row">
+                  <button onClick={joinRoom}>Join Room</button>
+                </div>
+              ) : null}
+
+              <section className="inspector-group">
+                <h4>Players</h4>
+                <div className="player-list room-player-list">
+                  {playerList.map((player) => (
+                    <div className={`player-card ${player.id === room.turnPlayerId ? 'active-turn' : ''}`} key={player.id}>
+                      <div className="player-card-copy">
+                        <strong>{player.name}</strong>
+                        <small>
+                          {player.id === room.turnPlayerId
+                            ? 'Current turn'
+                            : player.id === currentPlayer?.id
+                              ? 'You'
+                              : 'Waiting'}
+                        </small>
+                      </div>
+                      {player.id === room.turnPlayerId ? (
+                        <span className="player-card-status">Active</span>
+                      ) : (
+                        <button className="player-card-action" disabled={!canEdit} onClick={() => mutate((draft) => setTurnPlayer(draft, player.id))}>
+                          Make Active
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  {playerList.length === 0 ? <p className="empty-copy">Nobody has joined this room yet.</p> : null}
+                </div>
+              </section>
+            </section>
+          </aside>
+        ) : null}
+
+        {visibleRightPanelMode === 'selection' && selectedObject ? (
+          <aside className="inspector inspector-right">
+            <section className="inspector-section">
+              <div className="inspector-toolbar">
+                <div>
+                  <p className="eyebrow">{selectedObject.type}</p>
+                  <h2>{selectedObject.name}</h2>
+                </div>
                 <button aria-label="Close panel" className="panel-close" onClick={closeRightPanel} title="Close panel" />
               </div>
 
-              {visibleRightPanelMode === 'selection' && selectedObject ? (
+              <div className="button-row">
+                <button disabled={!canEdit} onClick={() => mutate((draft) => bringObjectForward(draft, selectedObject.id))}>
+                  Forward
+                </button>
+                <button disabled={!canEdit} onClick={() => mutate((draft) => sendObjectBackward(draft, selectedObject.id))}>
+                  Back
+                </button>
+                <button
+                  disabled={!canEdit}
+                  onClick={() =>
+                    mutate((draft) => {
+                      const duplicateId = duplicateObject(draft, selectedObject.id)
+                      if (duplicateId) {
+                        updateSelection(duplicateId)
+                      }
+                    })
+                  }
+                >
+                  Duplicate
+                </button>
+              </div>
+
+              <label className="field">
+                <span>Name</span>
+                <input
+                  disabled={!canEdit}
+                  value={selectedObject.name}
+                  onChange={(event) =>
+                    mutate((draft) => {
+                      draft.objects[selectedObject.id].name = event.target.value
+                    })
+                  }
+                />
+              </label>
+
+              <label className="toggle-row">
+                <span>Locked</span>
+                <input
+                  disabled={!canEdit}
+                  type="checkbox"
+                  checked={selectedObject.locked}
+                  onChange={(event) =>
+                    mutate((draft) => {
+                      draft.objects[selectedObject.id].locked = event.target.checked
+                    })
+                  }
+                />
+              </label>
+
+              {isCard(selectedObject) ? (
                 <>
                   <div className="button-row">
-                    <button disabled={!canEdit} onClick={() => mutate((draft) => bringObjectForward(draft, selectedObject.id))}>
-                      Forward
-                    </button>
-                    <button disabled={!canEdit} onClick={() => mutate((draft) => sendObjectBackward(draft, selectedObject.id))}>
-                      Back
+                    <button disabled={!canEdit} onClick={() => mutate((draft) => flipCard(draft, selectedObject.id))}>
+                      {selectedObject.meta.faceUp === false ? 'Show Face' : 'Show Back'}
                     </button>
                     <button
                       disabled={!canEdit}
                       onClick={() =>
                         mutate((draft) => {
-                          const duplicateId = duplicateObject(draft, selectedObject.id)
-                          if (duplicateId) {
-                            updateSelection(duplicateId)
-                          }
+                          ;(draft.objects[selectedObject.id] as Card).visibility = true
                         })
                       }
                     >
-                      Duplicate
+                      Reveal To All
                     </button>
                   </div>
 
                   <label className="field">
-                    <span>Name</span>
-                    <input
+                    <span>Visibility</span>
+                    <select
                       disabled={!canEdit}
-                      value={selectedObject.name}
+                      value={selectedObject.visibility === true ? 'all' : 'limited'}
                       onChange={(event) =>
                         mutate((draft) => {
-                          draft.objects[selectedObject.id].name = event.target.value
-                        })
-                      }
-                    />
-                  </label>
-
-                  <label className="toggle-row">
-                    <span>Locked</span>
-                    <input
-                      disabled={!canEdit}
-                      type="checkbox"
-                      checked={selectedObject.locked}
-                      onChange={(event) =>
-                        mutate((draft) => {
-                          draft.objects[selectedObject.id].locked = event.target.checked
-                        })
-                      }
-                    />
-                  </label>
-
-                  {isCard(selectedObject) ? (
-                    <>
-                      <div className="button-row">
-                        <button disabled={!canEdit} onClick={() => mutate((draft) => flipCard(draft, selectedObject.id))}>
-                          {selectedObject.meta.faceUp === false ? 'Show Face' : 'Show Back'}
-                        </button>
-                        <button
-                          disabled={!canEdit}
-                          onClick={() =>
-                            mutate((draft) => {
-                              ;(draft.objects[selectedObject.id] as Card).visibility = true
-                            })
-                          }
-                        >
-                          Reveal To All
-                        </button>
-                      </div>
-
-                      <label className="field">
-                        <span>Visibility</span>
-                        <select
-                          disabled={!canEdit}
-                          value={selectedObject.visibility === true ? 'all' : 'limited'}
-                          onChange={(event) =>
-                            mutate((draft) => {
-                              ;(draft.objects[selectedObject.id] as Card).visibility =
-                                event.target.value === 'all' ? true : currentPlayer ? [currentPlayer.id] : []
-                            })
-                          }
-                        >
-                          <option value="all">Everyone sees the face</option>
-                          <option value="limited">Only selected players see the face</option>
-                        </select>
-                      </label>
-
-                      {selectedObject.visibility !== true ? (
-                        <div className="player-visibility-list">
-                          {playerList.map((player) => {
-                            const checked = selectedObject.visibility !== true && selectedObject.visibility.includes(player.id)
-                            return (
-                              <label className="toggle-row" key={player.id}>
-                                <span>{player.name}</span>
-                                <input
-                                  disabled={!canEdit}
-                                  type="checkbox"
-                                  checked={checked}
-                                  onChange={() =>
-                                    mutate((draft) => {
-                                      const card = draft.objects[selectedObject.id] as Card
-                                      const current = card.visibility === true ? [] : [...card.visibility]
-                                      card.visibility = checked
-                                        ? current.filter((playerId) => playerId !== player.id)
-                                        : [...current, player.id]
-                                    })
-                                  }
-                                />
-                              </label>
-                            )
-                          })}
-                        </div>
-                      ) : null}
-
-                      <div className="preview-note">
-                        Normal view: {canSeeCardFace(selectedObject, currentPlayer?.id) ? 'face visible' : 'back only'}
-                      </div>
-
-                      <SpriteEditor
-                        label="Face"
-                        value={selectedObject.face}
-                        disabled={!canEdit}
-                        onChange={(next) =>
-                          mutate((draft) => {
-                            ;(draft.objects[selectedObject.id] as Card).face = next
-                          })
-                        }
-                      />
-                      <SpriteEditor
-                        label="Back"
-                        value={selectedObject.back}
-                        disabled={!canEdit}
-                        onChange={(next) =>
-                          mutate((draft) => {
-                            ;(draft.objects[selectedObject.id] as Card).back = next
-                          })
-                        }
-                      />
-                    </>
-                  ) : null}
-
-                  {isDeck(selectedObject) ? (
-                    <>
-                      <div className="stats-card">
-                        <span>Cards</span>
-                        <strong>{selectedObject.childIds.length}</strong>
-                      </div>
-                      <div className="button-row">
-                        <button disabled={!canEdit} onClick={() => mutate((draft) => flipDeck(draft, selectedObject.id))}>
-                          Flip Deck
-                        </button>
-                        <button disabled={!canEdit} onClick={() => mutate((draft) => shuffleDeck(draft, selectedObject.id))}>
-                          Shuffle
-                        </button>
-                        <button disabled={!canEdit} onClick={() => mutate((draft) => drawFromDeck(draft, selectedObject.id))}>
-                          Draw Top Card
-                        </button>
-                      </div>
-                    </>
-                  ) : null}
-
-                  {isBoard(selectedObject) ? (
-                    <>
-                      <div className="button-row">
-                        <button disabled={!canEdit} onClick={() => mutate((draft) => flipBoard(draft, selectedObject.id))}>
-                          {selectedObject.meta.faceUp === false ? 'Show Face' : 'Show Back'}
-                        </button>
-                      </div>
-
-                      <BoardSizeEditor
-                        width={selectedObject.size.width}
-                        height={selectedObject.size.height}
-                        disabled={!canEdit}
-                        onCommitWidth={async (width) => {
-                          const board = room.objects[selectedObject.id]
-                          if (!isBoard(board)) {
-                            return
-                          }
-
-                          const aspectRatio = await resolveBoardResizeAspectRatio(board)
-                          mutate((draft) => {
-                            const nextBoard = draft.objects[selectedObject.id]
-                            if (isBoard(nextBoard)) {
-                              nextBoard.size.width = width
-                              nextBoard.size.height = Math.max(48, Math.round(width / aspectRatio))
-                            }
-                          })
-                        }}
-                        onCommitHeight={async (height) => {
-                          const board = room.objects[selectedObject.id]
-                          if (!isBoard(board)) {
-                            return
-                          }
-
-                          const aspectRatio = await resolveBoardResizeAspectRatio(board)
-                          mutate((draft) => {
-                            const nextBoard = draft.objects[selectedObject.id]
-                            if (isBoard(nextBoard)) {
-                              nextBoard.size.width = Math.max(48, Math.round(height * aspectRatio))
-                              nextBoard.size.height = height
-                            }
-                          })
-                        }}
-                      />
-
-                      <SpriteEditor
-                        label="Face"
-                        value={selectedObject.face}
-                        disabled={!canEdit}
-                        onChange={(next) =>
-                          mutate((draft) => {
-                            const board = draft.objects[selectedObject.id]
-                            if (isBoard(board)) {
-                              board.face = next
-                            }
-                          })
-                        }
-                      />
-                      <SpriteEditor
-                        label="Back"
-                        value={selectedObject.back}
-                        disabled={!canEdit}
-                        onChange={(next) =>
-                          mutate((draft) => {
-                            const board = draft.objects[selectedObject.id]
-                            if (isBoard(board)) {
-                              board.back = next
-                            }
-                          })
-                        }
-                      />
-                    </>
-                  ) : null}
-
-                  <MetaEditor
-                    key={`${selectedObject.id}:${JSON.stringify(selectedObject.meta)}`}
-                    object={selectedObject}
-                    disabled={!canEdit}
-                    onCommit={(meta) =>
-                      mutate((draft) => {
-                        draft.objects[selectedObject.id].meta = meta
-                      })
-                    }
-                  />
-
-                  <div className="button-row">
-                    <button
-                      className="danger"
-                      disabled={!canEdit}
-                      onClick={() =>
-                        mutate((draft) => {
-                          deleteObject(draft, selectedObject.id)
-                          updateSelection(undefined)
+                          ;(draft.objects[selectedObject.id] as Card).visibility =
+                            event.target.value === 'all' ? true : currentPlayer ? [currentPlayer.id] : []
                         })
                       }
                     >
-                      Delete
-                    </button>
+                      <option value="all">Everyone sees the face</option>
+                      <option value="limited">Only selected players see the face</option>
+                    </select>
+                  </label>
+
+                  {selectedObject.visibility !== true ? (
+                    <div className="player-visibility-list">
+                      {playerList.map((player) => {
+                        const checked = selectedObject.visibility !== true && selectedObject.visibility.includes(player.id)
+                        return (
+                          <label className="toggle-row" key={player.id}>
+                            <span>{player.name}</span>
+                            <input
+                              disabled={!canEdit}
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() =>
+                                mutate((draft) => {
+                                  const card = draft.objects[selectedObject.id] as Card
+                                  const current = card.visibility === true ? [] : [...card.visibility]
+                                  card.visibility = checked
+                                    ? current.filter((playerId) => playerId !== player.id)
+                                    : [...current, player.id]
+                                })
+                              }
+                            />
+                          </label>
+                        )
+                      })}
+                    </div>
+                  ) : null}
+
+                  <div className="preview-note">
+                    Normal view: {canSeeCardFace(selectedObject, currentPlayer?.id) ? 'face visible' : 'back only'}
                   </div>
+
+                  <SpriteEditor
+                    label="Face"
+                    value={selectedObject.face}
+                    disabled={!canEdit}
+                    onChange={(next) =>
+                      mutate((draft) => {
+                        ;(draft.objects[selectedObject.id] as Card).face = next
+                      })
+                    }
+                  />
+                  <SpriteEditor
+                    label="Back"
+                    value={selectedObject.back}
+                    disabled={!canEdit}
+                    onChange={(next) =>
+                      mutate((draft) => {
+                        ;(draft.objects[selectedObject.id] as Card).back = next
+                      })
+                    }
+                  />
                 </>
-              ) : (
+              ) : null}
+
+              {isDeck(selectedObject) ? (
                 <>
                   <div className="stats-card">
-                    <span>Current Turn</span>
-                    <strong>{turnPlayer?.name ?? 'Unset'}</strong>
+                    <span>Cards</span>
+                    <strong>{selectedObject.childIds.length}</strong>
                   </div>
-
                   <div className="button-row">
-                    <button disabled={!canEdit} onClick={() => mutate((draft) => advanceTurn(draft))}>
-                      Advance Turn
+                    <button disabled={!canEdit} onClick={() => mutate((draft) => flipDeck(draft, selectedObject.id))}>
+                      Flip Deck
+                    </button>
+                    <button disabled={!canEdit} onClick={() => mutate((draft) => shuffleDeck(draft, selectedObject.id))}>
+                      Shuffle
+                    </button>
+                    <button disabled={!canEdit} onClick={() => mutate((draft) => drawFromDeck(draft, selectedObject.id))}>
+                      Draw Top Card
+                    </button>
+                  </div>
+                </>
+              ) : null}
+
+              {isBoard(selectedObject) ? (
+                <>
+                  <div className="button-row">
+                    <button disabled={!canEdit} onClick={() => mutate((draft) => flipBoard(draft, selectedObject.id))}>
+                      {selectedObject.meta.faceUp === false ? 'Show Face' : 'Show Back'}
                     </button>
                   </div>
 
-                  <section className="inspector-group">
-                    <h4>Players</h4>
-                    <div className="player-list room-player-list">
-                      {playerList.map((player) => (
-                        <div className={`player-card ${player.id === room.turnPlayerId ? 'active-turn' : ''}`} key={player.id}>
-                          <div className="player-card-copy">
-                            <strong>{player.name}</strong>
-                            <small>{player.id === room.turnPlayerId ? 'Current turn' : 'Waiting'}</small>
-                          </div>
-                          <button disabled={!canEdit} onClick={() => mutate((draft) => setTurnPlayer(draft, player.id))}>
-                            {player.id === room.turnPlayerId ? 'Active' : 'Make Active'}
-                          </button>
-                        </div>
-                      ))}
-                      {playerList.length === 0 ? <p className="empty-copy">Nobody has joined this room yet.</p> : null}
-                    </div>
-                  </section>
+                  <BoardSizeEditor
+                    width={selectedObject.size.width}
+                    height={selectedObject.size.height}
+                    disabled={!canEdit}
+                    onCommitWidth={async (width) => {
+                      const board = room.objects[selectedObject.id]
+                      if (!isBoard(board)) {
+                        return
+                      }
+
+                      const aspectRatio = await resolveBoardResizeAspectRatio(board)
+                      mutate((draft) => {
+                        const nextBoard = draft.objects[selectedObject.id]
+                        if (isBoard(nextBoard)) {
+                          nextBoard.size.width = width
+                          nextBoard.size.height = Math.max(48, Math.round(width / aspectRatio))
+                        }
+                      })
+                    }}
+                    onCommitHeight={async (height) => {
+                      const board = room.objects[selectedObject.id]
+                      if (!isBoard(board)) {
+                        return
+                      }
+
+                      const aspectRatio = await resolveBoardResizeAspectRatio(board)
+                      mutate((draft) => {
+                        const nextBoard = draft.objects[selectedObject.id]
+                        if (isBoard(nextBoard)) {
+                          nextBoard.size.width = Math.max(48, Math.round(height * aspectRatio))
+                          nextBoard.size.height = height
+                        }
+                      })
+                    }}
+                  />
+
+                  <SpriteEditor
+                    label="Face"
+                    value={selectedObject.face}
+                    disabled={!canEdit}
+                    onChange={(next) =>
+                      mutate((draft) => {
+                        const board = draft.objects[selectedObject.id]
+                        if (isBoard(board)) {
+                          board.face = next
+                        }
+                      })
+                    }
+                  />
+                  <SpriteEditor
+                    label="Back"
+                    value={selectedObject.back}
+                    disabled={!canEdit}
+                    onChange={(next) =>
+                      mutate((draft) => {
+                        const board = draft.objects[selectedObject.id]
+                        if (isBoard(board)) {
+                          board.back = next
+                        }
+                      })
+                    }
+                  />
                 </>
-              )}
+              ) : null}
+
+              <MetaEditor
+                key={`${selectedObject.id}:${JSON.stringify(selectedObject.meta)}`}
+                object={selectedObject}
+                disabled={!canEdit}
+                onCommit={(meta) =>
+                  mutate((draft) => {
+                    draft.objects[selectedObject.id].meta = meta
+                  })
+                }
+              />
+
+              <div className="button-row">
+                <button
+                  className="danger"
+                  disabled={!canEdit}
+                  onClick={() =>
+                    mutate((draft) => {
+                      deleteObject(draft, selectedObject.id)
+                      updateSelection(undefined)
+                    })
+                  }
+                >
+                  Delete
+                </button>
+              </div>
             </section>
           </aside>
         ) : null}
