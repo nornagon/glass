@@ -6,7 +6,7 @@ import {
 import { startTransition, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import { BoardView } from '../board/BoardView'
 import { syncTurnBadge } from './badge'
-import { isRoomEphemeralMessage } from '../model/ephemeral'
+import { applyRoomEphemeralMessage, isRoomEphemeralMessage, type RemoteDragSession } from '../model/ephemeral'
 import {
   clearJoinedPlayerId,
   loadJoinedPlayerId,
@@ -58,14 +58,6 @@ const DEFAULT_CAMERA: CameraState = {
 
 const REMOTE_DRAG_STALE_MS = 5000
 
-interface RemoteDragSession {
-  clientId: string
-  objectId: Id
-  transform: Transform2D
-  updatedAt: number
-  ending: boolean
-}
-
 function createClientId() {
   return globalThis.crypto?.randomUUID?.() ?? `glass-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
@@ -101,9 +93,6 @@ function dragTransformsByObject(sessions: Map<string, RemoteDragSession>) {
   return transforms
 }
 
-function remoteDragSessionKey(clientId: string, objectId: Id) {
-  return `${clientId}:${objectId}`
-}
 function nextSpawnTransform(camera: CameraState, offset: number) {
   return {
     x: camera.centerX + offset * 26,
@@ -665,12 +654,13 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     })
   }
 
-  function clearPreviewTransform(objectId: Id) {
+  function clearPreviewTransform(objectId: Id, finalTransform?: Transform2D) {
     delete localDragPreviewRef.current[objectId]
     roomHandle.broadcast({
       kind: 'drag-preview-end',
       clientId: clientIdRef.current,
       objectId,
+      transform: finalTransform,
     })
   }
 
@@ -685,33 +675,12 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
         return
       }
 
-      if (message.kind === 'drag-preview') {
-        const updatedAt = Date.now()
-        const sessionKey = remoteDragSessionKey(message.clientId, message.objectId)
-        remoteDragSessions.set(sessionKey, {
-          clientId: message.clientId,
-          objectId: message.objectId,
-          transform: message.transform,
-          updatedAt,
-          ending: false,
-        })
-        scheduleRemoteDragExpiry(sessionKey)
-        syncEphemeralTransforms()
-        return
-      }
-
-      const sessionKey = remoteDragSessionKey(message.clientId, message.objectId)
-      const existing = remoteDragSessions.get(sessionKey)
-      if (!existing) {
+      const { sessionKey, changed } = applyRoomEphemeralMessage(remoteDragSessions, message, Date.now())
+      if (!changed) {
         removeRemoteDragSession(sessionKey)
         return
       }
 
-      remoteDragSessions.set(sessionKey, {
-        ...existing,
-        updatedAt: Date.now(),
-        ending: true,
-      })
       scheduleRemoteDragExpiry(sessionKey)
       syncEphemeralTransforms()
     }
@@ -729,12 +698,12 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
       localDragPreviewRef.current = {}
       if (pendingPreview.length > 0) {
         for (const objectId of pendingPreview) {
-        roomHandle.broadcast({
-          kind: 'drag-preview-end',
-          clientId,
-          objectId,
-        })
-      }
+          roomHandle.broadcast({
+            kind: 'drag-preview-end',
+            clientId,
+            objectId,
+          })
+        }
       }
 
       for (const timeoutId of remoteDragExpiries.values()) {
