@@ -1847,60 +1847,50 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                 </div>
               </div>
             </div>
-          ) : isAddMenuOpen ? (
-            <div className="modal-scrim" onClick={() => setIsAddMenuOpen(false)}>
-              <div className="creation-dock" onClick={(event) => event.stopPropagation()}>
-                <section aria-modal="true" className="creation-menu" role="dialog">
-                  <div className="section-copy">
-                    <h4>Add To Table</h4>
-                    <p className="field-note">Quick create on the board or open an import flow.</p>
-                  </div>
-
-                  <section className="creation-menu-section">
-                    <h4>Quick Create</h4>
-                    <div className="action-grid">
-                      <button onClick={createCardHere}>Card</button>
-                      <button onClick={createDeckHere}>Deck</button>
-                      <button onClick={createBoardHere}>Board</button>
+          ) : (
+            <>
+              {isAddMenuOpen ? <div className="modal-scrim" onClick={() => setIsAddMenuOpen(false)} /> : null}
+              <div className={`creation-dock ${isAddMenuOpen ? 'dock-modal-open' : 'dock-row'}`}>
+                {isAddMenuOpen ? (
+                  <section aria-modal="true" className="creation-menu" role="dialog">
+                    <div className="section-copy">
+                      <h4>Add To Table</h4>
+                      <p className="field-note">Quick create on the board or open an import flow.</p>
                     </div>
-                  </section>
 
-                  <section className="creation-menu-section">
-                    <h4>Imports</h4>
-                    <div className="action-grid">
-                      <button onClick={() => openCreationFlow('board')}>Board From Image</button>
-                      <button onClick={() => openCreationFlow('deck-sheet')}>Deck From Sheet</button>
-                    </div>
-                  </section>
-                </section>
+                    <section className="creation-menu-section">
+                      <h4>Quick Create</h4>
+                      <div className="action-grid">
+                        <button onClick={createCardHere}>Card</button>
+                        <button onClick={createDeckHere}>Deck</button>
+                        <button onClick={createBoardHere}>Board</button>
+                      </div>
+                    </section>
 
+                    <section className="creation-menu-section">
+                      <h4>Imports</h4>
+                      <div className="action-grid">
+                        <button onClick={() => openCreationFlow('board')}>Board From Image</button>
+                        <button onClick={() => openCreationFlow('deck-sheet')}>Deck From Sheet</button>
+                      </div>
+                    </section>
+                  </section>
+                ) : null}
+                {!isAddMenuOpen ? (
+                  <button className="dock-mode-button" onClick={enterGroupSelectionMode}>
+                    Select
+                  </button>
+                ) : null}
                 <button
-                  aria-label="Close add menu"
-                  className="add-button active"
+                  aria-label={isAddMenuOpen ? 'Close add menu' : 'Open add menu'}
+                  className={`add-button ${isAddMenuOpen ? 'active' : ''}`}
                   onClick={toggleAddMenu}
-                  title="Close add menu"
+                  title={isAddMenuOpen ? 'Close add menu' : 'Open add menu'}
                 >
                   <span aria-hidden="true" className="add-button-glyph">+</span>
                 </button>
-                <button className="dock-mode-button" onClick={enterGroupSelectionMode}>
-                  Select
-                </button>
               </div>
-            </div>
-          ) : (
-            <div className="creation-dock dock-row">
-              <button
-                aria-label="Open add menu"
-                className="add-button"
-                onClick={toggleAddMenu}
-                title="Open add menu"
-              >
-                <span aria-hidden="true" className="add-button-glyph">+</span>
-              </button>
-              <button className="dock-mode-button" onClick={enterGroupSelectionMode}>
-                Select
-              </button>
-            </div>
+            </>
           )
         ) : null}
 

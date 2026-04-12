@@ -2,6 +2,7 @@
 
 ## 2026-04-12
 
+- Restored the add button's open/close rotation animation and fixed the add-menu scrim layering so the menu stays above the backdrop.
 - Reworked the multiselect design around a bottom-right `Select` mode, then implemented the first pass with a selection tray, explicit lasso tool, grouped drag for cards and decks, and multi-object ephemeral drag previews.
 - Persisted joined player IDs in `localStorage` so reopening the browser keeps the same player identity for each room.
 - Added player removal from the turn panel, including a self-serve leave action that clears the local joined-player record.
