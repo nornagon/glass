@@ -100,6 +100,10 @@ function dragTransformsByObject(sessions: Map<string, RemoteDragSession>) {
   }
   return transforms
 }
+
+function remoteDragSessionKey(clientId: string, objectId: Id) {
+  return `${clientId}:${objectId}`
+}
 function nextSpawnTransform(camera: CameraState, offset: number) {
   return {
     x: camera.centerX + offset * 26,
@@ -207,6 +211,7 @@ interface BoardDraft {
 
 type RightPanelMode = 'turn' | 'selection'
 type CreationMode = 'board' | 'deck-sheet'
+type SelectionMode = 'normal' | 'group'
 
 function defaultSheetDeckDraft(): SheetDeckDraft {
   return {
@@ -558,6 +563,10 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   const [room, changeRoom] = useDocument<RoomDoc>(roomUrl, { suspense: true })
   const roomHandle = useDocHandle<RoomDoc>(roomUrl, { suspense: true })
   const [selectedId, setSelectedId] = useState<string>()
+  const [selectionMode, setSelectionMode] = useState<SelectionMode>('normal')
+  const [groupSelectionIds, setGroupSelectionIds] = useState<string[]>([])
+  const [groupPrimaryId, setGroupPrimaryId] = useState<string>()
+  const [isLassoMode, setIsLassoMode] = useState(false)
   const [joinedPlayerId, setJoinedPlayerId] = useState<string | undefined>(() => loadJoinedPlayerId(roomUrl))
   const [isRoomPanelOpen, setIsRoomPanelOpen] = useState(false)
   const [rightPanelMode, setRightPanelMode] = useState<RightPanelMode | undefined>()
@@ -574,15 +583,22 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   const clientIdRef = useRef(createClientId())
   const remoteDragSessionsRef = useRef(new Map<string, RemoteDragSession>())
   const remoteDragExpiryRef = useRef(new Map<string, number>())
-  const localDragPreviewRef = useRef<{ objectId: Id; transform: Transform2D } | null>(null)
+  const localDragPreviewRef = useRef<Record<Id, Transform2D>>({})
   const localDragPreviewFrameRef = useRef<number | undefined>(undefined)
-  const selectedObject = selectedId ? room.objects[selectedId] : undefined
-  const boardSelectedId = selectedObject?.id
-  const visibleRightPanelMode = rightPanelMode === 'selection' && !selectedObject ? undefined : rightPanelMode
+  const selectedObject = selectionMode === 'normal' && selectedId ? room.objects[selectedId] : undefined
+  const boardSelectedIds = selectionMode === 'group' ? groupSelectionIds : selectedId ? [selectedId] : []
+  const boardPrimarySelectedId = selectionMode === 'group' ? groupPrimaryId : selectedObject?.id
+  const visibleRightPanelMode =
+    rightPanelMode === 'selection'
+      ? selectionMode === 'normal' && selectedObject
+        ? rightPanelMode
+        : undefined
+      : rightPanelMode
   const currentPlayer = joinedPlayerId ? room.players[joinedPlayerId] : undefined
   const canEdit = Boolean(currentPlayer)
   const roomTitle = formatRoomTitle(room)
   const linkedTemplate = room.sourceTemplateId ? loadRoomTemplates().find((template) => template.id === room.sourceTemplateId) : undefined
+  const isGroupSelectionMode = selectionMode === 'group'
 
   const syncEphemeralTransforms = useEffectEvent(() => {
     const next = dragTransformsByObject(remoteDragSessionsRef.current)
@@ -591,49 +607,54 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     })
   })
 
-  const clearRemoteDragExpiry = useEffectEvent((clientId: string) => {
-    const timeoutId = remoteDragExpiryRef.current.get(clientId)
+  const clearRemoteDragExpiry = useEffectEvent((sessionKey: string) => {
+    const timeoutId = remoteDragExpiryRef.current.get(sessionKey)
     if (timeoutId === undefined) {
       return
     }
     window.clearTimeout(timeoutId)
-    remoteDragExpiryRef.current.delete(clientId)
+    remoteDragExpiryRef.current.delete(sessionKey)
   })
 
-  const removeRemoteDragSession = useEffectEvent((clientId: string) => {
-    clearRemoteDragExpiry(clientId)
-    if (remoteDragSessionsRef.current.delete(clientId)) {
+  const removeRemoteDragSession = useEffectEvent((sessionKey: string) => {
+    clearRemoteDragExpiry(sessionKey)
+    if (remoteDragSessionsRef.current.delete(sessionKey)) {
       syncEphemeralTransforms()
     }
   })
 
-  const scheduleRemoteDragExpiry = useEffectEvent((clientId: string) => {
-    clearRemoteDragExpiry(clientId)
+  const scheduleRemoteDragExpiry = useEffectEvent((sessionKey: string) => {
+    clearRemoteDragExpiry(sessionKey)
     const timeoutId = window.setTimeout(() => {
-      remoteDragExpiryRef.current.delete(clientId)
-      if (remoteDragSessionsRef.current.delete(clientId)) {
+      remoteDragExpiryRef.current.delete(sessionKey)
+      if (remoteDragSessionsRef.current.delete(sessionKey)) {
         syncEphemeralTransforms()
       }
     }, REMOTE_DRAG_STALE_MS)
-    remoteDragExpiryRef.current.set(clientId, timeoutId)
+    remoteDragExpiryRef.current.set(sessionKey, timeoutId)
   })
 
   function flushLocalDragPreview() {
-    const pending = localDragPreviewRef.current
-    if (!pending) {
+    const pendingEntries = Object.entries(localDragPreviewRef.current)
+    if (pendingEntries.length === 0) {
       return
     }
 
-    roomHandle.broadcast({
-      kind: 'drag-preview',
-      clientId: clientIdRef.current,
-      objectId: pending.objectId,
-      transform: pending.transform,
-    })
+    for (const [objectId, transform] of pendingEntries) {
+      roomHandle.broadcast({
+        kind: 'drag-preview',
+        clientId: clientIdRef.current,
+        objectId,
+        transform,
+      })
+    }
   }
 
   function previewTransform(objectId: Id, transform: Transform2D) {
-    localDragPreviewRef.current = { objectId, transform }
+    localDragPreviewRef.current = {
+      ...localDragPreviewRef.current,
+      [objectId]: transform,
+    }
     if (localDragPreviewFrameRef.current !== undefined) {
       return
     }
@@ -645,19 +666,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   }
 
   function clearPreviewTransform(objectId: Id) {
-    const pendingPreview = localDragPreviewRef.current
-    if (pendingPreview?.objectId === objectId) {
-      if (localDragPreviewFrameRef.current !== undefined) {
-        window.cancelAnimationFrame(localDragPreviewFrameRef.current)
-        localDragPreviewFrameRef.current = undefined
-      }
-      flushLocalDragPreview()
-    } else if (localDragPreviewFrameRef.current !== undefined) {
-      window.cancelAnimationFrame(localDragPreviewFrameRef.current)
-      localDragPreviewFrameRef.current = undefined
-    }
-
-    localDragPreviewRef.current = null
+    delete localDragPreviewRef.current[objectId]
     roomHandle.broadcast({
       kind: 'drag-preview-end',
       clientId: clientIdRef.current,
@@ -678,30 +687,32 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
 
       if (message.kind === 'drag-preview') {
         const updatedAt = Date.now()
-        remoteDragSessions.set(message.clientId, {
+        const sessionKey = remoteDragSessionKey(message.clientId, message.objectId)
+        remoteDragSessions.set(sessionKey, {
           clientId: message.clientId,
           objectId: message.objectId,
           transform: message.transform,
           updatedAt,
           ending: false,
         })
-        scheduleRemoteDragExpiry(message.clientId)
+        scheduleRemoteDragExpiry(sessionKey)
         syncEphemeralTransforms()
         return
       }
 
-      const existing = remoteDragSessions.get(message.clientId)
-      if (!existing || existing.objectId !== message.objectId) {
-        removeRemoteDragSession(message.clientId)
+      const sessionKey = remoteDragSessionKey(message.clientId, message.objectId)
+      const existing = remoteDragSessions.get(sessionKey)
+      if (!existing) {
+        removeRemoteDragSession(sessionKey)
         return
       }
 
-      remoteDragSessions.set(message.clientId, {
+      remoteDragSessions.set(sessionKey, {
         ...existing,
         updatedAt: Date.now(),
         ending: true,
       })
-      scheduleRemoteDragExpiry(message.clientId)
+      scheduleRemoteDragExpiry(sessionKey)
       syncEphemeralTransforms()
     }
 
@@ -714,14 +725,16 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
         localDragPreviewFrameRef.current = undefined
       }
 
-      const pendingPreview = localDragPreviewRef.current
-      localDragPreviewRef.current = null
-      if (pendingPreview) {
+      const pendingPreview = Object.keys(localDragPreviewRef.current)
+      localDragPreviewRef.current = {}
+      if (pendingPreview.length > 0) {
+        for (const objectId of pendingPreview) {
         roomHandle.broadcast({
           kind: 'drag-preview-end',
           clientId,
-          objectId: pendingPreview.objectId,
+          objectId,
         })
+      }
       }
 
       for (const timeoutId of remoteDragExpiries.values()) {
@@ -735,19 +748,19 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   useEffect(() => {
     let changed = false
     const root = getRootPlane(room)
-    for (const [clientId, session] of remoteDragSessionsRef.current) {
+    for (const [sessionKey, session] of remoteDragSessionsRef.current) {
       const object = room.objects[session.objectId]
       if (!object || object.parentId !== room.rootId) {
-        clearRemoteDragExpiry(clientId)
-        remoteDragSessionsRef.current.delete(clientId)
+        clearRemoteDragExpiry(sessionKey)
+        remoteDragSessionsRef.current.delete(sessionKey)
         changed = true
         continue
       }
 
       const persistedTransform = root.childTransforms[session.objectId]
       if (session.ending && sameTransform(persistedTransform, session.transform)) {
-        clearRemoteDragExpiry(clientId)
-        remoteDragSessionsRef.current.delete(clientId)
+        clearRemoteDragExpiry(sessionKey)
+        remoteDragSessionsRef.current.delete(sessionKey)
         changed = true
       }
     }
@@ -790,6 +803,41 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     [room.playerOrder, room.players],
   )
 
+  useEffect(() => {
+    if (selectionMode !== 'group') {
+      return
+    }
+
+    const nextIds = groupSelectionIds.filter((id) => {
+      const object = room.objects[id]
+      return Boolean(object && (object.type === 'card' || object.type === 'deck'))
+    })
+
+    if (nextIds.length === groupSelectionIds.length) {
+      return
+    }
+
+    if (nextIds.length === 0) {
+      setSelectionMode('normal')
+      setGroupSelectionIds([])
+      setGroupPrimaryId(undefined)
+      setSelectedId(undefined)
+      setIsLassoMode(false)
+      setRightPanelMode((mode) => (mode === 'selection' ? undefined : mode))
+      return
+    }
+
+    setGroupSelectionIds(nextIds)
+    setGroupPrimaryId((current) => (current && nextIds.includes(current) ? current : nextIds[nextIds.length - 1]))
+  }, [groupSelectionIds, room.objects, selectionMode])
+
+  useEffect(() => {
+    if (selectionMode === 'normal' && selectedId && !room.objects[selectedId]) {
+      setSelectedId(undefined)
+      setRightPanelMode((mode) => (mode === 'selection' ? undefined : mode))
+    }
+  }, [room.objects, selectedId, selectionMode])
+
   function mutate(change: (draft: RoomDoc) => void) {
     if (!canEdit) {
       return
@@ -820,14 +868,90 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   }
 
   function updateSelection(nextId?: string) {
+    setSelectionMode('normal')
+    setGroupSelectionIds([])
+    setGroupPrimaryId(undefined)
+    setIsLassoMode(false)
     setSelectedId(nextId)
     if (!nextId) {
       setRightPanelMode((current) => (current === 'selection' ? undefined : current))
     }
   }
 
+  function enterGroupSelectionMode() {
+    const seedId =
+      selectedId && room.objects[selectedId] && (room.objects[selectedId].type === 'card' || room.objects[selectedId].type === 'deck')
+        ? selectedId
+        : undefined
+    setSelectionMode('group')
+    setGroupSelectionIds(seedId ? [seedId] : [])
+    setGroupPrimaryId(seedId)
+    setIsLassoMode(false)
+    setIsAddMenuOpen(false)
+    setRightPanelMode((current) => (current === 'selection' ? undefined : current))
+  }
+
+  function exitGroupSelectionMode() {
+    setSelectionMode('normal')
+    setGroupSelectionIds([])
+    setGroupPrimaryId(undefined)
+    setIsLassoMode(false)
+    setSelectedId(undefined)
+  }
+
+  function toggleGroupSelection(id: string) {
+    const object = room.objects[id]
+    if (!object || (object.type !== 'card' && object.type !== 'deck')) {
+      return
+    }
+
+    setGroupSelectionIds((current) => {
+      const exists = current.includes(id)
+      const next = exists ? current.filter((candidateId) => candidateId !== id) : [...current, id]
+
+      if (next.length === 0) {
+        setSelectionMode('normal')
+        setGroupPrimaryId(undefined)
+        setSelectedId(undefined)
+        setIsLassoMode(false)
+        setRightPanelMode((mode) => (mode === 'selection' ? undefined : mode))
+        return []
+      }
+
+      setGroupPrimaryId((currentPrimary) => {
+        if (!exists) {
+          return id
+        }
+        if (currentPrimary === id) {
+          return next[next.length - 1]
+        }
+        return currentPrimary && next.includes(currentPrimary) ? currentPrimary : next[next.length - 1]
+      })
+      return next
+    })
+  }
+
+  function addToGroupSelection(ids: string[]) {
+    const validIds = ids.filter((id) => {
+      const object = room.objects[id]
+      return Boolean(object && (object.type === 'card' || object.type === 'deck'))
+    })
+    if (validIds.length === 0) {
+      setIsLassoMode(false)
+      return
+    }
+
+    setSelectionMode('group')
+    setGroupSelectionIds((current) => {
+      const next = [...new Set([...current, ...validIds])]
+      setGroupPrimaryId((currentPrimary) => currentPrimary ?? next[next.length - 1])
+      return next
+    })
+    setIsLassoMode(false)
+  }
+
   function openSelectionPanel() {
-    if (selectedObject) {
+    if (selectionMode === 'normal' && selectedObject) {
       setIsRoomPanelOpen(false)
       setIsAddMenuOpen(false)
       setRightPanelMode('selection')
@@ -836,6 +960,10 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
 
   function closeRoomPanel() {
     setIsRoomPanelOpen(false)
+  }
+
+  function closeTurnPanel() {
+    setRightPanelMode((current) => (current === 'turn' ? undefined : current))
   }
 
   function closeRightPanel() {
@@ -961,7 +1089,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     })
 
     if (createdBoardId) {
-      setSelectedId(createdBoardId)
+      updateSelection(createdBoardId)
       setRightPanelMode('selection')
       setCreationMode(undefined)
     }
@@ -1031,7 +1159,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
 
     setBoardDraft(defaultBoardDraft())
     setBoardDraftError('')
-    setSelectedId(createdBoardId)
+    updateSelection(createdBoardId)
     setRightPanelMode('selection')
     setCreationMode(undefined)
   }
@@ -1119,7 +1247,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
       return
     }
 
-    setSelectedId(createdDeckId)
+    updateSelection(createdDeckId)
     setSheetDeckError('')
     setSheetDeckDraft(defaultSheetDeckDraft())
     setRightPanelMode('selection')
@@ -1162,7 +1290,10 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
           room={room}
           roomUrl={roomUrl}
           ephemeralTransforms={ephemeralTransforms}
-          selectedId={boardSelectedId}
+          selectionMode={selectionMode}
+          selectedId={boardPrimarySelectedId}
+          selectedIds={boardSelectedIds}
+          lassoMode={isLassoMode}
           currentPlayerId={currentPlayer?.id}
           canEdit={canEdit}
           allowSelectLocked={allowSelectLocked}
@@ -1172,6 +1303,8 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
             saveCameraState(roomUrl, next)
           }}
           onSelect={updateSelection}
+          onToggleGroupSelection={toggleGroupSelection}
+          onAddToGroupSelection={addToGroupSelection}
           onCommitTransform={(objectId, transform) =>
             mutate((draft) => {
               moveObject(draft, objectId, transform)
@@ -1265,155 +1398,159 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
         </header>
 
         {isRoomPanelOpen ? (
-          <aside className="room-panel">
-            <section className="room-panel-card">
-              <div className="room-panel-header">
-                {canEdit ? (
-                  <textarea
-                    aria-label="Room name"
-                    className="drawer-title-input"
-                    placeholder="Untitled Table"
-                    rows={1}
-                    spellCheck={false}
-                    wrap="off"
-                    value={getRootPlane(room).name}
-                    onChange={(event) =>
-                      mutate((draft) => {
-                        getRootPlane(draft).name = event.target.value.replaceAll('\n', ' ')
-                      })
-                    }
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') {
-                        event.preventDefault()
-                        event.currentTarget.blur()
+          <div className="modal-scrim" onClick={closeRoomPanel}>
+            <aside aria-modal="true" className="room-panel" role="dialog" onClick={(event) => event.stopPropagation()}>
+              <section className="room-panel-card">
+                <div className="room-panel-header">
+                  {canEdit ? (
+                    <textarea
+                      aria-label="Room name"
+                      className="drawer-title-input"
+                      placeholder="Untitled Table"
+                      rows={1}
+                      spellCheck={false}
+                      wrap="off"
+                      value={getRootPlane(room).name}
+                      onChange={(event) =>
+                        mutate((draft) => {
+                          getRootPlane(draft).name = event.target.value.replaceAll('\n', ' ')
+                        })
                       }
-                    }}
-                  />
-                ) : (
-                  <h2 className="room-panel-title">{roomTitle}</h2>
-                )}
-                <button aria-label="Close room panel" className="panel-close" onClick={closeRoomPanel} title="Close room panel" />
-              </div>
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault()
+                          event.currentTarget.blur()
+                        }
+                      }}
+                    />
+                  ) : (
+                    <h2 className="room-panel-title">{roomTitle}</h2>
+                  )}
+                  <button aria-label="Close room panel" className="panel-close" onClick={closeRoomPanel} title="Close room panel" />
+                </div>
 
-              <section className="inspector-group">
-                <h4>Templates</h4>
-                {linkedTemplate ? (
-                  <div className="stats-card">
-                    <span>Current Template</span>
-                    <strong>{linkedTemplate.title}</strong>
+                <section className="inspector-group">
+                  <h4>Templates</h4>
+                  {linkedTemplate ? (
+                    <div className="stats-card">
+                      <span>Current Template</span>
+                      <strong>{linkedTemplate.title}</strong>
+                    </div>
+                  ) : null}
+                  <div className="action-grid">
+                    <button onClick={saveCurrentRoomAsTemplate}>Save As Template</button>
+                    {linkedTemplate ? <button onClick={updateLinkedTemplate}>Update Template</button> : null}
                   </div>
-                ) : null}
-                <div className="action-grid">
-                  <button onClick={saveCurrentRoomAsTemplate}>Save As Template</button>
-                  {linkedTemplate ? <button onClick={updateLinkedTemplate}>Update Template</button> : null}
+                </section>
+
+                <section className="inspector-group">
+                  <h4>Interaction</h4>
+                  <label className="toggle-row room-toggle-card">
+                    <span>Select Locked Objects</span>
+                    <input
+                      type="checkbox"
+                      checked={allowSelectLocked}
+                      onChange={(event) => setAllowSelectLocked(event.target.checked)}
+                    />
+                  </label>
+                </section>
+
+                <div className="panel-footer-action">
+                  <button onClick={returnToLobby}>Return To Lobby</button>
                 </div>
               </section>
-
-              <section className="inspector-group">
-                <h4>Interaction</h4>
-                <label className="toggle-row room-toggle-card">
-                  <span>Select Locked Objects</span>
-                  <input
-                    type="checkbox"
-                    checked={allowSelectLocked}
-                    onChange={(event) => setAllowSelectLocked(event.target.checked)}
-                  />
-                </label>
-              </section>
-
-              <div className="panel-footer-action">
-                <button onClick={returnToLobby}>Return To Lobby</button>
-              </div>
-            </section>
-          </aside>
+            </aside>
+          </div>
         ) : null}
 
         {isTurnPanelOpen ? (
-          <aside className="turn-panel">
-            <section className="turn-panel-card">
-              <div className="turn-panel-header">
-                {currentPlayer ? (
-                  <textarea
-                    aria-label="Your player name"
-                    className="drawer-title-input"
-                    placeholder="Player Name"
-                    rows={1}
-                    spellCheck={false}
-                    wrap="off"
-                    value={currentPlayer.name}
-                    onChange={(event) =>
-                      mutate((draft) => {
-                        const player = draft.players[currentPlayer.id]
-                        if (player) {
-                          player.name = event.target.value.replaceAll('\n', ' ')
-                        }
-                      })
-                    }
-                    onBlur={(event) =>
-                      mutate((draft) => {
-                        const player = draft.players[currentPlayer.id]
-                        if (player) {
-                          const trimmed = event.target.value.trim()
-                          const fallbackIndex = Math.max(0, draft.playerOrder.indexOf(currentPlayer.id))
-                          player.name = trimmed || `Player ${fallbackIndex + 1}`
-                        }
-                      })
-                    }
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') {
-                        event.preventDefault()
-                        event.currentTarget.blur()
+          <div className="modal-scrim" onClick={closeTurnPanel}>
+            <aside aria-modal="true" className="turn-panel" role="dialog" onClick={(event) => event.stopPropagation()}>
+              <section className="turn-panel-card">
+                <div className="turn-panel-header">
+                  {currentPlayer ? (
+                    <textarea
+                      aria-label="Your player name"
+                      className="drawer-title-input"
+                      placeholder="Player Name"
+                      rows={1}
+                      spellCheck={false}
+                      wrap="off"
+                      value={currentPlayer.name}
+                      onChange={(event) =>
+                        mutate((draft) => {
+                          const player = draft.players[currentPlayer.id]
+                          if (player) {
+                            player.name = event.target.value.replaceAll('\n', ' ')
+                          }
+                        })
                       }
-                    }}
-                  />
-                ) : (
-                  <div className="turn-panel-join-copy">
-                    <h2 className="turn-panel-title">Join This Room</h2>
-                    <p className="field-note">Join to take turns and edit the table.</p>
-                  </div>
-                )}
-                <button aria-label="Close turn panel" className="panel-close" onClick={closeRightPanel} title="Close turn panel" />
-              </div>
-              {!currentPlayer ? (
-                <div className="button-row">
-                  <button onClick={joinRoom}>Join Room</button>
-                </div>
-              ) : null}
-
-              <section className="inspector-group">
-                <h4>Players</h4>
-                <div className="player-list room-player-list">
-                  {playerList.map((player) => (
-                    <div className={`player-card ${player.id === room.turnPlayerId ? 'active-turn' : ''}`} key={player.id}>
-                      <div className="player-card-copy">
-                        <strong>{player.name}</strong>
-                        <small>
-                          {player.id === room.turnPlayerId
-                            ? 'Current turn'
-                            : player.id === currentPlayer?.id
-                              ? 'You'
-                            : 'Waiting'}
-                        </small>
-                      </div>
-                      <div className="player-card-actions">
-                        {player.id === room.turnPlayerId ? (
-                          <span className="player-card-status">Active</span>
-                        ) : (
-                          <button className="player-card-action" disabled={!canEdit} onClick={() => mutate((draft) => setTurnPlayer(draft, player.id))}>
-                            Make Active
-                          </button>
-                        )}
-                        <button className="player-card-action" disabled={!canEdit} onClick={() => removePlayerFromRoom(player.id)}>
-                          {player.id === currentPlayer?.id ? 'Leave' : 'Remove'}
-                        </button>
-                      </div>
+                      onBlur={(event) =>
+                        mutate((draft) => {
+                          const player = draft.players[currentPlayer.id]
+                          if (player) {
+                            const trimmed = event.target.value.trim()
+                            const fallbackIndex = Math.max(0, draft.playerOrder.indexOf(currentPlayer.id))
+                            player.name = trimmed || `Player ${fallbackIndex + 1}`
+                          }
+                        })
+                      }
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault()
+                          event.currentTarget.blur()
+                        }
+                      }}
+                    />
+                  ) : (
+                    <div className="turn-panel-join-copy">
+                      <h2 className="turn-panel-title">Join This Room</h2>
+                      <p className="field-note">Join to take turns and edit the table.</p>
                     </div>
-                  ))}
-                  {playerList.length === 0 ? <p className="empty-copy">Nobody has joined this room yet.</p> : null}
+                  )}
+                  <button aria-label="Close turn panel" className="panel-close" onClick={closeTurnPanel} title="Close turn panel" />
                 </div>
+                {!currentPlayer ? (
+                  <div className="button-row">
+                    <button onClick={joinRoom}>Join Room</button>
+                  </div>
+                ) : null}
+
+                <section className="inspector-group">
+                  <h4>Players</h4>
+                  <div className="player-list room-player-list">
+                    {playerList.map((player) => (
+                      <div className={`player-card ${player.id === room.turnPlayerId ? 'active-turn' : ''}`} key={player.id}>
+                        <div className="player-card-copy">
+                          <strong>{player.name}</strong>
+                          <small>
+                            {player.id === room.turnPlayerId
+                              ? 'Current turn'
+                              : player.id === currentPlayer?.id
+                                ? 'You'
+                                : 'Waiting'}
+                          </small>
+                        </div>
+                        <div className="player-card-actions">
+                          {player.id === room.turnPlayerId ? (
+                            <span className="player-card-status">Active</span>
+                          ) : (
+                            <button className="player-card-action" disabled={!canEdit} onClick={() => mutate((draft) => setTurnPlayer(draft, player.id))}>
+                              Make Active
+                            </button>
+                          )}
+                          <button className="player-card-action" disabled={!canEdit} onClick={() => removePlayerFromRoom(player.id)}>
+                            {player.id === currentPlayer?.id ? 'Leave' : 'Remove'}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                    {playerList.length === 0 ? <p className="empty-copy">Nobody has joined this room yet.</p> : null}
+                  </div>
+                </section>
               </section>
-            </section>
-          </aside>
+            </aside>
+          </div>
         ) : null}
 
         {visibleRightPanelMode === 'selection' && selectedObject ? (
@@ -1688,42 +1825,83 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
         ) : null}
 
         {canEdit ? (
-          <div className="creation-dock">
-            {isAddMenuOpen ? (
-              <section className="creation-menu">
-                <div className="section-copy">
-                  <h4>Add To Table</h4>
-                  <p className="field-note">Quick create on the board or open an import flow.</p>
+          isGroupSelectionMode ? (
+            <div className="creation-dock selection-dock">
+              <div className="selection-tray">
+                <strong>{groupSelectionIds.length} selected</strong>
+                <div className="selection-tray-actions">
+                  <button
+                    className={`selection-tool-button ${isLassoMode ? 'active' : ''}`}
+                    onClick={() => setIsLassoMode((current) => !current)}
+                  >
+                    Lasso
+                  </button>
+                  <button
+                    aria-label="Exit selection mode"
+                    className="selection-tool-button selection-close-button"
+                    onClick={exitGroupSelectionMode}
+                    title="Exit selection mode"
+                  >
+                    ×
+                  </button>
                 </div>
-
-                <section className="creation-menu-section">
-                  <h4>Quick Create</h4>
-                  <div className="action-grid">
-                    <button onClick={createCardHere}>Card</button>
-                    <button onClick={createDeckHere}>Deck</button>
-                    <button onClick={createBoardHere}>Board</button>
+              </div>
+            </div>
+          ) : isAddMenuOpen ? (
+            <div className="modal-scrim" onClick={() => setIsAddMenuOpen(false)}>
+              <div className="creation-dock" onClick={(event) => event.stopPropagation()}>
+                <section aria-modal="true" className="creation-menu" role="dialog">
+                  <div className="section-copy">
+                    <h4>Add To Table</h4>
+                    <p className="field-note">Quick create on the board or open an import flow.</p>
                   </div>
+
+                  <section className="creation-menu-section">
+                    <h4>Quick Create</h4>
+                    <div className="action-grid">
+                      <button onClick={createCardHere}>Card</button>
+                      <button onClick={createDeckHere}>Deck</button>
+                      <button onClick={createBoardHere}>Board</button>
+                    </div>
+                  </section>
+
+                  <section className="creation-menu-section">
+                    <h4>Imports</h4>
+                    <div className="action-grid">
+                      <button onClick={() => openCreationFlow('board')}>Board From Image</button>
+                      <button onClick={() => openCreationFlow('deck-sheet')}>Deck From Sheet</button>
+                    </div>
+                  </section>
                 </section>
 
-                <section className="creation-menu-section">
-                  <h4>Imports</h4>
-                  <div className="action-grid">
-                    <button onClick={() => openCreationFlow('board')}>Board From Image</button>
-                    <button onClick={() => openCreationFlow('deck-sheet')}>Deck From Sheet</button>
-                  </div>
-                </section>
-              </section>
-            ) : null}
-
-            <button
-              aria-label={isAddMenuOpen ? 'Close add menu' : 'Open add menu'}
-              className={`add-button ${isAddMenuOpen ? 'active' : ''}`}
-              onClick={toggleAddMenu}
-              title={isAddMenuOpen ? 'Close add menu' : 'Open add menu'}
-            >
-              <span aria-hidden="true" className="add-button-glyph">+</span>
-            </button>
-          </div>
+                <button
+                  aria-label="Close add menu"
+                  className="add-button active"
+                  onClick={toggleAddMenu}
+                  title="Close add menu"
+                >
+                  <span aria-hidden="true" className="add-button-glyph">+</span>
+                </button>
+                <button className="dock-mode-button" onClick={enterGroupSelectionMode}>
+                  Select
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="creation-dock dock-row">
+              <button
+                aria-label="Open add menu"
+                className="add-button"
+                onClick={toggleAddMenu}
+                title="Open add menu"
+              >
+                <span aria-hidden="true" className="add-button-glyph">+</span>
+              </button>
+              <button className="dock-mode-button" onClick={enterGroupSelectionMode}>
+                Select
+              </button>
+            </div>
+          )
         ) : null}
 
         {creationMode ? (

@@ -2,6 +2,7 @@
 
 ## 2026-04-12
 
+- Reworked the multiselect design around a bottom-right `Select` mode, then implemented the first pass with a selection tray, explicit lasso tool, grouped drag for cards and decks, and multi-object ephemeral drag previews.
 - Persisted joined player IDs in `localStorage` so reopening the browser keeps the same player identity for each room.
 - Added player removal from the turn panel, including a self-serve leave action that clears the local joined-player record.
 - Updated the room model and tests so removing a player also updates turn ownership and card visibility lists consistently.

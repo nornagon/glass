@@ -2,7 +2,7 @@
 
 ## Goal
 
-Support selecting multiple board objects and moving them together without disrupting the app's default play-first interaction model.
+Support selecting multiple board objects and moving them together without overloading the normal play flow.
 
 This must work well on:
 
@@ -15,77 +15,86 @@ It must support multiselect for:
 - decks
 - mixed groups of cards and decks
 
+Boards may be added later, but they are not required for the first release.
+
 ## Design Principles
 
 - Single-select remains the default behavior.
-- Multiselect is explicit, not gesture-hidden.
-- The primary interaction surface is the board, not a side panel.
-- Mobile and desktop should share the same core model.
-- Common play actions stay lightweight and local to the selected objects.
-- Advanced editing stays secondary.
+- Multiselect is an explicit board mode.
+- Mode entry and exit should live in stable screen chrome, not object-local affordances.
+- The board remains the primary interaction surface.
+- Mobile and desktop share the same core model.
+- Lasso is an explicit tool, not an always-on gesture.
 
 ## Core Model
 
 There are two selection states:
 
-1. Single selection
-2. Group selection
+1. Normal selection mode
+2. Group selection mode
 
-Single selection is the normal board state.
+Normal selection mode is the default board state.
 
-Group selection is an explicit mode entered from the selected object's floating quick actions.
+Group selection mode is a distinct interaction mode for composing and moving a set of objects.
 
-While in group selection:
+While group selection mode is active:
 
-- the selection is a set of object ids
-- one selected object is the primary object
-- tapping objects toggles them in or out of the set
-- dragging any selected object moves the entire group
+- selection is a set of object ids
+- one object may be tracked as the primary object for internal state
+- taps toggle objects in or out of the set
+- dragging a selected object moves the whole group
+- the bottom-right dock switches from creation controls to selection controls
 
 ## Entry Affordance
 
 ### Primary entrypoint
 
-When a card or deck is selected, its floating quick actions should include a `+` action.
+The bottom-right dock should expose a `Select` control.
 
-Examples:
+This control should be available even when nothing is currently selected, so lasso-based selection can begin from an empty board state.
 
-- card: `Flip`, `+`, `...`
-- deck: `Flip`, `Draw`, `Shuffle`, `+`, `...`
+Entering selection mode works like this:
 
-Tapping `+` enters group selection mode and seeds the selection set with the currently selected object.
+- if one object is already selected, selection mode starts seeded with that object
+- if nothing is selected, selection mode starts empty
 
 ### Why this affordance
 
-- It is board-local.
-- It is visible and learnable.
-- It works on mobile and desktop.
-- It does not conflict with existing deck gestures.
-- It avoids relying on modifier keys or long-press discovery.
+- It makes multiselect feel like a board mode, not an action on one object.
+- It supports lasso from zero selection.
+- It avoids overloading object quick actions.
+- It is visible and learnable on mobile and desktop.
 
-### Optional desktop accelerator
+## Bottom-Right Dock Behavior
 
-Desktop may also support `Shift`-click to add/remove an object from the current selection, but this is a secondary accelerator only. The primary model must remain usable without a keyboard.
+### Normal mode
 
-## Group Selection UI
+In the default state, the bottom-right dock contains creation and selection entry controls.
 
-When group selection is active:
+Exact visual composition can be refined later, but conceptually it contains:
 
-- every selected object gets a strong, consistent highlight
-- the primary object may receive a slightly stronger accent treatment
-- a compact floating group bar appears on the board
+- `+` for add/create
+- `Select` for entering group selection mode
 
-The group bar should show:
+### Group selection mode
+
+When group selection mode is active, the dock stops showing the normal add/create affordance and becomes a selection tray instead.
+
+The selection tray should show:
 
 - selection count, e.g. `3 selected`
-- `Done`
-- `Clear`
+- `Lasso`
+- `×` to exit selection mode
 
-The group bar should be small, unobtrusive, and placed near the current selection or in another stable board-local location.
+There is no separate `Done` action.
+
+The `×` action is the explicit exit from group selection mode.
+
+Whether exiting leaves one object selected or clears selection entirely is intentionally undecided for now.
 
 ## Selection Behavior
 
-### Single selection mode
+### Normal selection mode
 
 - Tap/click an object to select it.
 - Tap/click empty board space to clear selection.
@@ -95,16 +104,10 @@ The group bar should be small, unobtrusive, and placed near the current selectio
 
 - Tap/click an unselected object to add it to the selection.
 - Tap/click a selected object to remove it from the selection.
-- If the primary object is removed and the set is still non-empty, another object becomes primary.
-- Tap/click on empty board space does not immediately destroy the group.
+- Dragging a selected object moves the whole group.
+- Tap/click on empty board space does not exit group selection mode.
 
-This is intentional. On mobile, accidental empty-board taps are common. Destructive exit should be explicit.
-
-### Exiting group selection
-
-- `Done` exits group selection and returns to single selection, keeping the primary object selected.
-- `Clear` clears the set and exits group selection.
-- If the selected set becomes empty through toggling, group selection exits automatically.
+If the selection becomes empty, group selection mode exits automatically.
 
 ## Drag Behavior
 
@@ -119,27 +122,50 @@ Movement rules:
 - all selected objects preserve their current rotations
 - z-order within the selected group is preserved
 
-### Visual behavior during drag
-
-- the whole group should visibly move together
-- the selection highlight remains visible during drag
-
 ### Commit behavior
 
 On release, all object transforms are committed together.
 
+## Lasso Tool
+
+### Entry
+
+Lasso is entered explicitly from the selection tray by tapping `Lasso`.
+
+### Behavior
+
+While lasso is active:
+
+- the next drag draws a freeform closed shape on the board
+- object dragging is disabled for that pointer sequence
+- viewport pan and pinch should not take over that pointer sequence
+
+On release:
+
+- every object inside the lasso is added to the current selection
+- the app remains in group selection mode
+- lasso mode ends
+
+### First version inclusion rule
+
+For the first version, an object counts as inside the lasso when its center point lies inside the lasso polygon.
+
+This is preferred over bounding-box overlap for the first release because it is easier to reason about and avoids awkward edge cases with rotated objects.
+
 ## Deck-Specific Behavior While Group Selection Is Active
 
-Group selection changes how decks behave.
+Group selection mode changes how decks behave.
 
-While group selection is active:
+While group selection mode is active:
 
 - tapping a deck toggles its membership in the selection set
 - dragging a selected deck moves the whole group
-- deck-specific pull-top-card behavior is disabled
+- deck pull-top-card behavior is disabled
 - deck long-press behavior is disabled
+- grouped drop-into-deck is disabled
+- grouped deck-merge is disabled
 
-This avoids conflicting semantics between "manipulate this deck" and "manipulate the selected group."
+This is necessary to avoid conflicting semantics between manipulating one deck and manipulating the selected group.
 
 ## Drop Behavior
 
@@ -151,9 +177,7 @@ In the first version of multiselect:
 - grouped drop-into-deck is not supported
 - grouped deck-merge is not supported
 
-If a grouped drag ends over a deck, the group should simply remain on the plane at the dropped positions.
-
-This keeps the first release predictable and avoids ambiguous results for mixed groups.
+If a grouped drag ends over a deck, the group should remain on the plane at the dropped positions.
 
 ## Rotation Behavior
 
@@ -161,49 +185,47 @@ This keeps the first release predictable and avoids ambiguous results for mixed 
 
 Group rotation is out of scope for the first version.
 
-While group selection is active:
+While group selection mode is active:
 
 - individual rotate handles are hidden or inactive
-- rotation applies only in single selection mode
+- rotation applies only in normal single-selection mode
 
-This keeps the interaction model simple and prevents confusion around shared pivot points.
+## Quick Actions
 
-## Panel and Advanced Actions
+Object quick actions are not the entrypoint for multiselect.
 
-The advanced actions panel should not be required for multiselect.
+In normal selection mode:
 
-Multiselect is a board interaction, so all core affordances should live on the board:
+- quick actions remain lightweight and object-specific
 
-- enter via `+`
-- manage selection via taps
-- move via drag
-- exit via group bar controls
+In group selection mode:
 
-The panel may later expose advanced group actions, but it should not be the entrypoint.
+- object-local quick actions should be hidden
+
+This keeps mode-level controls in one stable place and avoids competing overlays.
 
 ## Mobile Behavior
 
-Mobile must follow the same core model as desktop.
+Mobile follows the same core model as desktop.
 
 Key rules:
 
-- `+` is the entrypoint
-- taps toggle membership while group selection is active
+- `Select` is the entrypoint
+- `Lasso` is explicit
+- taps toggle membership while group selection mode is active
 - dragging any selected object moves the group
-- empty-board taps do not implicitly destroy the selection set
-
-This keeps the mobile model deliberate and reduces accidental mode loss.
+- empty-board taps do not implicitly destroy the mode
 
 ## Desktop Behavior
 
 Desktop follows the same main model as mobile.
 
-Optional enhancements:
+Possible future accelerators:
 
-- `Shift`-click toggles membership
-- future marquee selection may be added later
+- `Shift`-click to toggle membership
+- marquee or box-select as an additional selection tool
 
-These are accelerators, not the primary UX.
+These are secondary and should not replace the primary mode-based flow.
 
 ## Visual Design Notes
 
@@ -212,74 +234,77 @@ Selected objects in group mode should be easy to parse at a glance.
 Recommended treatment:
 
 - bright outline around each selected object
-- stronger accent on the primary object
-- optional subtle badge or handle indicating grouped state
+- optional stronger accent on the primary object
+- lasso path clearly visible while drawing
+- selection tray visually distinct from the normal add/create dock
 
-Avoid noisy per-object controls while group mode is active. The group bar should carry the mode-level actions.
+Avoid noisy per-object controls while group selection mode is active.
 
 ## Interaction Examples
 
-### Example: move three cards
+### Example: seed from a selected card
 
 1. Tap a card.
-2. Tap `+`.
-3. Tap two more cards.
-4. Drag any selected card.
-5. The whole group moves together.
-6. Tap `Done` to return to single selection.
+2. Tap `Select` in the bottom-right dock.
+3. Group selection mode starts with that card selected.
+4. Tap two more cards.
+5. Drag any selected card.
+6. The whole group moves together.
 
-### Example: move two decks
+### Example: lasso from zero selection
 
-1. Tap a deck.
-2. Tap `+`.
-3. Tap another deck.
-4. Drag either selected deck.
-5. Both decks move together.
+1. Tap `Select` in the bottom-right dock.
+2. Tap `Lasso`.
+3. Draw around several cards and decks.
+4. Release.
+5. Everything inside the lasso is added to the selection.
 
-### Example: move a mixed group
+### Example: exit selection mode
 
-1. Tap a card.
-2. Tap `+`.
-3. Tap a deck.
-4. Tap another card.
-5. Drag any selected object.
-6. All selected objects move together as one group.
+1. While group selection mode is active, tap `×` in the selection tray.
+2. The app exits group selection mode.
+3. Whether one object remains selected or everything is cleared is intentionally left open for now.
 
 ## Non-Goals For First Version
 
 - group rotation
 - grouped drop into deck
 - grouped merge into deck
-- multiselect-only inspector workflows
+- object-local multiselect entry
 - hidden long-press multiselect entry
-- keyboard-only interaction model
+- always-on lasso gesture
+- boards as a required part of v1 multiselect support
 
 ## Implementation Guidance
 
 The underlying selection state should support:
 
 - a set of selected object ids
-- a primary selected object id
-- a mode flag for single vs group selection
+- an optional primary selected object id
+- a mode flag for normal vs group selection mode
+- a temporary lasso tool state while the lasso gesture is active
 
-Board interaction code should treat group selection as a distinct input mode, especially for deck handling, so deck pull/long-press behavior does not interfere with grouped drag.
+Board interaction code should treat group selection as a distinct input mode, especially for deck handling and drag behavior.
 
 ## Open Questions
 
-- Should `Flip` remain object-only while group selection is active, or should a future group action bar support batch actions?
-- Should the primary object always be the most recently tapped object?
-- Should there be a future marquee-select affordance for desktop?
+- On `×`, should the app keep one object selected or clear selection entirely?
+- Should the primary object always become the most recently tapped selected object?
+- Should boards join multiselect in the first implementation, or later?
+- Should `Select` always be visible in the bottom-right dock, or only when editing is possible?
 
 ## Recommended First Release
 
 Ship the minimal coherent version:
 
-- explicit `+` entrypoint on selected cards and decks
-- mixed-object multiselect support
-- board-local group bar with `Done` and `Clear`
+- explicit `Select` entry in the bottom-right dock
+- dock transforms into a selection tray while active
+- selection tray shows count, `Lasso`, and `×`
+- mixed card/deck multiselect support
 - tap to add/remove
 - drag any selected object to move the group
+- explicit lasso add-to-selection flow
 - no group rotate
-- no grouped stacking/merge semantics
+- no grouped deck drop or merge
 
-This gives the app a strong, learnable multiselect model without overloading the existing board interaction system.
+This gives the app a strong, learnable multiselect model that matches the rest of the UI better than the earlier object-local design.

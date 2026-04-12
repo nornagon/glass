@@ -9,13 +9,18 @@ interface BoardViewProps {
   room: RoomDoc
   roomUrl: string
   ephemeralTransforms?: Partial<Record<Id, Transform2D>>
+  selectionMode: 'normal' | 'group'
   selectedId?: Id
+  selectedIds: Id[]
+  lassoMode: boolean
   currentPlayerId?: string
   canEdit: boolean
   allowSelectLocked: boolean
   initialCamera: CameraState
   onCameraChange: (camera: CameraState) => void
   onSelect: (id?: Id) => void
+  onToggleGroupSelection: (id: Id) => void
+  onAddToGroupSelection: (ids: Id[]) => void
   onCommitTransform: (id: Id, transform: Partial<Transform2D>) => void
   onPreviewTransform: (id: Id, transform: Transform2D) => void
   onClearPreviewTransform: (id: Id) => void
@@ -35,6 +40,11 @@ function isMovableObjectType(room: RoomDoc, objectId: Id) {
   return Boolean(isCard(object) || isDeck(object) || isBoard(object))
 }
 
+function isMultiselectObjectType(room: RoomDoc, objectId: Id) {
+  const object = room.objects[objectId]
+  return Boolean(isCard(object) || isDeck(object))
+}
+
 interface RenderedObject {
   container: Container
   width: number
@@ -51,6 +61,7 @@ interface DragState {
   currentGlobal: { x: number; y: number }
   moved: boolean
   raisedToFront: boolean
+  groupMembers?: Array<{ id: Id; startTransform: Transform2D }>
 }
 
 interface PendingDeckPress {
@@ -80,6 +91,11 @@ interface CardVisualState {
 
 interface AuxiliaryTouchState {
   pointers: Map<number, { x: number; y: number }>
+}
+
+interface LassoState {
+  pointerId: number
+  points: Array<{ x: number; y: number }>
 }
 
 interface FlipAnimation {
@@ -400,6 +416,55 @@ function findDeckAtPoint(
   }
 
   return undefined
+}
+
+function pointInPolygon(point: { x: number; y: number }, polygon: Array<{ x: number; y: number }>) {
+  let inside = false
+
+  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index, index += 1) {
+    const currentPoint = polygon[index]
+    const previousPoint = polygon[previous]
+    const intersects =
+      currentPoint.y > point.y !== previousPoint.y > point.y &&
+      point.x < ((previousPoint.x - currentPoint.x) * (point.y - currentPoint.y)) / (previousPoint.y - currentPoint.y) + currentPoint.x
+
+    if (intersects) {
+      inside = !inside
+    }
+  }
+
+  return inside
+}
+
+function objectIdsWithinLasso(
+  viewport: Viewport,
+  room: RoomDoc,
+  ephemeralTransforms: EphemeralTransformMap,
+  polygon: Array<{ x: number; y: number }>,
+) {
+  const root = getRootPlane(room)
+  const selectedIds: Id[] = []
+
+  for (const objectId of root.childOrder) {
+    if (!isMultiselectObjectType(room, objectId)) {
+      continue
+    }
+
+    const transform = transformForObject(room, objectId, ephemeralTransforms)
+    if (!transform) {
+      continue
+    }
+
+    const screenPoint = viewport.toScreen(logicalToViewportPoint({
+      x: transform.x,
+      y: transform.y,
+    }))
+    if (pointInPolygon({ x: screenPoint.x, y: screenPoint.y }, polygon)) {
+      selectedIds.push(objectId)
+    }
+  }
+
+  return selectedIds
 }
 
 function boardBackground() {
@@ -880,11 +945,15 @@ function populateViewportScene(
   room: RoomDoc,
   ephemeralTransforms: EphemeralTransformMap,
   currentPlayerId: string | undefined,
+  selectionMode: 'normal' | 'group',
   selectedId: Id | undefined,
+  selectedIds: Id[],
+  lassoMode: boolean,
   hoverDeckId: Id | undefined,
   canEdit: boolean,
   allowSelectLocked: boolean,
   onSelect: (id?: Id) => void,
+  onToggleGroupSelection: (id: Id) => void,
   dragRef: React.MutableRefObject<DragState | null>,
   auxiliaryTouchRef: React.MutableRefObject<AuxiliaryTouchState>,
   pendingDeckPressRef: React.MutableRefObject<PendingDeckPress | null>,
@@ -909,6 +978,7 @@ function populateViewportScene(
   scene.addChild(boardBackground())
 
   const root = getRootPlane(room)
+  const selectedIdsSet = new Set(selectedIds)
 
   for (const objectId of root.childOrder) {
     const object = room.objects[objectId]
@@ -975,22 +1045,65 @@ function populateViewportScene(
       hitArea
         .rect(-width / 2, -height / 2, width, height)
         .stroke({
-          width: hoverDeckId === objectId ? 5 : selectedId === objectId ? 4 : 0,
-          color: hoverDeckId === objectId ? '#ff8d47' : '#ffcb72',
+          width:
+            hoverDeckId === objectId
+              ? 5
+              : selectionMode === 'group'
+                ? selectedIdsSet.has(objectId)
+                  ? selectedId === objectId
+                    ? 5
+                    : 4
+                  : 0
+                : selectedId === objectId
+                  ? 4
+                  : 0,
+          color:
+            hoverDeckId === objectId
+              ? '#ff8d47'
+              : selectionMode === 'group' && selectedId === objectId
+                ? '#ffd78a'
+                : '#ffcb72',
           alpha: hoverDeckId === objectId ? 1 : 0.95,
         })
     } else {
       hitArea
         .roundRect(-width / 2, -height / 2, width, height, 18)
         .stroke({
-          width: hidesSelectionChrome ? 0 : hoverDeckId === objectId ? 5 : selectedId === objectId ? 4 : 0,
-          color: hoverDeckId === objectId ? '#ff8d47' : '#ffcb72',
+          width:
+            hidesSelectionChrome
+              ? 0
+              : hoverDeckId === objectId
+                ? 5
+                : selectionMode === 'group'
+                  ? selectedIdsSet.has(objectId)
+                    ? selectedId === objectId
+                      ? 5
+                      : 4
+                    : 0
+                  : selectedId === objectId
+                    ? 4
+                    : 0,
+          color:
+            hoverDeckId === objectId
+              ? '#ff8d47'
+              : selectionMode === 'group' && selectedId === objectId
+                ? '#ffd78a'
+                : '#ffcb72',
           alpha: hoverDeckId === objectId ? 1 : 0.95,
         })
     }
     container.addChild(hitArea)
 
-    const showsRotateHandle = selectedId === objectId && canEdit && !object.locked && !hidesSelectionChrome
+    const showsRotateHandle =
+      selectionMode === 'normal' && selectedId === objectId && canEdit && !object.locked && !hidesSelectionChrome
+    const buildGroupDragMembers = () =>
+      selectedIds
+        .map((memberId) => {
+          const memberTransform = transformForObject(room, memberId, ephemeralTransforms)
+          return memberTransform ? { id: memberId, startTransform: { ...memberTransform } } : undefined
+        })
+        .filter((member): member is { id: Id; startTransform: Transform2D } => Boolean(member))
+
     container.hitArea = {
       contains: (x: number, y: number) => {
         const withinCardBounds = x >= -width / 2 && x <= width / 2 && y >= -height / 2 && y <= height / 2
@@ -1006,6 +1119,10 @@ function populateViewportScene(
       },
     }
     container.on('pointerdown', (event) => {
+      if (selectionMode === 'group' && lassoMode) {
+        return
+      }
+
       const activeDrag = dragRef.current
       if (activeDrag && event.pointerType === 'touch') {
         if (event.pointerId !== activeDrag.pointerId) {
@@ -1032,6 +1149,44 @@ function populateViewportScene(
           pointerId: event.pointerId,
           startPointer: { x: event.global.x, y: event.global.y },
         }
+        return
+      }
+
+      if (selectionMode === 'group') {
+        if (!isMultiselectObjectType(room, objectId)) {
+          return
+        }
+
+        const isSelected = selectedIdsSet.has(objectId)
+        tapCandidateRef.current = {
+          id: objectId,
+          pointerId: event.pointerId,
+          startPointer: { x: event.global.x, y: event.global.y },
+        }
+
+        if (!isSelected) {
+          return
+        }
+
+        event.stopPropagation()
+
+        if (!canEdit || !isMovableObjectType(room, objectId)) {
+          return
+        }
+
+        const world = viewportToLogicalPoint(viewport.toWorld(event.global))
+        dragRef.current = {
+          id: objectId,
+          pointerId: event.pointerId,
+          mode: 'move',
+          startPointer: { x: world.x, y: world.y },
+          startTransform: { ...transform },
+          currentGlobal: { x: event.global.x, y: event.global.y },
+          moved: false,
+          raisedToFront: false,
+          groupMembers: buildGroupDragMembers(),
+        }
+        pauseViewportCameraGestures(viewport)
         return
       }
 
@@ -1149,7 +1304,11 @@ function populateViewportScene(
       )
 
       if (distance <= TAP_GRACE_DISTANCE && !dragRef.current) {
-        onSelect(objectId)
+        if (selectionMode === 'group') {
+          onToggleGroupSelection(objectId)
+        } else {
+          onSelect(objectId)
+        }
       }
     })
     container.on('pointerupoutside', (event) => {
@@ -1204,10 +1363,12 @@ function applyDisplayedTransforms(
   ephemeralTransforms: EphemeralTransformMap,
   dragRef: React.MutableRefObject<DragState | null>,
 ) {
-  const activeDragId = dragRef.current?.id
+  const activeDragIds = new Set(
+    dragRef.current?.groupMembers?.map((member) => member.id) ?? (dragRef.current?.id ? [dragRef.current.id] : []),
+  )
 
   for (const [objectId, rendered] of renderedObjects) {
-    if (objectId === activeDragId) {
+    if (activeDragIds.has(objectId)) {
       continue
     }
 
@@ -1239,8 +1400,26 @@ function syncActiveDragRendering(
 
   const world = viewportToLogicalPoint(viewport.toWorld(drag.currentGlobal))
   if (drag.mode === 'move') {
-    const nextX = drag.startTransform.x + (world.x - drag.startPointer.x)
-    const nextY = drag.startTransform.y + (world.y - drag.startPointer.y)
+    const deltaX = world.x - drag.startPointer.x
+    const deltaY = world.y - drag.startPointer.y
+
+    if (drag.groupMembers && drag.groupMembers.length > 0) {
+      for (const member of drag.groupMembers) {
+        const memberRendered = renderedObjects.get(member.id)
+        if (!memberRendered) {
+          continue
+        }
+
+        const nextX = member.startTransform.x + deltaX
+        const nextY = member.startTransform.y + deltaY
+        memberRendered.container.position.set(nextX, nextY)
+        memberRendered.transform = { ...member.startTransform, x: nextX, y: nextY }
+      }
+      return
+    }
+
+    const nextX = drag.startTransform.x + deltaX
+    const nextY = drag.startTransform.y + deltaY
     rendered.container.position.set(nextX, nextY)
     rendered.transform = { ...drag.startTransform, x: nextX, y: nextY }
     return
@@ -1255,13 +1434,18 @@ export function BoardView({
   room,
   roomUrl,
   ephemeralTransforms = {},
+  selectionMode,
   selectedId,
+  selectedIds,
+  lassoMode,
   currentPlayerId,
   canEdit,
   allowSelectLocked,
   initialCamera,
   onCameraChange,
   onSelect,
+  onToggleGroupSelection,
+  onAddToGroupSelection,
   onCommitTransform,
   onPreviewTransform,
   onClearPreviewTransform,
@@ -1286,7 +1470,10 @@ export function BoardView({
   const auxiliaryTouchRef = useRef<AuxiliaryTouchState>({ pointers: new Map() })
   const roomRef = useRef(room)
   const ephemeralTransformsRef = useRef(ephemeralTransforms)
+  const selectionModeRef = useRef(selectionMode)
   const selectedIdRef = useRef(selectedId)
+  const selectedIdsRef = useRef(selectedIds)
+  const lassoModeRef = useRef(lassoMode)
   const initialCameraRef = useRef(initialCamera)
   const currentPlayerIdRef = useRef(currentPlayerId)
   const canEditRef = useRef(canEdit)
@@ -1299,6 +1486,8 @@ export function BoardView({
   const [hoverDeckId, setHoverDeckId] = useState<Id | undefined>()
   const hoverDeckIdRef = useRef<Id | undefined>(hoverDeckId)
   const quickActionsRef = useRef<HTMLDivElement | null>(null)
+  const lassoRef = useRef<LassoState | null>(null)
+  const [lassoPath, setLassoPath] = useState<Array<{ x: number; y: number }>>([])
   const callbacksRef = useRef({
     onCameraChange,
     onCommitTransform,
@@ -1312,6 +1501,8 @@ export function BoardView({
     onFlipCard,
     onFlipBoard,
     onSelect,
+    onToggleGroupSelection,
+    onAddToGroupSelection,
     onShuffleDeck,
   })
   const cameraSnapshot = useRef<string>('')
@@ -1321,7 +1512,10 @@ export function BoardView({
 
   roomRef.current = room
   ephemeralTransformsRef.current = ephemeralTransforms
+  selectionModeRef.current = selectionMode
   selectedIdRef.current = selectedId
+  selectedIdsRef.current = selectedIds
+  lassoModeRef.current = lassoMode
   initialCameraRef.current = initialCamera
   currentPlayerIdRef.current = currentPlayerId
   canEditRef.current = canEdit
@@ -1340,6 +1534,8 @@ export function BoardView({
     onFlipCard,
     onFlipBoard,
     onSelect,
+    onToggleGroupSelection,
+    onAddToGroupSelection,
     onShuffleDeck,
   }
   redrawSceneRef.current = () => {
@@ -1357,11 +1553,15 @@ export function BoardView({
       roomRef.current,
       ephemeralTransformsRef.current,
       currentPlayerIdRef.current,
+      selectionModeRef.current,
       selectedIdRef.current,
+      selectedIdsRef.current,
+      lassoModeRef.current,
       hoverDeckIdRef.current,
       canEditRef.current,
       allowSelectLockedRef.current,
       callbacksRef.current.onSelect,
+      callbacksRef.current.onToggleGroupSelection,
       dragRef,
       auxiliaryTouchRef,
       pendingDeckPressRef,
@@ -1374,7 +1574,7 @@ export function BoardView({
   }
 
   const quickActions = useMemo<QuickAction[]>(() => {
-    if (!selectedId) {
+    if (selectionMode !== 'normal' || !selectedId) {
       return []
     }
     const object = room.objects[selectedId]
@@ -1406,7 +1606,7 @@ export function BoardView({
     }
 
     return []
-  }, [canEdit, onDrawDeck, onFlipBoard, onFlipCard, onFlipDeck, onOpenSelectionPanel, onShuffleDeck, room.objects, selectedId])
+  }, [canEdit, onDrawDeck, onFlipBoard, onFlipCard, onFlipDeck, onOpenSelectionPanel, onShuffleDeck, room.objects, selectedId, selectionMode])
 
   useEffect(() => {
     const updateShiftState = (event: KeyboardEvent) => {
@@ -1493,6 +1693,16 @@ export function BoardView({
 
       viewport.eventMode = 'static'
       viewport.on('pointerdown', (event) => {
+        if (selectionModeRef.current === 'group' && lassoModeRef.current && !dragRef.current) {
+          lassoRef.current = {
+            pointerId: event.pointerId,
+            points: [{ x: event.global.x, y: event.global.y }],
+          }
+          setLassoPath([{ x: event.global.x, y: event.global.y }])
+          pauseViewportCameraGestures(viewport)
+          return
+        }
+
         if (dragRef.current) {
           if (event.pointerType === 'touch' && event.pointerId !== dragRef.current.pointerId) {
             auxiliaryTouchRef.current.pointers.set(event.pointerId, { x: event.global.x, y: event.global.y })
@@ -1511,7 +1721,7 @@ export function BoardView({
           return
         }
 
-        if (!dragRef.current) {
+        if (!dragRef.current && selectionModeRef.current === 'normal') {
           callbacksRef.current.onSelect(undefined)
         }
       })
@@ -1568,6 +1778,21 @@ export function BoardView({
       }
 
       const onPointerMove = (event: FederatedPointerEvent) => {
+        const activeLasso = lassoRef.current
+        if (activeLasso) {
+          if (event.pointerId !== activeLasso.pointerId) {
+            return
+          }
+
+          const lastPoint = activeLasso.points[activeLasso.points.length - 1]
+          if (!lastPoint || Math.hypot(event.global.x - lastPoint.x, event.global.y - lastPoint.y) >= 6) {
+            const nextPoints = [...activeLasso.points, { x: event.global.x, y: event.global.y }]
+            activeLasso.points = nextPoints
+            setLassoPath(nextPoints)
+          }
+          return
+        }
+
         const pendingDeckPress = pendingDeckPressRef.current
         if (!dragRef.current && pendingDeckPress && pendingDeckPress.pointerId === event.pointerId) {
           const pointerDistance = Math.hypot(
@@ -1631,6 +1856,7 @@ export function BoardView({
           drag.mode === 'move' &&
           drag.moved &&
           !drag.raisedToFront &&
+          (!drag.groupMembers || drag.groupMembers.length === 0) &&
           roomRef.current.objects[drag.id]?.type === 'card'
         ) {
           callbacksRef.current.onBringCardToFront(drag.id)
@@ -1638,18 +1864,36 @@ export function BoardView({
         }
 
         if (drag.mode === 'move') {
-          const nextX = drag.startTransform.x + (world.x - drag.startPointer.x)
-          const nextY = drag.startTransform.y + (world.y - drag.startPointer.y)
-          rendered.container.position.set(nextX, nextY)
-          rendered.transform = { ...drag.startTransform, x: nextX, y: nextY }
+          const deltaX = world.x - drag.startPointer.x
+          const deltaY = world.y - drag.startPointer.y
 
-          const liveRoom = roomRef.current
-          const draggingObject = liveRoom.objects[drag.id]
-          const nextHoverDeckId =
-            draggingObject && (draggingObject.type === 'card' || draggingObject.type === 'deck')
-              ? findDeckAtPoint(liveRoom, { x: nextX, y: nextY }, ephemeralTransformsRef.current, drag.id)
-              : undefined
-          setHoverDeckId((current) => (current === nextHoverDeckId ? current : nextHoverDeckId))
+          if (drag.groupMembers && drag.groupMembers.length > 0) {
+            for (const member of drag.groupMembers) {
+              const memberRendered = renderedRef.current.get(member.id)
+              if (!memberRendered) {
+                continue
+              }
+
+              const nextX = member.startTransform.x + deltaX
+              const nextY = member.startTransform.y + deltaY
+              memberRendered.container.position.set(nextX, nextY)
+              memberRendered.transform = { ...member.startTransform, x: nextX, y: nextY }
+            }
+            setHoverDeckId(undefined)
+          } else {
+            const nextX = drag.startTransform.x + deltaX
+            const nextY = drag.startTransform.y + deltaY
+            rendered.container.position.set(nextX, nextY)
+            rendered.transform = { ...drag.startTransform, x: nextX, y: nextY }
+
+            const liveRoom = roomRef.current
+            const draggingObject = liveRoom.objects[drag.id]
+            const nextHoverDeckId =
+              draggingObject && (draggingObject.type === 'card' || draggingObject.type === 'deck')
+                ? findDeckAtPoint(liveRoom, { x: nextX, y: nextY }, ephemeralTransformsRef.current, drag.id)
+                : undefined
+            setHoverDeckId((current) => (current === nextHoverDeckId ? current : nextHoverDeckId))
+          }
         } else {
           const originX = drag.startTransform.x
           const originY = drag.startTransform.y
@@ -1658,11 +1902,45 @@ export function BoardView({
           rendered.transform = { ...drag.startTransform, rotation: angle }
         }
 
-        callbacksRef.current.onPreviewTransform(drag.id, rendered.transform)
+        if (drag.groupMembers && drag.groupMembers.length > 0) {
+          for (const member of drag.groupMembers) {
+            const memberRendered = renderedRef.current.get(member.id)
+            if (memberRendered) {
+              callbacksRef.current.onPreviewTransform(member.id, memberRendered.transform)
+            }
+          }
+        } else {
+          callbacksRef.current.onPreviewTransform(drag.id, rendered.transform)
+        }
         updateOverlayPosition()
       }
 
       const finishDrag = (event: FederatedPointerEvent) => {
+        const activeLasso = lassoRef.current
+        if (activeLasso) {
+          if (event.pointerId !== activeLasso.pointerId) {
+            return
+          }
+
+          lassoRef.current = null
+          resumeViewportCameraGestures(viewport)
+          const completedPoints =
+            Math.hypot(
+              event.global.x - activeLasso.points[activeLasso.points.length - 1].x,
+              event.global.y - activeLasso.points[activeLasso.points.length - 1].y,
+            ) >= 4
+              ? [...activeLasso.points, { x: event.global.x, y: event.global.y }]
+              : activeLasso.points
+          setLassoPath([])
+
+          if (completedPoints.length >= 3) {
+            callbacksRef.current.onAddToGroupSelection(
+              objectIdsWithinLasso(viewport, roomRef.current, ephemeralTransformsRef.current, completedPoints),
+            )
+          }
+          return
+        }
+
         const drag = dragRef.current
         if (!drag) {
           const backgroundTapCandidate = backgroundTapCandidateRef.current
@@ -1676,7 +1954,7 @@ export function BoardView({
               event.global.x - backgroundTapCandidate.startPointer.x,
               event.global.y - backgroundTapCandidate.startPointer.y,
             )
-            if (distance <= TAP_GRACE_DISTANCE) {
+            if (distance <= TAP_GRACE_DISTANCE && selectionModeRef.current === 'normal') {
               callbacksRef.current.onSelect(undefined)
             }
           }
@@ -1698,30 +1976,56 @@ export function BoardView({
 
         if (!rendered) {
           dragRef.current = null
-          callbacksRef.current.onClearPreviewTransform(drag.id)
+          if (drag.groupMembers && drag.groupMembers.length > 0) {
+            for (const member of drag.groupMembers) {
+              callbacksRef.current.onClearPreviewTransform(member.id)
+            }
+          } else {
+            callbacksRef.current.onClearPreviewTransform(drag.id)
+          }
           return
         }
 
         const world = viewportToLogicalPoint(viewport.toWorld(event.global))
         if (drag.mode === 'move') {
           dragRef.current = null
-          callbacksRef.current.onClearPreviewTransform(drag.id)
-          const nextTransform = {
-            x: rendered.container.position.x,
-            y: rendered.container.position.y,
-            rotation: drag.startTransform.rotation,
+          if (drag.groupMembers && drag.groupMembers.length > 0) {
+            for (const member of drag.groupMembers) {
+              callbacksRef.current.onClearPreviewTransform(member.id)
+            }
+          } else {
+            callbacksRef.current.onClearPreviewTransform(drag.id)
           }
           const liveRoom = roomRef.current
-          const object = liveRoom.objects[drag.id]
-          const targetDeckId =
-            object && (object.type === 'card' || object.type === 'deck')
-              ? findDeckAtPoint(liveRoom, world, ephemeralTransformsRef.current, drag.id)
-              : undefined
-
-          if (targetDeckId) {
-            callbacksRef.current.onDropObjectToDeck(drag.id, targetDeckId)
+          if (drag.groupMembers && drag.groupMembers.length > 0) {
+            for (const member of drag.groupMembers) {
+              const memberRendered = renderedRef.current.get(member.id)
+              if (!memberRendered) {
+                continue
+              }
+              callbacksRef.current.onCommitTransform(member.id, {
+                x: memberRendered.container.position.x,
+                y: memberRendered.container.position.y,
+                rotation: member.startTransform.rotation,
+              })
+            }
           } else {
-            callbacksRef.current.onCommitTransform(drag.id, nextTransform)
+            const nextTransform = {
+              x: rendered.container.position.x,
+              y: rendered.container.position.y,
+              rotation: drag.startTransform.rotation,
+            }
+            const object = liveRoom.objects[drag.id]
+            const targetDeckId =
+              object && (object.type === 'card' || object.type === 'deck')
+                ? findDeckAtPoint(liveRoom, world, ephemeralTransformsRef.current, drag.id)
+                : undefined
+
+            if (targetDeckId) {
+              callbacksRef.current.onDropObjectToDeck(drag.id, targetDeckId)
+            } else {
+              callbacksRef.current.onCommitTransform(drag.id, nextTransform)
+            }
           }
         } else {
           const snappedRotation = snapRotationAngle(rendered.container.rotation)
@@ -1785,11 +2089,15 @@ export function BoardView({
         roomRef.current,
         ephemeralTransformsRef.current,
         currentPlayerIdRef.current,
+        selectionModeRef.current,
         selectedIdRef.current,
+        selectedIdsRef.current,
+        lassoModeRef.current,
         hoverDeckIdRef.current,
         canEditRef.current,
         allowSelectLockedRef.current,
         callbacksRef.current.onSelect,
+        callbacksRef.current.onToggleGroupSelection,
         dragRef,
         auxiliaryTouchRef,
         pendingDeckPressRef,
@@ -1813,6 +2121,8 @@ export function BoardView({
       cancelled = true
       cleanup?.()
       clearPendingDeckPress(pendingDeckPressRef)
+      lassoRef.current = null
+      setLassoPath([])
       host.removeEventListener('touchstart', suppressNativeTouch)
       host.removeEventListener('touchmove', suppressNativeTouch)
       host.removeEventListener('contextmenu', suppressNativeTouch)
@@ -1882,7 +2192,7 @@ export function BoardView({
 
   useEffect(() => {
     redrawSceneRef.current()
-  }, [allowSelectLocked, canEdit, hoverDeckId, onSelect, selectedId])
+  }, [allowSelectLocked, canEdit, hoverDeckId, lassoMode, onSelect, selectedId, selectedIds, selectionMode])
 
   useEffect(() => {
     applyDisplayedTransforms(renderedRef.current, room, ephemeralTransforms, dragRef)
@@ -1891,6 +2201,13 @@ export function BoardView({
   return (
     <div className="board-root">
       <div className="board-canvas" ref={hostRef} />
+      {lassoPath.length > 1 ? (
+        <svg className="lasso-overlay" viewBox={`0 0 ${hostRef.current?.clientWidth ?? 1} ${hostRef.current?.clientHeight ?? 1}`} preserveAspectRatio="none">
+          <path
+            d={`M ${lassoPath.map((point) => `${point.x} ${point.y}`).join(' L ')} Z`}
+          />
+        </svg>
+      ) : null}
       {quickActions.length > 0 ? (
         <div
           ref={quickActionsRef}
