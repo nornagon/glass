@@ -12,3 +12,7 @@
 ## Workflow Notes
 
 - Whenever you make a commit, update `CHANGELOG.md` in the same change with a concise summary of what you changed.
+
+## Reference docs
+
+Automerge: https://automerge.org/llms-full.txt
