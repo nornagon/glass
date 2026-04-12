@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { useState } from 'react'
-import { Application, Assets, Cache, Container, FederatedPointerEvent, Graphics, Rectangle, Sprite, Text, Texture } from 'pixi.js'
+import { Application, Assets, Cache, Container, FederatedPointerEvent, Graphics, PerspectiveMesh, Rectangle, Sprite, Text, Texture } from 'pixi.js'
 import { Viewport } from 'pixi-viewport'
-import { BOARD_WORLD_SIZE, DEFAULT_CARD_SIZE, type CameraState, type Id, type RoomDoc, type Transform2D } from '../model/types'
+import { BOARD_WORLD_SIZE, DEFAULT_CARD_SIZE, type CameraState, type Id, type RoomDoc, type SpriteSpec, type Transform2D } from '../model/types'
 import { canSeeCardFace, getRootPlane, getTransform, isBoard, isBoardFaceUp, isCard, isDeck } from '../model/room'
 
 interface BoardViewProps {
@@ -73,8 +73,39 @@ interface BackgroundTapCandidate {
   startPointer: { x: number; y: number }
 }
 
+interface CardVisualState {
+  faceUp: boolean
+  faceVisible: boolean
+}
+
 interface AuxiliaryTouchState {
   pointers: Map<number, { x: number; y: number }>
+}
+
+interface FlipAnimation {
+  startedAt: number
+  durationMs: number
+  fromFaceVisible: boolean
+  toFaceVisible: boolean
+}
+
+interface QuickAction {
+  id: string
+  label: string
+  onClick: () => void
+  icon?: 'flip' | 'more'
+  text?: string
+}
+
+interface CardFlipPresentation {
+  faceVisible: boolean
+  angle: number
+  offsetY: number
+}
+
+interface CardTextureCacheEntry {
+  signature: string
+  texture: Texture
 }
 
 const TAP_GRACE_DISTANCE = 10
@@ -84,6 +115,8 @@ const MAX_ZOOM_SCALE = 2.5
 const PAN_CLAMP_MARGIN = 640
 const VIEWPORT_WORLD_SIZE = BOARD_WORLD_SIZE + PAN_CLAMP_MARGIN * 2
 const VIEWPORT_WORLD_OFFSET = VIEWPORT_WORLD_SIZE / 2
+const FLIP_DURATION_MS = 220
+const FLIP_DEBUG_DURATION_MS = 1800
 
 type EphemeralTransformMap = Partial<Record<Id, Transform2D>>
 
@@ -98,6 +131,62 @@ function viewportToLogicalPoint(point: { x: number; y: number }) {
   return {
     x: point.x - VIEWPORT_WORLD_OFFSET,
     y: point.y - VIEWPORT_WORLD_OFFSET,
+  }
+}
+
+function collectCardVisualStates(room: RoomDoc, currentPlayerId: string | undefined) {
+  const states = new Map<Id, CardVisualState>()
+
+  for (const [objectId, object] of Object.entries(room.objects)) {
+    if (!isCard(object)) {
+      continue
+    }
+
+    states.set(objectId, {
+      faceUp: object.meta.faceUp !== false,
+      faceVisible: canSeeCardFace(object, currentPlayerId),
+    })
+  }
+
+  return states
+}
+
+function cardFlipPresentation(
+  objectId: Id,
+  defaultFaceVisible: boolean,
+  flipAnimations: Map<Id, FlipAnimation>,
+  now: number,
+): CardFlipPresentation {
+  const animation = flipAnimations.get(objectId)
+  if (!animation) {
+    return {
+      faceVisible: defaultFaceVisible,
+      angle: 0,
+      offsetY: 0,
+    }
+  }
+
+  const elapsed = now - animation.startedAt
+  if (elapsed >= animation.durationMs) {
+    flipAnimations.delete(objectId)
+    return {
+      faceVisible: animation.toFaceVisible,
+      angle: 0,
+      offsetY: 0,
+    }
+  }
+
+  const progress = elapsed / animation.durationMs
+  const depth = Math.sin(progress * Math.PI)
+  const turnDirection = animation.toFaceVisible ? 1 : -1
+  const halfProgress = progress < 0.5 ? progress / 0.5 : (progress - 0.5) / 0.5
+  return {
+    faceVisible: progress < 0.5 ? animation.fromFaceVisible : animation.toFaceVisible,
+    angle:
+      progress < 0.5
+        ? turnDirection * halfProgress * (Math.PI / 2)
+        : -turnDirection * (1 - halfProgress) * (Math.PI / 2),
+    offsetY: -depth * 10,
   }
 }
 
@@ -122,6 +211,23 @@ function snapRotationAngle(angle: number) {
   }
 
   return bestAngle
+}
+
+function FlipQuickActionIcon() {
+  return (
+    <svg className="flip-icon" aria-hidden="true" viewBox="0 0 24 24" fill="currentColor">
+      <path d="M12 5V2L8 6l4 4V7c2.76 0 5 2.24 5 5 0 .48-.07.94-.2 1.38l1.52 1.52A7 7 0 0 0 19 12c0-3.87-3.13-7-7-7Z" />
+      <path d="M7 12c0-.48.07-.94.2-1.38L5.68 9.1A7 7 0 0 0 5 12c0 3.87 3.13 7 7 7v3l4-4-4-4v3c-2.76 0-5-2.24-5-5Z" />
+    </svg>
+  )
+}
+
+function MoreQuickActionIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none">
+      <path d="M6 12h.01M12 12h.01M18 12h.01" />
+    </svg>
+  )
 }
 
 interface TextureAssetEntry {
@@ -374,21 +480,14 @@ function addSpriteContents(
   container.addChild(sprite)
 }
 
-function addCardContents(
+function addCardSurface(
   container: Container,
-  room: RoomDoc,
-  objectId: Id,
-  currentPlayerId: string | undefined,
+  width: number,
+  height: number,
+  spec: SpriteSpec,
+  fallbackLabel: string,
   requestRender: () => void,
 ) {
-  const object = room.objects[objectId]
-  if (!isCard(object)) {
-    return
-  }
-
-  const { width, height } = objectDimensions(room, objectId)
-  const spec = canSeeCardFace(object, currentPlayerId) ? object.face : object.back
-
   const card = new Graphics()
   card
     .roundRect(-width / 2, -height / 2, width, height, 18)
@@ -399,7 +498,7 @@ function addCardContents(
     addSpriteContents(container, spec, width, height, 18, requestRender)
   } else {
     const text = new Text({
-      text: spec.label ?? object.name,
+      text: spec.label ?? fallbackLabel,
       style: {
         fontFamily: 'Avenir Next, Trebuchet MS, sans-serif',
         fontSize: 18,
@@ -418,6 +517,139 @@ function addCardContents(
     .roundRect(-width / 2, -height / 2, width, height, 18)
     .stroke({ width: 2, color: '#2b1b16', alpha: 0.34 })
   container.addChild(border)
+}
+
+function spriteSpecTextureState(spec: SpriteSpec) {
+  if (spec.kind !== 'image-url' || !spec.url) {
+    return 'na'
+  }
+
+  if (Cache.has(spec.url) || textureAssetCache.get(spec.url)?.status === 'loaded') {
+    return 'ready'
+  }
+
+  return textureAssetCache.get(spec.url)?.status ?? 'pending'
+}
+
+function cardTextureSignature(width: number, height: number, spec: SpriteSpec, fallbackLabel: string) {
+  return JSON.stringify({
+    width,
+    height,
+    fallbackLabel,
+    spec,
+    textureState: spriteSpecTextureState(spec),
+  })
+}
+
+function getCardSurfaceTexture(
+  renderer: Application['renderer'],
+  textureCache: Map<string, CardTextureCacheEntry>,
+  cacheKey: string,
+  width: number,
+  height: number,
+  spec: SpriteSpec,
+  fallbackLabel: string,
+  requestRender: () => void,
+) {
+  const signature = cardTextureSignature(width, height, spec, fallbackLabel)
+  const cached = textureCache.get(cacheKey)
+  if (cached && cached.signature === signature) {
+    return cached.texture
+  }
+
+  cached?.texture.destroy(true)
+
+  const surface = new Container()
+  addCardSurface(surface, width, height, spec, fallbackLabel, requestRender)
+  const texture = renderer.generateTexture({
+    target: surface,
+    resolution: renderer.resolution,
+    antialias: true,
+  })
+  surface.destroy({ children: true })
+  textureCache.set(cacheKey, { signature, texture })
+  return texture
+}
+
+function projectCardCorner(x: number, y: number, angle: number, cameraDistance: number) {
+  const rotatedX = x * Math.cos(angle)
+  const depth = x * Math.sin(angle)
+  const perspective = cameraDistance / (cameraDistance - depth)
+
+  return {
+    x: rotatedX * perspective,
+    y: y * perspective,
+  }
+}
+
+function addCardContents(
+  container: Container,
+  renderer: Application['renderer'],
+  textureCache: Map<string, CardTextureCacheEntry>,
+  room: RoomDoc,
+  objectId: Id,
+  currentPlayerId: string | undefined,
+  requestRender: () => void,
+  flipAnimations: Map<Id, FlipAnimation>,
+  now: number,
+  worldRotation: number,
+) {
+  const object = room.objects[objectId]
+  if (!isCard(object)) {
+    return
+  }
+
+  const { width, height } = objectDimensions(room, objectId)
+  const defaultFaceVisible = canSeeCardFace(object, currentPlayerId)
+  const { faceVisible, angle, offsetY } = cardFlipPresentation(
+    objectId,
+    defaultFaceVisible,
+    flipAnimations,
+    now,
+  )
+  const spec = faceVisible ? object.face : object.back
+  if (!flipAnimations.has(objectId)) {
+    addCardSurface(container, width, height, spec, object.name, requestRender)
+    return
+  }
+
+  const liftLayer = new Container()
+  liftLayer.position.set(offsetY * Math.sin(worldRotation), offsetY * Math.cos(worldRotation))
+  container.addChild(liftLayer)
+
+  const texture = getCardSurfaceTexture(
+    renderer,
+    textureCache,
+    `${objectId}:${faceVisible ? 'face' : 'back'}`,
+    width,
+    height,
+    spec,
+    object.name,
+    requestRender,
+  )
+  const halfWidth = width / 2
+  const halfHeight = height / 2
+  const cameraDistance = Math.max(width, height) * 4
+  const topLeft = projectCardCorner(-halfWidth, -halfHeight, angle, cameraDistance)
+  const topRight = projectCardCorner(halfWidth, -halfHeight, angle, cameraDistance)
+  const bottomRight = projectCardCorner(halfWidth, halfHeight, angle, cameraDistance)
+  const bottomLeft = projectCardCorner(-halfWidth, halfHeight, angle, cameraDistance)
+  const mesh = new PerspectiveMesh({
+    texture,
+    verticesX: 6,
+    verticesY: 6,
+  })
+  mesh.setCorners(
+    topLeft.x,
+    topLeft.y,
+    topRight.x,
+    topRight.y,
+    bottomRight.x,
+    bottomRight.y,
+    bottomLeft.x,
+    bottomLeft.y,
+  )
+  liftLayer.addChild(mesh)
 }
 
 function addBoardContents(
@@ -467,10 +699,15 @@ function addBoardContents(
 
 function addDeckContents(
   container: Container,
+  renderer: Application['renderer'],
+  textureCache: Map<string, CardTextureCacheEntry>,
   room: RoomDoc,
   objectId: Id,
   currentPlayerId: string | undefined,
   requestRender: () => void,
+  flipAnimations: Map<Id, FlipAnimation>,
+  now: number,
+  worldRotation: number,
 ) {
   const object = room.objects[objectId]
   if (!isDeck(object)) {
@@ -498,7 +735,18 @@ function addDeckContents(
     stackCardContainer.position.set(offsetX, offsetY)
 
     if (isCard(stackCard)) {
-      addCardContents(stackCardContainer, room, stackCard.id, currentPlayerId, requestRender)
+      addCardContents(
+        stackCardContainer,
+        renderer,
+        textureCache,
+        room,
+        stackCard.id,
+        currentPlayerId,
+        requestRender,
+        flipAnimations,
+        now,
+        worldRotation,
+      )
     } else {
       const fallback = new Graphics()
       fallback
@@ -627,6 +875,8 @@ function applyAuxiliaryTouchGesture(
 function populateViewportScene(
   viewport: Viewport,
   renderedObjects: Map<Id, RenderedObject>,
+  renderer: Application['renderer'],
+  textureCache: Map<string, CardTextureCacheEntry>,
   room: RoomDoc,
   ephemeralTransforms: EphemeralTransformMap,
   currentPlayerId: string | undefined,
@@ -640,6 +890,8 @@ function populateViewportScene(
   pendingDeckPressRef: React.MutableRefObject<PendingDeckPress | null>,
   tapCandidateRef: React.MutableRefObject<TapCandidate | null>,
   requestRender: () => void,
+  flipAnimations: Map<Id, FlipAnimation>,
+  now: number,
 ) {
   const activeDragId = dragRef.current?.id
   const priorTransforms = new Map<Id, Transform2D>()
@@ -647,7 +899,9 @@ function populateViewportScene(
     priorTransforms.set(objectId, rendered.transform)
   }
 
-  viewport.removeChildren()
+  for (const child of viewport.removeChildren()) {
+    child.destroy({ children: true })
+  }
   renderedObjects.clear()
   const scene = new Container()
   scene.position.set(VIEWPORT_WORLD_OFFSET, VIEWPORT_WORLD_OFFSET)
@@ -681,7 +935,18 @@ function populateViewportScene(
     if (isCard(object)) {
       width = object.size.width
       height = object.size.height
-      addCardContents(container, room, objectId, currentPlayerId, requestRender)
+      addCardContents(
+        container,
+        renderer,
+        textureCache,
+        room,
+        objectId,
+        currentPlayerId,
+        requestRender,
+        flipAnimations,
+        now,
+        transform.rotation,
+      )
     } else if (isBoard(object)) {
       width = object.size.width
       height = object.size.height
@@ -690,10 +955,22 @@ function populateViewportScene(
       const dimensions = objectDimensions(room, objectId)
       width = dimensions.width
       height = dimensions.height
-      addDeckContents(container, room, objectId, currentPlayerId, requestRender)
+      addDeckContents(
+        container,
+        renderer,
+        textureCache,
+        room,
+        objectId,
+        currentPlayerId,
+        requestRender,
+        flipAnimations,
+        now,
+        transform.rotation,
+      )
     }
 
     const hitArea = new Graphics()
+    const hidesSelectionChrome = isCard(object) && flipAnimations.has(objectId)
     if (isBoard(object)) {
       hitArea
         .rect(-width / 2, -height / 2, width, height)
@@ -706,14 +983,14 @@ function populateViewportScene(
       hitArea
         .roundRect(-width / 2, -height / 2, width, height, 18)
         .stroke({
-          width: hoverDeckId === objectId ? 5 : selectedId === objectId ? 4 : 0,
+          width: hidesSelectionChrome ? 0 : hoverDeckId === objectId ? 5 : selectedId === objectId ? 4 : 0,
           color: hoverDeckId === objectId ? '#ff8d47' : '#ffcb72',
           alpha: hoverDeckId === objectId ? 1 : 0.95,
         })
     }
     container.addChild(hitArea)
 
-    const showsRotateHandle = selectedId === objectId && canEdit && !object.locked
+    const showsRotateHandle = selectedId === objectId && canEdit && !object.locked && !hidesSelectionChrome
     container.hitArea = {
       contains: (x: number, y: number) => {
         const withinCardBounds = x >= -width / 2 && x <= width / 2 && y >= -height / 2 && y <= height / 2
@@ -945,6 +1222,35 @@ function applyDisplayedTransforms(
   }
 }
 
+function syncActiveDragRendering(
+  viewport: Viewport,
+  renderedObjects: Map<Id, RenderedObject>,
+  dragRef: React.MutableRefObject<DragState | null>,
+) {
+  const drag = dragRef.current
+  if (!drag) {
+    return
+  }
+
+  const rendered = renderedObjects.get(drag.id)
+  if (!rendered) {
+    return
+  }
+
+  const world = viewportToLogicalPoint(viewport.toWorld(drag.currentGlobal))
+  if (drag.mode === 'move') {
+    const nextX = drag.startTransform.x + (world.x - drag.startPointer.x)
+    const nextY = drag.startTransform.y + (world.y - drag.startPointer.y)
+    rendered.container.position.set(nextX, nextY)
+    rendered.transform = { ...drag.startTransform, x: nextX, y: nextY }
+    return
+  }
+
+  const angle = Math.atan2(world.y - drag.startTransform.y, world.x - drag.startTransform.x) + Math.PI / 2
+  rendered.container.rotation = angle
+  rendered.transform = { ...drag.startTransform, rotation: angle }
+}
+
 export function BoardView({
   room,
   roomUrl,
@@ -985,7 +1291,11 @@ export function BoardView({
   const currentPlayerIdRef = useRef(currentPlayerId)
   const canEditRef = useRef(canEdit)
   const allowSelectLockedRef = useRef(allowSelectLocked)
-  const [assetVersion, setAssetVersion] = useState(0)
+  const shiftPressedRef = useRef(false)
+  const cardVisualStatesRef = useRef<Map<Id, CardVisualState>>(new Map())
+  const flipAnimationsRef = useRef<Map<Id, FlipAnimation>>(new Map())
+  const cardTextureCacheRef = useRef<Map<string, CardTextureCacheEntry>>(new Map())
+  const redrawSceneRef = useRef(() => {})
   const [hoverDeckId, setHoverDeckId] = useState<Id | undefined>()
   const hoverDeckIdRef = useRef<Id | undefined>(hoverDeckId)
   const quickActionsRef = useRef<HTMLDivElement | null>(null)
@@ -1006,7 +1316,7 @@ export function BoardView({
   })
   const cameraSnapshot = useRef<string>('')
   const requestRenderRef = useRef(() => {
-    setAssetVersion((current) => current + 1)
+    redrawSceneRef.current()
   })
 
   roomRef.current = room
@@ -1032,8 +1342,38 @@ export function BoardView({
     onSelect,
     onShuffleDeck,
   }
+  redrawSceneRef.current = () => {
+    const viewport = viewportRef.current
+    const app = appRef.current
+    if (!viewport || !app) {
+      return
+    }
 
-  const quickActions = useMemo(() => {
+    populateViewportScene(
+      viewport,
+      renderedRef.current,
+      app.renderer,
+      cardTextureCacheRef.current,
+      roomRef.current,
+      ephemeralTransformsRef.current,
+      currentPlayerIdRef.current,
+      selectedIdRef.current,
+      hoverDeckIdRef.current,
+      canEditRef.current,
+      allowSelectLockedRef.current,
+      callbacksRef.current.onSelect,
+      dragRef,
+      auxiliaryTouchRef,
+      pendingDeckPressRef,
+      tapCandidateRef,
+      requestRenderRef.current,
+      flipAnimationsRef.current,
+      performance.now(),
+    )
+    syncActiveDragRendering(viewport, renderedRef.current, dragRef)
+  }
+
+  const quickActions = useMemo<QuickAction[]>(() => {
     if (!selectedId) {
       return []
     }
@@ -1044,29 +1384,49 @@ export function BoardView({
 
     if (object.type === 'card') {
       return [
-        { label: 'Flip', onClick: () => onFlipCard(object.id) },
-        { label: '...', onClick: onOpenSelectionPanel },
+        { id: 'flip', label: 'Flip', icon: 'flip', onClick: () => onFlipCard(object.id) },
+        { id: 'more', label: 'More actions', icon: 'more', onClick: onOpenSelectionPanel },
       ]
     }
 
     if (object.type === 'deck') {
       return [
-        { label: 'Flip', onClick: () => onFlipDeck(object.id) },
-        { label: 'Draw', onClick: () => onDrawDeck(object.id) },
-        { label: 'Shuffle', onClick: () => onShuffleDeck(object.id) },
-        { label: '...', onClick: onOpenSelectionPanel },
+        { id: 'flip', label: 'Flip', icon: 'flip', onClick: () => onFlipDeck(object.id) },
+        { id: 'draw', label: 'Draw', onClick: () => onDrawDeck(object.id) },
+        { id: 'shuffle', label: 'Shuffle', onClick: () => onShuffleDeck(object.id) },
+        { id: 'more', label: 'More actions', icon: 'more', onClick: onOpenSelectionPanel },
       ]
     }
 
     if (object.type === 'board') {
       return [
-        { label: 'Flip', onClick: () => onFlipBoard(object.id) },
-        { label: '...', onClick: onOpenSelectionPanel },
+        { id: 'flip', label: 'Flip', icon: 'flip', onClick: () => onFlipBoard(object.id) },
+        { id: 'more', label: 'More actions', icon: 'more', onClick: onOpenSelectionPanel },
       ]
     }
 
     return []
   }, [canEdit, onDrawDeck, onFlipBoard, onFlipCard, onFlipDeck, onOpenSelectionPanel, onShuffleDeck, room.objects, selectedId])
+
+  useEffect(() => {
+    const updateShiftState = (event: KeyboardEvent) => {
+      shiftPressedRef.current = event.shiftKey
+    }
+
+    const clearShiftState = () => {
+      shiftPressedRef.current = false
+    }
+
+    window.addEventListener('keydown', updateShiftState)
+    window.addEventListener('keyup', updateShiftState)
+    window.addEventListener('blur', clearShiftState)
+
+    return () => {
+      window.removeEventListener('keydown', updateShiftState)
+      window.removeEventListener('keyup', updateShiftState)
+      window.removeEventListener('blur', clearShiftState)
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -1076,6 +1436,7 @@ export function BoardView({
     }
     const host: HTMLDivElement = hostElement
     const renderedObjects = renderedRef.current
+    const cardTextureCache = cardTextureCacheRef.current
 
     const suppressNativeTouch = (event: Event) => {
       event.preventDefault()
@@ -1378,6 +1739,23 @@ export function BoardView({
       })
 
       app.ticker.add(() => {
+        const now = performance.now()
+        let needsAnimationFrame = false
+        for (const [objectId, animation] of flipAnimationsRef.current) {
+          if (now - animation.startedAt >= animation.durationMs) {
+            flipAnimationsRef.current.delete(objectId)
+            needsAnimationFrame = true
+            continue
+          }
+
+          if (roomRef.current.objects[objectId]) {
+            needsAnimationFrame = true
+          }
+        }
+
+        if (needsAnimationFrame) {
+          redrawSceneRef.current()
+        }
         emitCamera()
         updateOverlayPosition()
       })
@@ -1392,6 +1770,8 @@ export function BoardView({
       populateViewportScene(
         viewport,
         renderedRef.current,
+        app.renderer,
+        cardTextureCacheRef.current,
         roomRef.current,
         ephemeralTransformsRef.current,
         currentPlayerIdRef.current,
@@ -1405,6 +1785,8 @@ export function BoardView({
         pendingDeckPressRef,
         tapCandidateRef,
         requestRenderRef.current,
+        flipAnimationsRef.current,
+        performance.now(),
       )
 
       return () => {
@@ -1428,6 +1810,10 @@ export function BoardView({
       host.removeEventListener('dragstart', suppressNativeTouch)
       viewportRef.current?.destroy({ children: true })
       appRef.current?.destroy(true, { children: true })
+      for (const entry of cardTextureCache.values()) {
+        entry.texture.destroy(true)
+      }
+      cardTextureCache.clear()
       renderedObjects.clear()
       viewportRef.current = null
       appRef.current = null
@@ -1436,28 +1822,57 @@ export function BoardView({
   }, [roomUrl])
 
   useEffect(() => {
-    const viewport = viewportRef.current
-    if (!viewport) {
-      return
+    const nextCardVisualStates = collectCardVisualStates(room, currentPlayerId)
+    const previousCardVisualStates = cardVisualStatesRef.current
+    const now = performance.now()
+
+    for (const [objectId, nextState] of nextCardVisualStates) {
+      const previousState = previousCardVisualStates.get(objectId)
+      if (!previousState || previousState.faceUp === nextState.faceUp) {
+        continue
+      }
+
+      const currentPresentation = cardFlipPresentation(
+        objectId,
+        previousState.faceVisible,
+        flipAnimationsRef.current,
+        now,
+      )
+      if (currentPresentation.faceVisible === nextState.faceVisible) {
+        continue
+      }
+
+      flipAnimationsRef.current.set(objectId, {
+        startedAt: now,
+        durationMs: shiftPressedRef.current ? FLIP_DEBUG_DURATION_MS : FLIP_DURATION_MS,
+        fromFaceVisible: currentPresentation.faceVisible,
+        toFaceVisible: nextState.faceVisible,
+      })
     }
-    populateViewportScene(
-      viewport,
-      renderedRef.current,
-      room,
-      ephemeralTransformsRef.current,
-      currentPlayerId,
-      selectedId,
-      hoverDeckId,
-      canEdit,
-      allowSelectLocked,
-      onSelect,
-      dragRef,
-      auxiliaryTouchRef,
-      pendingDeckPressRef,
-      tapCandidateRef,
-      requestRenderRef.current,
-    )
-  }, [allowSelectLocked, assetVersion, canEdit, currentPlayerId, hoverDeckId, onSelect, room, selectedId])
+
+    for (const objectId of [...flipAnimationsRef.current.keys()]) {
+      if (!nextCardVisualStates.has(objectId)) {
+        flipAnimationsRef.current.delete(objectId)
+      }
+    }
+
+    for (const [cacheKey, entry] of cardTextureCacheRef.current) {
+      const [cardId] = cacheKey.split(':')
+      if (nextCardVisualStates.has(cardId)) {
+        continue
+      }
+
+      entry.texture.destroy(true)
+      cardTextureCacheRef.current.delete(cacheKey)
+    }
+
+    cardVisualStatesRef.current = nextCardVisualStates
+    redrawSceneRef.current()
+  }, [currentPlayerId, room])
+
+  useEffect(() => {
+    redrawSceneRef.current()
+  }, [allowSelectLocked, canEdit, hoverDeckId, onSelect, selectedId])
 
   useEffect(() => {
     applyDisplayedTransforms(renderedRef.current, room, ephemeralTransforms, dragRef)
@@ -1472,8 +1887,18 @@ export function BoardView({
           className="quick-actions"
         >
           {quickActions.map((action) => (
-            <button key={action.label} onClick={action.onClick}>
-              {action.label}
+            <button
+              key={action.id}
+              onClick={action.onClick}
+              className={action.icon ? 'quick-action-icon' : undefined}
+              aria-label={action.label}
+              title={action.label}
+            >
+              {action.icon === 'flip'
+                ? <FlipQuickActionIcon />
+                : action.icon === 'more'
+                  ? <MoreQuickActionIcon />
+                  : action.text ?? action.label}
             </button>
           ))}
         </div>
