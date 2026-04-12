@@ -37,17 +37,12 @@ import {
   moveObject,
 } from '../model/room'
 import type { Board, CameraState, Card, GameObject, RoomDoc, SpriteSpec } from '../model/types'
-import { roomHash } from '../model/repo'
 import { DEFAULT_BOARD_SIZE, DEFAULT_CARD_SIZE } from '../model/types'
 
 const DEFAULT_CAMERA: CameraState = {
   centerX: 0,
   centerY: 0,
   zoom: 1,
-}
-
-function currentOriginUrl(roomUrl: string) {
-  return `${window.location.origin}${window.location.pathname}${roomHash(roomUrl)}`
 }
 
 function nextSpawnTransform(camera: CameraState, offset: number) {
@@ -155,7 +150,7 @@ interface BoardDraft {
   backUrl: string
 }
 
-type PanelMode = 'room' | 'selection'
+type RightPanelMode = 'turn' | 'selection'
 type CreationMode = 'board' | 'deck-sheet'
 
 function defaultSheetDeckDraft(): SheetDeckDraft {
@@ -508,7 +503,9 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   const [room, changeRoom] = useDocument<RoomDoc>(roomUrl, { suspense: true })
   const [selectedId, setSelectedId] = useState<string>()
   const [joinedPlayerId, setJoinedPlayerId] = useState<string | undefined>(() => loadJoinedPlayerId(roomUrl))
-  const [panelMode, setPanelMode] = useState<PanelMode | undefined>()
+  const [isRoomPanelOpen, setIsRoomPanelOpen] = useState(false)
+  const [rightPanelMode, setRightPanelMode] = useState<RightPanelMode | undefined>()
+  const [isAddMenuOpen, setIsAddMenuOpen] = useState(false)
   const [creationMode, setCreationMode] = useState<CreationMode | undefined>()
   const [camera, setCamera] = useState<CameraState>(() => loadCameraState(roomUrl) ?? DEFAULT_CAMERA)
   const [allowSelectLocked, setAllowSelectLocked] = useState(false)
@@ -519,7 +516,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   const spawnCountRef = useRef(0)
   const selectedObject = selectedId ? room.objects[selectedId] : undefined
   const boardSelectedId = selectedObject?.id
-  const visiblePanelMode = panelMode === 'selection' && !selectedObject ? undefined : panelMode
+  const visibleRightPanelMode = rightPanelMode === 'selection' && !selectedObject ? undefined : rightPanelMode
   const currentPlayer = joinedPlayerId ? room.players[joinedPlayerId] : undefined
   const canEdit = Boolean(currentPlayer)
   const roomTitle = formatRoomTitle(room)
@@ -565,29 +562,67 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     changeRoom(change)
   }
 
-  async function copyRoomLink() {
-    await navigator.clipboard.writeText(currentOriginUrl(roomUrl))
+  function toggleRoomPanel() {
+    setIsRoomPanelOpen((current) => {
+      const next = !current
+      setIsAddMenuOpen(false)
+      if (next) {
+        setRightPanelMode(undefined)
+      }
+      return next
+    })
   }
 
-  function toggleRoomPanel() {
-    setPanelMode((current) => (current === 'room' ? undefined : 'room'))
+  function toggleTurnPanel() {
+    setRightPanelMode((current) => {
+      const next = current === 'turn' ? undefined : 'turn'
+      setIsAddMenuOpen(false)
+      if (next) {
+        setIsRoomPanelOpen(false)
+      }
+      return next
+    })
   }
 
   function updateSelection(nextId?: string) {
     setSelectedId(nextId)
     if (!nextId) {
-      setPanelMode((current) => (current === 'selection' ? undefined : current))
+      setRightPanelMode((current) => (current === 'selection' ? undefined : current))
     }
   }
 
   function openSelectionPanel() {
     if (selectedObject) {
-      setPanelMode('selection')
+      setIsRoomPanelOpen(false)
+      setIsAddMenuOpen(false)
+      setRightPanelMode('selection')
     }
   }
 
-  function closePanel() {
-    setPanelMode(undefined)
+  function closeRoomPanel() {
+    setIsRoomPanelOpen(false)
+  }
+
+  function closeRightPanel() {
+    setRightPanelMode(undefined)
+  }
+
+  function toggleAddMenu() {
+    setIsAddMenuOpen((current) => {
+      const next = !current
+      if (next) {
+        setIsRoomPanelOpen(false)
+        setRightPanelMode(undefined)
+      }
+      return next
+    })
+  }
+
+  function openCreationFlow(mode: CreationMode) {
+    setIsAddMenuOpen(false)
+    setBoardDraftError('')
+    setSheetDeckError('')
+    setCreationMode(mode)
   }
 
   function closeCreationFlow() {
@@ -661,6 +696,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     mutate((draft) => {
       createCardOnPlane(draft, draft.rootId, nextSpawnTransform(camera, offset))
     })
+    setIsAddMenuOpen(false)
   }
 
   function createDeckHere() {
@@ -668,6 +704,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     mutate((draft) => {
       createDeckOnPlane(draft, draft.rootId, nextSpawnTransform(camera, offset))
     })
+    setIsAddMenuOpen(false)
   }
 
   function createBoardHere() {
@@ -679,9 +716,10 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
 
     if (createdBoardId) {
       setSelectedId(createdBoardId)
-      setPanelMode('selection')
+      setRightPanelMode('selection')
       setCreationMode(undefined)
     }
+    setIsAddMenuOpen(false)
   }
 
   async function createBoardFromImage() {
@@ -748,7 +786,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     setBoardDraft(defaultBoardDraft())
     setBoardDraftError('')
     setSelectedId(createdBoardId)
-    setPanelMode('selection')
+    setRightPanelMode('selection')
     setCreationMode(undefined)
   }
 
@@ -838,6 +876,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     setSelectedId(createdDeckId)
     setSheetDeckError('')
     setSheetDeckDraft(defaultSheetDeckDraft())
+    setRightPanelMode('selection')
     setCreationMode(undefined)
   }
 
@@ -950,18 +989,16 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
 
       <div className="overlay-layer">
         <header className="topbar">
-          <button
-            className={`topbar-title topbar-title-button ${panelMode === 'room' ? 'active' : ''}`}
-            onClick={toggleRoomPanel}
-          >
-            <p className="eyebrow">Glass Sandbox</p>
-            <h1>{roomTitle}</h1>
-          </button>
+          {!isRoomPanelOpen ? (
+            <button className="topbar-title topbar-title-button" onClick={toggleRoomPanel}>
+              <h1>{roomTitle}</h1>
+            </button>
+          ) : null}
           <div className="topbar-cluster topbar-actions">
-            <div className="turn-pill">
+            <button className={`turn-pill turn-button ${rightPanelMode === 'turn' ? 'active' : ''}`} onClick={toggleTurnPanel}>
               <span>Turn</span>
               <strong>{turnPlayer?.name ?? 'Unset'}</strong>
-            </div>
+            </button>
             {currentPlayer ? (
               <button className="join-button active" onClick={renamePlayer}>
                 {currentPlayer.name}
@@ -974,27 +1011,89 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
           </div>
         </header>
 
-        {visiblePanelMode && (visiblePanelMode !== 'selection' || selectedObject) ? (
-          <aside className="inspector">
+        {isRoomPanelOpen ? (
+          <aside className="room-panel">
+            <section className="room-panel-card">
+              <div className="room-panel-header">
+                {canEdit ? (
+                  <textarea
+                    aria-label="Room name"
+                    className="drawer-title-input"
+                    placeholder="Untitled Table"
+                    rows={1}
+                    spellCheck={false}
+                    wrap="off"
+                    value={getRootPlane(room).name}
+                    onChange={(event) =>
+                      mutate((draft) => {
+                        getRootPlane(draft).name = event.target.value.replaceAll('\n', ' ')
+                      })
+                    }
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        event.currentTarget.blur()
+                      }
+                    }}
+                  />
+                ) : (
+                  <h2 className="room-panel-title">{roomTitle}</h2>
+                )}
+                <button aria-label="Close room panel" className="panel-close" onClick={closeRoomPanel} title="Close room panel" />
+              </div>
+
+              <section className="inspector-group">
+                <h4>Templates</h4>
+                {linkedTemplate ? (
+                  <div className="stats-card">
+                    <span>Current Template</span>
+                    <strong>{linkedTemplate.title}</strong>
+                  </div>
+                ) : null}
+                <div className="action-grid">
+                  <button onClick={saveCurrentRoomAsTemplate}>Save As Template</button>
+                  {linkedTemplate ? <button onClick={updateLinkedTemplate}>Update Template</button> : null}
+                </div>
+              </section>
+
+              <section className="inspector-group">
+                <h4>Interaction</h4>
+                <label className="toggle-row room-toggle-card">
+                  <span>Select Locked Objects</span>
+                  <input
+                    type="checkbox"
+                    checked={allowSelectLocked}
+                    onChange={(event) => setAllowSelectLocked(event.target.checked)}
+                  />
+                </label>
+              </section>
+
+              <div className="panel-footer-action">
+                <button onClick={returnToLobby}>Return To Lobby</button>
+              </div>
+            </section>
+          </aside>
+        ) : null}
+
+        {visibleRightPanelMode && (visibleRightPanelMode !== 'selection' || selectedObject) ? (
+          <aside className={`inspector inspector-right ${visibleRightPanelMode === 'turn' ? 'inspector-compact' : ''}`}>
             <section className="inspector-section">
               <div className="inspector-toolbar">
-                {visiblePanelMode === 'selection' && selectedObject ? (
+                {visibleRightPanelMode === 'selection' && selectedObject ? (
                   <div>
                     <p className="eyebrow">{selectedObject.type}</p>
                     <h2>{selectedObject.name}</h2>
                   </div>
                 ) : (
                   <div>
-                    <p className="eyebrow">Room</p>
-                    <h2>{roomTitle}</h2>
+                    <p className="eyebrow">Turn</p>
+                    <h2>{turnPlayer?.name ?? 'Turn Order'}</h2>
                   </div>
                 )}
-                <button className="panel-close" onClick={closePanel}>
-                  Close
-                </button>
+                <button aria-label="Close panel" className="panel-close" onClick={closeRightPanel} title="Close panel" />
               </div>
 
-              {visiblePanelMode === 'selection' && selectedObject ? (
+              {visibleRightPanelMode === 'selection' && selectedObject ? (
                 <>
                   <div className="button-row">
                     <button disabled={!canEdit} onClick={() => mutate((draft) => bringObjectForward(draft, selectedObject.id))}>
@@ -1255,74 +1354,28 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                 </>
               ) : (
                 <>
-                  <div className={`presence-pill ${canEdit ? 'active' : ''}`}>
-                    {canEdit ? `Editing as ${currentPlayer?.name}` : 'Observe only'}
+                  <div className="stats-card">
+                    <span>Current Turn</span>
+                    <strong>{turnPlayer?.name ?? 'Unset'}</strong>
                   </div>
 
-                  <label className="toggle-row">
-                    <span>Select Locked Objects</span>
-                    <input
-                      type="checkbox"
-                      checked={allowSelectLocked}
-                      onChange={(event) => setAllowSelectLocked(event.target.checked)}
-                    />
-                  </label>
-
                   <div className="button-row">
-                    <button onClick={() => void copyRoomLink()}>Share</button>
-                    <button onClick={saveCurrentRoomAsTemplate}>Save As New Template</button>
-                    {linkedTemplate ? <button onClick={updateLinkedTemplate}>Update Template</button> : null}
-                    <button onClick={returnToLobby}>Return To Lobby</button>
-                  </div>
-
-                  <label className="field">
-                    <span>Table Name</span>
-                    <input
-                      disabled={!canEdit}
-                      value={getRootPlane(room).name}
-                      onChange={(event) =>
-                        mutate((draft) => {
-                          getRootPlane(draft).name = event.target.value
-                        })
-                      }
-                    />
-                  </label>
-
-                  <div className="button-row">
-                    <button disabled={!canEdit} onClick={createCardHere}>
-                      Create Card
-                    </button>
-                    <button disabled={!canEdit} onClick={createDeckHere}>
-                      Create Deck
-                    </button>
                     <button disabled={!canEdit} onClick={() => mutate((draft) => advanceTurn(draft))}>
                       Advance Turn
                     </button>
                   </div>
 
                   <section className="inspector-group">
-                    <h4>Create Components</h4>
-                    <div className="button-row">
-                      <button disabled={!canEdit} onClick={() => setCreationMode('board')}>
-                        Board From Image
-                      </button>
-                      <button disabled={!canEdit} onClick={() => setCreationMode('deck-sheet')}>
-                        Deck From Sheet
-                      </button>
-                    </div>
-                  </section>
-
-                  <section className="inspector-group">
                     <h4>Players</h4>
-                    <div className="player-list">
+                    <div className="player-list room-player-list">
                       {playerList.map((player) => (
-                        <div className="player-card" key={player.id}>
-                          <div>
+                        <div className={`player-card ${player.id === room.turnPlayerId ? 'active-turn' : ''}`} key={player.id}>
+                          <div className="player-card-copy">
                             <strong>{player.name}</strong>
                             <small>{player.id === room.turnPlayerId ? 'Current turn' : 'Waiting'}</small>
                           </div>
                           <button disabled={!canEdit} onClick={() => mutate((draft) => setTurnPlayer(draft, player.id))}>
-                            Make Active
+                            {player.id === room.turnPlayerId ? 'Active' : 'Make Active'}
                           </button>
                         </div>
                       ))}
@@ -1335,6 +1388,45 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
           </aside>
         ) : null}
 
+        {canEdit ? (
+          <div className="creation-dock">
+            {isAddMenuOpen ? (
+              <section className="creation-menu">
+                <div className="section-copy">
+                  <h4>Add To Table</h4>
+                  <p className="field-note">Quick create on the board or open an import flow.</p>
+                </div>
+
+                <section className="creation-menu-section">
+                  <h4>Quick Create</h4>
+                  <div className="action-grid">
+                    <button onClick={createCardHere}>Card</button>
+                    <button onClick={createDeckHere}>Deck</button>
+                    <button onClick={createBoardHere}>Board</button>
+                  </div>
+                </section>
+
+                <section className="creation-menu-section">
+                  <h4>Imports</h4>
+                  <div className="action-grid">
+                    <button onClick={() => openCreationFlow('board')}>Board From Image</button>
+                    <button onClick={() => openCreationFlow('deck-sheet')}>Deck From Sheet</button>
+                  </div>
+                </section>
+              </section>
+            ) : null}
+
+            <button
+              aria-label={isAddMenuOpen ? 'Close add menu' : 'Open add menu'}
+              className={`add-button ${isAddMenuOpen ? 'active' : ''}`}
+              onClick={toggleAddMenu}
+              title={isAddMenuOpen ? 'Close add menu' : 'Open add menu'}
+            >
+              <span aria-hidden="true" className="add-button-glyph">+</span>
+            </button>
+          </div>
+        ) : null}
+
         {creationMode ? (
           <div className="modal-scrim">
             <section className="modal-card">
@@ -1343,9 +1435,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                   <p className="eyebrow">Create</p>
                   <h2>{creationMode === 'board' ? 'Board From Image' : 'Deck From Sprite Sheet'}</h2>
                 </div>
-                <button className="panel-close" onClick={closeCreationFlow}>
-                  Close
-                </button>
+                <button aria-label="Close creation flow" className="panel-close" onClick={closeCreationFlow} title="Close creation flow" />
               </div>
 
               {creationMode === 'board' ? (

@@ -2,6 +2,7 @@
 
 ## 2026-04-11
 
+- Reworked the in-room control chrome into anchored room and turn panels with a floating add menu, and iterated on the room panel hierarchy and styling.
 - Let header drags pass through the non-interactive top bar chrome so panning can start from empty header space and the turn pill again.
 
 ## 2026-04-05
