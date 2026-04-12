@@ -1,6 +1,7 @@
 import {
   useDocHandle,
   useDocument,
+  useRepo,
   type AutomergeUrl,
 } from '@automerge/react'
 import { startTransition, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
@@ -47,6 +48,15 @@ import {
   moveObject,
   removePlayer,
 } from '../model/room'
+import {
+  buildImageAssetDoc,
+  collectRoomImageAssetUrls,
+  loadStoredImageDimensions,
+  resolveImageSource,
+  useResolvedImageAssets,
+  type ImageAssetDoc,
+  type ResolvedImageAsset,
+} from '../model/assets'
 import type { Board, CameraState, Card, GameObject, Id, RoomDoc, SpriteSpec, Transform2D } from '../model/types'
 import { DEFAULT_BOARD_SIZE, DEFAULT_CARD_SIZE } from '../model/types'
 
@@ -137,6 +147,29 @@ function loadImageDimensions(url: string) {
   })
 }
 
+async function loadImageSourceDimensions(
+  url: string,
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
+) {
+  const source = resolveImageSource(url, imageAssets)
+  if (source?.asset?.width && source.asset.height) {
+    return {
+      width: source.asset.width,
+      height: source.asset.height,
+    }
+  }
+
+  if (source?.isStored) {
+    const dimensions = await loadStoredImageDimensions(url)
+    if (dimensions) {
+      return dimensions
+    }
+    throw new Error('Stored image unavailable')
+  }
+
+  return loadImageDimensions(url)
+}
+
 function cardSizeForAspect(aspect: number) {
   const safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : DEFAULT_CARD_SIZE.width / DEFAULT_CARD_SIZE.height
   const targetArea = DEFAULT_CARD_SIZE.width * DEFAULT_CARD_SIZE.height
@@ -146,20 +179,26 @@ function cardSizeForAspect(aspect: number) {
   }
 }
 
-async function resolveSpriteAspectRatio(spec: SpriteSpec) {
+async function resolveSpriteAspectRatio(
+  spec: SpriteSpec,
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
+) {
   if (spec.kind !== 'image-url' || !spec.url) {
     return undefined
   }
 
-  const dimensions = await loadImageDimensions(spec.url)
+  const dimensions = await loadImageSourceDimensions(spec.url, imageAssets)
   const cropWidth = spec.crop?.width ?? 1
   const cropHeight = spec.crop?.height ?? 1
   const aspect = (dimensions.width * cropWidth) / (dimensions.height * cropHeight)
   return Number.isFinite(aspect) && aspect > 0 ? aspect : undefined
 }
 
-async function resolveBoardResizeAspectRatio(board: Board) {
-  const faceAspect = await resolveSpriteAspectRatio(board.face).catch(() => undefined)
+async function resolveBoardResizeAspectRatio(
+  board: Board,
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
+) {
+  const faceAspect = await resolveSpriteAspectRatio(board.face, imageAssets).catch(() => undefined)
   if (faceAspect) {
     return faceAspect
   }
@@ -189,6 +228,130 @@ function updateSpriteCrop(value: SpriteSpec, partial: Partial<NonNullable<Sprite
       ...partial,
     },
   }
+}
+
+function formatFileSize(sizeBytes: number) {
+  if (sizeBytes < 1024) {
+    return `${sizeBytes} B`
+  }
+
+  if (sizeBytes < 1024 * 1024) {
+    return `${(sizeBytes / 1024).toFixed(1)} KB`
+  }
+
+  return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function formatAssetSummary(asset?: ResolvedImageAsset) {
+  if (!asset) {
+    return 'Loading stored image...'
+  }
+
+  const details = [asset.mimeType, formatFileSize(asset.sizeBytes)]
+  if (asset.width && asset.height) {
+    details.unshift(`${asset.width} × ${asset.height}`)
+  }
+
+  return details.join(' · ')
+}
+
+function ImageSourceInput({
+  label,
+  value,
+  disabled,
+  placeholder,
+  imageAssets,
+  onChange,
+}: {
+  label: string
+  value: string
+  disabled: boolean
+  placeholder: string
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>
+  onChange: (next: string) => void
+}) {
+  const repo = useRepo()
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [uploadError, setUploadError] = useState('')
+  const [isUploading, setIsUploading] = useState(false)
+  const source = resolveImageSource(value, imageAssets)
+  const storedAsset = source?.asset
+
+  async function uploadFile(file: File) {
+    if (!file.type.startsWith('image/')) {
+      setUploadError('Please choose an image file.')
+      return
+    }
+
+    setIsUploading(true)
+    try {
+      const assetDoc = await buildImageAssetDoc(file)
+      const assetHandle = repo.create<ImageAssetDoc>(assetDoc)
+      onChange(assetHandle.url)
+      setUploadError('')
+    } catch {
+      setUploadError('Could not import that image into the room.')
+    } finally {
+      setIsUploading(false)
+    }
+  }
+
+  return (
+    <>
+      <label className="field">
+        <span>{label}</span>
+        {source?.isStored ? (
+          <div className="image-source-card">
+            {storedAsset?.objectUrl ? (
+              <img alt={storedAsset.name} className="image-source-preview" src={storedAsset.objectUrl} />
+            ) : (
+              <div className="image-source-preview image-source-placeholder">Loading preview...</div>
+            )}
+            <div className="image-source-copy">
+              <strong>{storedAsset?.name ?? 'Stored image'}</strong>
+              <small>{formatAssetSummary(storedAsset)}</small>
+            </div>
+          </div>
+        ) : (
+          <input
+            disabled={disabled || isUploading}
+            type="url"
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            placeholder={placeholder}
+          />
+        )}
+      </label>
+
+      <div className="button-row">
+        <button disabled={disabled || isUploading} onClick={() => fileInputRef.current?.click()}>
+          {isUploading ? 'Uploading...' : source?.isStored ? 'Replace Image' : 'Upload Into Room'}
+        </button>
+        {value ? (
+          <button disabled={disabled || isUploading} onClick={() => onChange('')}>
+            Clear Image
+          </button>
+        ) : null}
+      </div>
+
+      <input
+        ref={fileInputRef}
+        hidden
+        accept="image/*"
+        disabled={disabled || isUploading}
+        type="file"
+        onChange={(event) => {
+          const file = event.target.files?.[0]
+          event.target.value = ''
+          if (!file) {
+            return
+          }
+          void uploadFile(file)
+        }}
+      />
+      {uploadError ? <p className="inline-error">{uploadError}</p> : null}
+    </>
+  )
 }
 
 interface SheetDeckDraft {
@@ -264,11 +427,13 @@ function SpriteEditor({
   label,
   value,
   disabled,
+  imageAssets,
   onChange,
 }: {
   label: string
   value: SpriteSpec
   disabled: boolean
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>
   onChange: (next: SpriteSpec) => void
 }) {
   return (
@@ -287,26 +452,24 @@ function SpriteEditor({
           }
         >
           <option value="label">Label</option>
-          <option value="image-url">Image URL</option>
+          <option value="image-url">Image</option>
         </select>
       </label>
       {value.kind === 'image-url' ? (
         <>
-          <label className="field">
-            <span>URL</span>
-            <input
-              disabled={disabled}
-              type="url"
-              value={value.url ?? ''}
-              onChange={(event) =>
-                onChange({
-                  ...value,
-                  url: event.target.value,
-                })
-              }
-              placeholder="https://example.com/card.png"
-            />
-          </label>
+          <ImageSourceInput
+            label="Image"
+            value={value.url ?? ''}
+            disabled={disabled}
+            placeholder="https://example.com/card.png"
+            imageAssets={imageAssets}
+            onChange={(url) =>
+              onChange({
+                ...value,
+                url,
+              })
+            }
+          />
           <label className="field">
             <span>Fit</span>
             <select
@@ -597,6 +760,17 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   const remoteDragExpiryRef = useRef(new Map<string, number>())
   const localDragPreviewRef = useRef<Record<Id, Transform2D>>({})
   const localDragPreviewFrameRef = useRef<number | undefined>(undefined)
+  const imageAssetUrls = useMemo(
+    () =>
+      collectRoomImageAssetUrls(room, [
+        boardDraft.faceUrl,
+        boardDraft.backUrl,
+        sheetDeckDraft.faceUrl,
+        sheetDeckDraft.backUrl,
+      ]),
+    [boardDraft.backUrl, boardDraft.faceUrl, room, sheetDeckDraft.backUrl, sheetDeckDraft.faceUrl],
+  )
+  const resolvedImageAssets = useResolvedImageAssets(imageAssetUrls)
   const selectedObject = selectionMode === 'normal' && selectedId ? room.objects[selectedId] : undefined
   const boardSelectedIds = selectionMode === 'group' ? groupSelectionIds : selectedId ? [selectedId] : []
   const boardPrimarySelectedId = selectionMode === 'group' ? groupPrimaryId : selectedObject?.id
@@ -795,6 +969,17 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     [room.playerOrder, room.players],
   )
 
+  function updateSelection(nextId?: string) {
+    setSelectionMode('normal')
+    setGroupSelectionIds([])
+    setGroupPrimaryId(undefined)
+    setIsLassoMode(false)
+    setSelectedId(nextId)
+    if (!nextId) {
+      setRightPanelMode((current) => (current === 'selection' ? undefined : current))
+    }
+  }
+
   useEffect(() => {
     if (selectionMode !== 'group') {
       return
@@ -810,12 +995,8 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     }
 
     if (nextIds.length === 0) {
-      setSelectionMode('normal')
-      setGroupSelectionIds([])
-      setGroupPrimaryId(undefined)
-      setSelectedId(undefined)
-      setIsLassoMode(false)
-      setRightPanelMode((mode) => (mode === 'selection' ? undefined : mode))
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      updateSelection(undefined)
       return
     }
 
@@ -825,8 +1006,8 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
 
   useEffect(() => {
     if (selectionMode === 'normal' && selectedId && !room.objects[selectedId]) {
-      setSelectedId(undefined)
-      setRightPanelMode((mode) => (mode === 'selection' ? undefined : mode))
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      updateSelection(undefined)
     }
   }, [room.objects, selectedId, selectionMode])
 
@@ -857,17 +1038,6 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
       }
       return next
     })
-  }
-
-  function updateSelection(nextId?: string) {
-    setSelectionMode('normal')
-    setGroupSelectionIds([])
-    setGroupPrimaryId(undefined)
-    setIsLassoMode(false)
-    setSelectedId(nextId)
-    if (!nextId) {
-      setRightPanelMode((current) => (current === 'selection' ? undefined : current))
-    }
   }
 
   function enterGroupSelectionMode() {
@@ -1121,13 +1291,13 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   async function createBoardFromImage() {
     const faceUrl = boardDraft.faceUrl.trim()
     if (!faceUrl) {
-      setBoardDraftError('A board image URL is required.')
+      setBoardDraftError('A board image or image URL is required.')
       return
     }
 
     let size: { width: number; height: number } = { ...DEFAULT_BOARD_SIZE }
     try {
-      const dimensions = await loadImageDimensions(faceUrl)
+      const dimensions = await loadImageSourceDimensions(faceUrl, resolvedImageAssets)
       size = {
         width: Math.max(160, Math.round(dimensions.width)),
         height: Math.max(160, Math.round(dimensions.height)),
@@ -1189,7 +1359,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   async function createDeckFromSheet() {
     const faceUrl = sheetDeckDraft.faceUrl.trim()
     if (!faceUrl) {
-      setSheetDeckError('A face sprite sheet URL is required.')
+      setSheetDeckError('A face sprite sheet image or URL is required.')
       return
     }
 
@@ -1228,7 +1398,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
 
     let cardSize: { width: number; height: number } = { ...DEFAULT_CARD_SIZE }
     try {
-      const dimensions = await loadImageDimensions(faceUrl)
+      const dimensions = await loadImageSourceDimensions(faceUrl, resolvedImageAssets)
       const cellAspect = (dimensions.width / faceCols) / (dimensions.height / faceRows)
       cardSize = cardSizeForAspect(cellAspect)
     } catch {
@@ -1311,6 +1481,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
           key={roomUrl}
           room={room}
           roomUrl={roomUrl}
+          imageAssets={resolvedImageAssets}
           ephemeralTransforms={ephemeralTransforms}
           selectionMode={selectionMode}
           selectedId={boardPrimarySelectedId}
@@ -1705,6 +1876,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                     label="Face"
                     value={selectedObject.face}
                     disabled={!canEdit}
+                    imageAssets={resolvedImageAssets}
                     onChange={(next) =>
                       mutate((draft) => {
                         ;(draft.objects[selectedObject.id] as Card).face = next
@@ -1715,6 +1887,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                     label="Back"
                     value={selectedObject.back}
                     disabled={!canEdit}
+                    imageAssets={resolvedImageAssets}
                     onChange={(next) =>
                       mutate((draft) => {
                         ;(draft.objects[selectedObject.id] as Card).back = next
@@ -1762,7 +1935,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                         return
                       }
 
-                      const aspectRatio = await resolveBoardResizeAspectRatio(board)
+                      const aspectRatio = await resolveBoardResizeAspectRatio(board, resolvedImageAssets)
                       mutate((draft) => {
                         const nextBoard = draft.objects[selectedObject.id]
                         if (isBoard(nextBoard)) {
@@ -1777,7 +1950,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                         return
                       }
 
-                      const aspectRatio = await resolveBoardResizeAspectRatio(board)
+                      const aspectRatio = await resolveBoardResizeAspectRatio(board, resolvedImageAssets)
                       mutate((draft) => {
                         const nextBoard = draft.objects[selectedObject.id]
                         if (isBoard(nextBoard)) {
@@ -1792,6 +1965,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                     label="Face"
                     value={selectedObject.face}
                     disabled={!canEdit}
+                    imageAssets={resolvedImageAssets}
                     onChange={(next) =>
                       mutate((draft) => {
                         const board = draft.objects[selectedObject.id]
@@ -1805,6 +1979,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                     label="Back"
                     value={selectedObject.back}
                     disabled={!canEdit}
+                    imageAssets={resolvedImageAssets}
                     onChange={(next) =>
                       mutate((draft) => {
                         const board = draft.objects[selectedObject.id]
@@ -1949,40 +2124,36 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                     />
                   </label>
 
-                  <label className="field">
-                    <span>Face Image URL</span>
-                    <input
-                      disabled={!canEdit}
-                      type="url"
-                      value={boardDraft.faceUrl}
-                      onChange={(event) =>
-                        setBoardDraft((current) => ({
-                          ...current,
-                          faceUrl: event.target.value,
-                        }))
-                      }
-                      placeholder="https://example.com/board.png"
-                    />
-                  </label>
+                  <ImageSourceInput
+                    label="Face Image"
+                    value={boardDraft.faceUrl}
+                    disabled={!canEdit}
+                    placeholder="https://example.com/board.png"
+                    imageAssets={resolvedImageAssets}
+                    onChange={(faceUrl) =>
+                      setBoardDraft((current) => ({
+                        ...current,
+                        faceUrl,
+                      }))
+                    }
+                  />
 
-                  <label className="field">
-                    <span>Back Image URL</span>
-                    <input
-                      disabled={!canEdit}
-                      type="url"
-                      value={boardDraft.backUrl}
-                      onChange={(event) =>
-                        setBoardDraft((current) => ({
-                          ...current,
-                          backUrl: event.target.value,
-                        }))
-                      }
-                      placeholder="Optional"
-                    />
-                  </label>
+                  <ImageSourceInput
+                    label="Back Image"
+                    value={boardDraft.backUrl}
+                    disabled={!canEdit}
+                    placeholder="Optional"
+                    imageAssets={resolvedImageAssets}
+                    onChange={(backUrl) =>
+                      setBoardDraft((current) => ({
+                        ...current,
+                        backUrl,
+                      }))
+                    }
+                  />
 
                   <p className="field-note">
-                    The board size is derived from the face image aspect ratio and starts locked by default.
+                    Upload into the room or paste a URL. Board size is derived from the face image aspect ratio and starts locked by default.
                   </p>
 
                   <div className="button-row">
@@ -2012,21 +2183,19 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                     />
                   </label>
 
-                  <label className="field">
-                    <span>Face Sheet URL</span>
-                    <input
-                      disabled={!canEdit}
-                      type="url"
-                      value={sheetDeckDraft.faceUrl}
-                      onChange={(event) =>
-                        setSheetDeckDraft((current) => ({
-                          ...current,
-                          faceUrl: event.target.value,
-                        }))
-                      }
-                      placeholder="https://example.com/cards.png"
-                    />
-                  </label>
+                  <ImageSourceInput
+                    label="Face Sheet"
+                    value={sheetDeckDraft.faceUrl}
+                    disabled={!canEdit}
+                    placeholder="https://example.com/cards.png"
+                    imageAssets={resolvedImageAssets}
+                    onChange={(faceUrl) =>
+                      setSheetDeckDraft((current) => ({
+                        ...current,
+                        faceUrl,
+                      }))
+                    }
+                  />
 
                   <div className="sheet-grid">
                     <label className="field">
@@ -2077,21 +2246,19 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                     Faces fill left to right, top to bottom. Blank card count defaults to rows × cols.
                   </p>
 
-                  <label className="field">
-                    <span>Back Sheet URL</span>
-                    <input
-                      disabled={!canEdit}
-                      type="url"
-                      value={sheetDeckDraft.backUrl}
-                      onChange={(event) =>
-                        setSheetDeckDraft((current) => ({
-                          ...current,
-                          backUrl: event.target.value,
-                        }))
-                      }
-                      placeholder="Optional"
-                    />
-                  </label>
+                  <ImageSourceInput
+                    label="Back Sheet"
+                    value={sheetDeckDraft.backUrl}
+                    disabled={!canEdit}
+                    placeholder="Optional"
+                    imageAssets={resolvedImageAssets}
+                    onChange={(backUrl) =>
+                      setSheetDeckDraft((current) => ({
+                        ...current,
+                        backUrl,
+                      }))
+                    }
+                  />
 
                   <div className="sheet-grid">
                     <label className="field">

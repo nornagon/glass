@@ -1095,6 +1095,59 @@ textarea {
   gap: 0.8rem;
 }
 
+.image-source-card {
+  display: grid;
+  grid-template-columns: 5rem minmax(0, 1fr);
+  gap: 0.8rem;
+  align-items: center;
+  padding: 0.75rem;
+  border-radius: 20px;
+  background: rgba(251, 238, 220, 0.08);
+  border: 1px solid rgba(255, 237, 208, 0.12);
+}
+
+.image-source-preview {
+  display: block;
+  width: 5rem;
+  height: 4.35rem;
+  object-fit: cover;
+  border-radius: 14px;
+  background: rgba(10, 20, 28, 0.7);
+  border: 1px solid rgba(255, 237, 208, 0.12);
+}
+
+.image-source-placeholder {
+  display: grid;
+  place-items: center;
+  padding: 0.45rem;
+  color: rgba(255, 241, 218, 0.72);
+  font-size: 0.74rem;
+  text-align: center;
+}
+
+.image-source-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.22rem;
+}
+
+.image-source-copy strong,
+.image-source-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.image-source-copy strong {
+  white-space: nowrap;
+  font-size: 0.94rem;
+}
+
+.image-source-copy small {
+  color: rgba(255, 241, 218, 0.72);
+  font-size: 0.78rem;
+}
+
 .stats-card {
   display: flex;
   justify-content: space-between;

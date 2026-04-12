@@ -1,13 +1,16 @@
+import type { AutomergeUrl } from '@automerge/react'
 import { useEffect, useMemo, useRef } from 'react'
 import { useState } from 'react'
 import { Application, Assets, Cache, Container, FederatedPointerEvent, Graphics, PerspectiveMesh, Rectangle, Sprite, Text, Texture } from 'pixi.js'
 import { Viewport } from 'pixi-viewport'
+import { resolveImageSource, type ResolvedImageAsset } from '../model/assets'
 import { BOARD_WORLD_SIZE, DEFAULT_CARD_SIZE, type CameraState, type Id, type RoomDoc, type SpriteSpec, type Transform2D } from '../model/types'
 import { canSeeCardFace, getRootPlane, getTransform, isBoard, isBoardFaceUp, isCard, isDeck } from '../model/room'
 
 interface BoardViewProps {
   room: RoomDoc
   roomUrl: string
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>
   ephemeralTransforms?: Partial<Record<Id, Transform2D>>
   selectionMode: 'normal' | 'group'
   selectedId?: Id
@@ -308,6 +311,7 @@ function requestTextureAsset(url: string, onReady: () => void) {
   void Assets.load<Texture>({
     alias: url,
     src: url,
+    parser: 'texture',
     data: {
       crossOrigin: 'anonymous',
     },
@@ -520,17 +524,19 @@ function addSpriteContents(
   height: number,
   cornerRadius: number,
   requestRender: () => void,
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
 ) {
-  if (!spec.url) {
+  const source = resolveImageSource(spec.url, imageAssets)
+  if (!source?.renderUrl) {
     return
   }
 
-  const texture = requestTextureAsset(spec.url, requestRender)
+  const texture = requestTextureAsset(source.renderUrl, requestRender)
   if (!texture) {
     return
   }
 
-  const displayTexture = textureForSpriteSpec(spec.url, texture, spec.crop)
+  const displayTexture = textureForSpriteSpec(source.renderUrl, texture, spec.crop)
   const fit = spec.fit ?? 'cover'
   const inset = fit === 'contain' ? 7 : 0
   const contentWidth = width - inset * 2
@@ -580,15 +586,17 @@ function addCardSurface(
   spec: SpriteSpec,
   fallbackLabel: string,
   requestRender: () => void,
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
 ) {
+  const imageSource = spec.kind === 'image-url' ? resolveImageSource(spec.url, imageAssets) : undefined
   const card = new Graphics()
   card
     .roundRect(-width / 2, -height / 2, width, height, 18)
     .fill({ color: spec.bg ?? '#f8efe1' })
   container.addChild(card)
 
-  if (spec.kind === 'image-url' && spec.url) {
-    addSpriteContents(container, spec, width, height, 18, requestRender)
+  if (imageSource?.renderUrl) {
+    addSpriteContents(container, spec, width, height, 18, requestRender, imageAssets)
   } else {
     const text = new Text({
       text: spec.label ?? fallbackLabel,
@@ -612,25 +620,40 @@ function addCardSurface(
   container.addChild(border)
 }
 
-function spriteSpecTextureState(spec: SpriteSpec) {
-  if (spec.kind !== 'image-url' || !spec.url) {
+function spriteSpecTextureState(spec: SpriteSpec, imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>) {
+  if (spec.kind !== 'image-url') {
     return 'na'
   }
 
-  if (Cache.has(spec.url) || textureAssetCache.get(spec.url)?.status === 'loaded') {
-    return 'ready'
+  const source = resolveImageSource(spec.url, imageAssets)
+  if (!source) {
+    return 'na'
   }
 
-  return textureAssetCache.get(spec.url)?.status ?? 'pending'
+  if (!source.renderUrl) {
+    return source.signature
+  }
+
+  if (Cache.has(source.renderUrl) || textureAssetCache.get(source.renderUrl)?.status === 'loaded') {
+    return `ready:${source.signature}`
+  }
+
+  return `${textureAssetCache.get(source.renderUrl)?.status ?? 'pending'}:${source.signature}`
 }
 
-function cardTextureSignature(width: number, height: number, spec: SpriteSpec, fallbackLabel: string) {
+function cardTextureSignature(
+  width: number,
+  height: number,
+  spec: SpriteSpec,
+  fallbackLabel: string,
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
+) {
   return JSON.stringify({
     width,
     height,
     fallbackLabel,
     spec,
-    textureState: spriteSpecTextureState(spec),
+    textureState: spriteSpecTextureState(spec, imageAssets),
   })
 }
 
@@ -643,8 +666,9 @@ function getCardSurfaceTexture(
   spec: SpriteSpec,
   fallbackLabel: string,
   requestRender: () => void,
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
 ) {
-  const signature = cardTextureSignature(width, height, spec, fallbackLabel)
+  const signature = cardTextureSignature(width, height, spec, fallbackLabel, imageAssets)
   const cached = textureCache.get(cacheKey)
   if (cached && cached.signature === signature) {
     return cached.texture
@@ -653,7 +677,7 @@ function getCardSurfaceTexture(
   cached?.texture.destroy(true)
 
   const surface = new Container()
-  addCardSurface(surface, width, height, spec, fallbackLabel, requestRender)
+  addCardSurface(surface, width, height, spec, fallbackLabel, requestRender, imageAssets)
   const texture = renderer.generateTexture({
     target: surface,
     resolution: renderer.resolution,
@@ -686,6 +710,7 @@ function addCardContents(
   flipAnimations: Map<Id, FlipAnimation>,
   now: number,
   worldRotation: number,
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
 ) {
   const object = room.objects[objectId]
   if (!isCard(object)) {
@@ -702,7 +727,7 @@ function addCardContents(
   )
   const spec = faceVisible ? object.face : object.back
   if (!flipAnimations.has(objectId)) {
-    addCardSurface(container, width, height, spec, object.name, requestRender)
+    addCardSurface(container, width, height, spec, object.name, requestRender, imageAssets)
     return
   }
 
@@ -719,6 +744,7 @@ function addCardContents(
     spec,
     object.name,
     requestRender,
+    imageAssets,
   )
   const halfWidth = width / 2
   const halfHeight = height / 2
@@ -750,6 +776,7 @@ function addBoardContents(
   room: RoomDoc,
   objectId: Id,
   requestRender: () => void,
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
 ) {
   const object = room.objects[objectId]
   if (!isBoard(object)) {
@@ -758,9 +785,10 @@ function addBoardContents(
 
   const { width, height } = object.size
   const spec = isBoardFaceUp(object) ? object.face : object.back
+  const imageSource = spec.kind === 'image-url' ? resolveImageSource(spec.url, imageAssets) : undefined
 
-  if (spec.kind === 'image-url' && spec.url) {
-    addSpriteContents(container, spec, width, height, 0, requestRender)
+  if (imageSource?.renderUrl) {
+    addSpriteContents(container, spec, width, height, 0, requestRender, imageAssets)
   } else {
     const board = new Graphics()
     board
@@ -801,6 +829,7 @@ function addDeckContents(
   flipAnimations: Map<Id, FlipAnimation>,
   now: number,
   worldRotation: number,
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
 ) {
   const object = room.objects[objectId]
   if (!isDeck(object)) {
@@ -839,6 +868,7 @@ function addDeckContents(
         flipAnimations,
         now,
         worldRotation,
+        imageAssets,
       )
     } else {
       const fallback = new Graphics()
@@ -976,6 +1006,7 @@ function populateViewportScene(
   selectionMode: 'normal' | 'group',
   selectedId: Id | undefined,
   selectedIds: Id[],
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
   lassoMode: boolean,
   hoverDeckId: Id | undefined,
   canEdit: boolean,
@@ -1046,11 +1077,12 @@ function populateViewportScene(
         flipAnimations,
         now,
         transform.rotation,
+        imageAssets,
       )
     } else if (isBoard(object)) {
       width = object.size.width
       height = object.size.height
-      addBoardContents(container, room, objectId, requestRender)
+      addBoardContents(container, room, objectId, requestRender, imageAssets)
     } else if (isDeck(object)) {
       const dimensions = objectDimensions(room, objectId)
       width = dimensions.width
@@ -1066,6 +1098,7 @@ function populateViewportScene(
         flipAnimations,
         now,
         transform.rotation,
+        imageAssets,
       )
     }
 
@@ -1478,6 +1511,7 @@ function syncActiveDragRendering(
 export function BoardView({
   room,
   roomUrl,
+  imageAssets,
   ephemeralTransforms = {},
   selectionMode,
   selectedId,
@@ -1514,6 +1548,7 @@ export function BoardView({
   const backgroundTapCandidateRef = useRef<BackgroundTapCandidate | null>(null)
   const auxiliaryTouchRef = useRef<AuxiliaryTouchState>({ pointers: new Map() })
   const roomRef = useRef(room)
+  const imageAssetsRef = useRef(imageAssets)
   const ephemeralTransformsRef = useRef(ephemeralTransforms)
   const selectionModeRef = useRef(selectionMode)
   const selectedIdRef = useRef(selectedId)
@@ -1556,6 +1591,7 @@ export function BoardView({
   })
 
   roomRef.current = room
+  imageAssetsRef.current = imageAssets
   ephemeralTransformsRef.current = ephemeralTransforms
   selectionModeRef.current = selectionMode
   selectedIdRef.current = selectedId
@@ -1601,6 +1637,7 @@ export function BoardView({
       selectionModeRef.current,
       selectedIdRef.current,
       selectedIdsRef.current,
+      imageAssetsRef.current,
       lassoModeRef.current,
       hoverDeckIdRef.current,
       canEditRef.current,
@@ -2145,6 +2182,7 @@ export function BoardView({
         selectionModeRef.current,
         selectedIdRef.current,
         selectedIdsRef.current,
+        imageAssetsRef.current,
         lassoModeRef.current,
         hoverDeckIdRef.current,
         canEditRef.current,
