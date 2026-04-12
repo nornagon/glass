@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-04-12
+
+- Persisted joined player IDs in `localStorage` so reopening the browser keeps the same player identity for each room.
+- Added player removal from the turn panel, including a self-serve leave action that clears the local joined-player record.
+- Updated the room model and tests so removing a player also updates turn ownership and card visibility lists consistently.
+
 ## 2026-04-11
 
 - Ignored Playwright capture output under `output/playwright/` and removed those generated artifacts from version control.

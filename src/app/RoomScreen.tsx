@@ -7,7 +7,16 @@ import { startTransition, useEffect, useEffectEvent, useMemo, useRef, useState }
 import { BoardView } from '../board/BoardView'
 import { syncTurnBadge } from './badge'
 import { isRoomEphemeralMessage } from '../model/ephemeral'
-import { loadJoinedPlayerId, loadCameraState, loadRoomTemplates, saveCameraState, saveJoinedPlayerId, saveRoomHistoryEntry, saveRoomTemplate } from '../model/local'
+import {
+  clearJoinedPlayerId,
+  loadJoinedPlayerId,
+  loadCameraState,
+  loadRoomTemplates,
+  saveCameraState,
+  saveJoinedPlayerId,
+  saveRoomHistoryEntry,
+  saveRoomTemplate,
+} from '../model/local'
 import {
   addCardToDeck,
   bringObjectToFront,
@@ -36,6 +45,7 @@ import {
   shuffleDeck,
   bringObjectForward,
   moveObject,
+  removePlayer,
 } from '../model/room'
 import type { Board, CameraState, Card, GameObject, Id, RoomDoc, SpriteSpec, Transform2D } from '../model/types'
 import { DEFAULT_BOARD_SIZE, DEFAULT_CARD_SIZE } from '../model/types'
@@ -903,6 +913,30 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     setJoinedPlayerId(playerId)
   }
 
+  function removePlayerFromRoom(playerId: string) {
+    const player = room.players[playerId]
+    if (!player) {
+      return
+    }
+
+    const isSelf = joinedPlayerId === playerId
+    const confirmed = window.confirm(
+      isSelf ? `Leave this room as "${player.name}"?` : `Remove "${player.name}" from this room?`,
+    )
+    if (!confirmed) {
+      return
+    }
+
+    changeRoom((draft) => {
+      removePlayer(draft, playerId)
+    })
+
+    if (isSelf) {
+      clearJoinedPlayerId(roomUrl)
+      setJoinedPlayerId(undefined)
+    }
+  }
+
   function createCardHere() {
     const offset = spawnCountRef.current++
     mutate((draft) => {
@@ -1358,16 +1392,21 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                             ? 'Current turn'
                             : player.id === currentPlayer?.id
                               ? 'You'
-                              : 'Waiting'}
+                            : 'Waiting'}
                         </small>
                       </div>
-                      {player.id === room.turnPlayerId ? (
-                        <span className="player-card-status">Active</span>
-                      ) : (
-                        <button className="player-card-action" disabled={!canEdit} onClick={() => mutate((draft) => setTurnPlayer(draft, player.id))}>
-                          Make Active
+                      <div className="player-card-actions">
+                        {player.id === room.turnPlayerId ? (
+                          <span className="player-card-status">Active</span>
+                        ) : (
+                          <button className="player-card-action" disabled={!canEdit} onClick={() => mutate((draft) => setTurnPlayer(draft, player.id))}>
+                            Make Active
+                          </button>
+                        )}
+                        <button className="player-card-action" disabled={!canEdit} onClick={() => removePlayerFromRoom(player.id)}>
+                          {player.id === currentPlayer?.id ? 'Leave' : 'Remove'}
                         </button>
-                      )}
+                      </div>
                     </div>
                   ))}
                   {playerList.length === 0 ? <p className="empty-copy">Nobody has joined this room yet.</p> : null}

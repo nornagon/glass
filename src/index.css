@@ -1045,6 +1045,13 @@ textarea {
   text-overflow: ellipsis;
 }
 
+.player-card-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.35rem;
+}
+
 .player-card.active-turn {
   border-color: rgba(255, 203, 114, 0.35);
   background: rgba(203, 114, 54, 0.12);

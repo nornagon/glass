@@ -105,24 +105,24 @@ export function deleteRoomTemplate(templateId: string) {
 }
 
 export function loadJoinedPlayerId(roomUrl: string) {
-  if (!canUseStorage(window.sessionStorage)) {
+  if (!canUseStorage(window.localStorage)) {
     return undefined
   }
-  return window.sessionStorage.getItem(`${PLAYER_PREFIX}${roomUrl}`) ?? undefined
+  return window.localStorage.getItem(`${PLAYER_PREFIX}${roomUrl}`) ?? undefined
 }
 
 export function saveJoinedPlayerId(roomUrl: string, playerId: string) {
-  if (!canUseStorage(window.sessionStorage)) {
+  if (!canUseStorage(window.localStorage)) {
     return
   }
-  window.sessionStorage.setItem(`${PLAYER_PREFIX}${roomUrl}`, playerId)
+  window.localStorage.setItem(`${PLAYER_PREFIX}${roomUrl}`, playerId)
 }
 
 export function clearJoinedPlayerId(roomUrl: string) {
-  if (!canUseStorage(window.sessionStorage)) {
+  if (!canUseStorage(window.localStorage)) {
     return
   }
-  window.sessionStorage.removeItem(`${PLAYER_PREFIX}${roomUrl}`)
+  window.localStorage.removeItem(`${PLAYER_PREFIX}${roomUrl}`)
 }
 
 export function loadCameraState(roomUrl: string): CameraState | undefined {

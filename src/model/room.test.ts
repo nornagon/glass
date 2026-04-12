@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   addCardToDeck,
+  canSeeCardFace,
   createCardOnPlane,
   createDeckOnPlane,
   createDeckFromSpriteSheetOnPlane,
@@ -9,6 +10,9 @@ import {
   duplicateObject,
   getRootPlane,
   moveObject,
+  removePlayer,
+  renameOrAddPlayer,
+  setTurnPlayer,
   shuffleDeck,
 } from './room'
 
@@ -157,5 +161,32 @@ describe('room model', () => {
       y: 20,
       rotation: 1,
     })
+  })
+
+  it('removes players from turn order and card visibility', () => {
+    const room = createRoomDoc()
+    const aliceId = 'player-alice'
+    const bobId = 'player-bob'
+    const carolId = 'player-carol'
+    const cardId = createCardOnPlane(room, room.rootId, { x: 0, y: 0, rotation: 0 })
+
+    renameOrAddPlayer(room, aliceId, 'Alice')
+    renameOrAddPlayer(room, bobId, 'Bob')
+    renameOrAddPlayer(room, carolId, 'Carol')
+    setTurnPlayer(room, bobId)
+
+    expect(room.objects[cardId].type).toBe('card')
+    if (room.objects[cardId].type === 'card') {
+      room.objects[cardId].visibility = [bobId, carolId]
+    }
+
+    removePlayer(room, bobId)
+
+    expect(room.players[bobId]).toBeUndefined()
+    expect(room.playerOrder).toEqual([aliceId, carolId])
+    expect(room.turnPlayerId).toBe(carolId)
+    expect(room.objects[cardId].type).toBe('card')
+    expect(room.objects[cardId].type === 'card' ? canSeeCardFace(room.objects[cardId], bobId) : undefined).toBe(false)
+    expect(room.objects[cardId].type === 'card' ? canSeeCardFace(room.objects[cardId], carolId) : undefined).toBe(true)
   })
 })

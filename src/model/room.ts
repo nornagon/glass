@@ -706,6 +706,39 @@ export function renameOrAddPlayer(room: RoomDoc, playerId: PlayerId, name?: stri
   room.playerOrder.push(playerId)
 }
 
+export function removePlayer(room: RoomDoc, playerId: PlayerId) {
+  if (!room.players[playerId]) {
+    return
+  }
+
+  const removedIndex = room.playerOrder.indexOf(playerId)
+  if (removedIndex !== -1) {
+    room.playerOrder.splice(removedIndex, 1)
+  }
+  delete room.players[playerId]
+
+  for (const object of Object.values(room.objects)) {
+    if (isCard(object) && object.visibility !== true) {
+      object.visibility = object.visibility.filter((visiblePlayerId) => visiblePlayerId !== playerId)
+    }
+  }
+
+  if (room.turnPlayerId === playerId) {
+    if (room.playerOrder.length === 0) {
+      delete room.turnPlayerId
+      return
+    }
+
+    const nextIndex = removedIndex === -1 ? 0 : removedIndex % room.playerOrder.length
+    room.turnPlayerId = room.playerOrder[nextIndex]
+    return
+  }
+
+  if (room.turnPlayerId && !room.players[room.turnPlayerId]) {
+    delete room.turnPlayerId
+  }
+}
+
 export function setTurnPlayer(room: RoomDoc, playerId?: PlayerId) {
   if (!playerId || !room.players[playerId]) {
     delete room.turnPlayerId
