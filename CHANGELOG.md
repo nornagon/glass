@@ -2,6 +2,7 @@
 
 ## 2026-04-12
 
+- Replaced the bottom-right `Select` label with an icon-only selection-mode button.
 - Fixed viewport clamp sizing so fully zoomed-out boards can still pan horizontally on wide screens.
 - Clarified in `AGENTS.md` that commits must run `date` before updating `CHANGELOG.md`.
 - Made `Escape` exit group selection mode and clear the current single selection.

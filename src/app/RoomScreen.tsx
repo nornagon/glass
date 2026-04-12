@@ -240,6 +240,18 @@ function parsePositiveInteger(value: string) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined
 }
 
+function SelectModeIcon() {
+  return (
+    <svg className="dock-mode-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none">
+      <path d="M8 4H6a2 2 0 0 0-2 2v2" />
+      <path d="M16 4h2a2 2 0 0 1 2 2v2" />
+      <path d="M20 16v2a2 2 0 0 1-2 2h-2" />
+      <path d="M8 20H6a2 2 0 0 1-2-2v-2" />
+      <rect x="8.5" y="8.5" width="7" height="7" rx="1.5" />
+    </svg>
+  )
+}
+
 function resolveSheetCount(countText: string, rows: number, cols: number) {
   const trimmed = countText.trim()
   if (!trimmed) {
@@ -1887,8 +1899,13 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                   </section>
                 ) : null}
                 {!isAddMenuOpen ? (
-                  <button className="dock-mode-button" onClick={enterGroupSelectionMode}>
-                    Select
+                  <button
+                    aria-label="Enter selection mode"
+                    className="dock-mode-button dock-mode-button-icon"
+                    onClick={enterGroupSelectionMode}
+                    title="Enter selection mode"
+                  >
+                    <SelectModeIcon />
                   </button>
                 ) : null}
                 <button

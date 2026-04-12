@@ -553,6 +553,22 @@ textarea {
   white-space: nowrap;
 }
 
+.dock-mode-button-icon {
+  width: 3.5rem;
+  padding: 0;
+  display: grid;
+  place-items: center;
+}
+
+.dock-mode-icon {
+  width: 1.2rem;
+  height: 1.2rem;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .selection-dock {
   align-items: flex-end;
 }
@@ -1367,6 +1383,11 @@ button,
     min-height: 3.25rem;
     padding: 0.62rem 0.88rem 0.68rem;
     font-size: 0.84rem;
+  }
+
+  .dock-mode-button-icon {
+    width: 3.25rem;
+    padding: 0;
   }
 
   .selection-tray {
