@@ -257,7 +257,7 @@ textarea {
   justify-content: space-between;
   gap: 0.9rem;
   align-items: flex-start;
-  pointer-events: auto;
+  pointer-events: none;
 }
 
 .topbar-cluster {
@@ -265,11 +265,13 @@ textarea {
   gap: 0.75rem;
   align-items: center;
   flex-wrap: wrap;
+  pointer-events: none;
 }
 
 .topbar-actions {
   justify-content: flex-end;
   margin-left: auto;
+  pointer-events: none;
 }
 
 .topbar-title {
@@ -285,6 +287,11 @@ textarea {
 
 .topbar-title-button {
   cursor: pointer;
+  pointer-events: auto;
+}
+
+.topbar button {
+  pointer-events: auto;
 }
 
 .topbar-title-button.active {
@@ -321,6 +328,7 @@ textarea {
   border-radius: 18px;
   background: rgba(251, 238, 220, 0.09);
   border: 1px solid rgba(255, 237, 208, 0.14);
+  pointer-events: none;
 }
 
 .presence-pill.active,

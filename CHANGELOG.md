@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-04-11
+
+- Let header drags pass through the non-interactive top bar chrome so panning can start from empty header space and the turn pill again.
+
 ## 2026-04-05
 
 - Fixed selection inspector state so deselecting closes the selection panel without reopening it on the next selection, while switching directly between selected objects keeps the panel open.
