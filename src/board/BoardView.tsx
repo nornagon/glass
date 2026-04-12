@@ -1695,15 +1695,17 @@ export function BoardView({
         auxiliaryTouchRef.current.pointers.clear()
         resumeViewportCameraGestures(viewport)
         const rendered = renderedRef.current.get(drag.id)
-        dragRef.current = null
-        callbacksRef.current.onClearPreviewTransform(drag.id)
 
         if (!rendered) {
+          dragRef.current = null
+          callbacksRef.current.onClearPreviewTransform(drag.id)
           return
         }
 
         const world = viewportToLogicalPoint(viewport.toWorld(event.global))
         if (drag.mode === 'move') {
+          dragRef.current = null
+          callbacksRef.current.onClearPreviewTransform(drag.id)
           const nextTransform = {
             x: rendered.container.position.x,
             y: rendered.container.position.y,
@@ -1723,6 +1725,14 @@ export function BoardView({
           }
         } else {
           const snappedRotation = snapRotationAngle(rendered.container.rotation)
+          rendered.container.rotation = snappedRotation
+          rendered.transform = {
+            ...rendered.transform,
+            rotation: snappedRotation,
+          }
+          callbacksRef.current.onPreviewTransform(drag.id, rendered.transform)
+          dragRef.current = null
+          callbacksRef.current.onClearPreviewTransform(drag.id)
           callbacksRef.current.onCommitTransform(drag.id, {
             rotation: snappedRotation,
           })

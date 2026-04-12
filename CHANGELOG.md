@@ -4,6 +4,7 @@
 
 - Ignored Playwright capture output under `output/playwright/` and removed those generated artifacts from version control.
 - Added a more three-dimensional flip animation for cards so face changes now animate with lift and a card-turn motion instead of swapping instantly.
+- Fixed remote rotation previews so the snapped release angle shows up immediately for connected clients instead of waiting for the persisted Automerge change.
 - Added Automerge ephemeral drag previews so connected clients see in-flight object movement and rotation in real time without persisting every pointer move to room history.
 - Reworked the in-room control chrome into anchored room and turn panels with a floating add menu, and iterated on the room panel hierarchy and styling.
 - Let header drags pass through the non-interactive top bar chrome so panning can start from empty header space and the turn pill again.
