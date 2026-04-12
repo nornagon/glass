@@ -11,7 +11,7 @@
 
 ## Workflow Notes
 
-- Whenever you make a commit, update `CHANGELOG.md` in the same change with a concise summary of what you changed.
+- Whenever you make a commit, update `CHANGELOG.md` in the same change with a concise summary of what you changed. use `date` before you edit.
 
 ## Reference docs
 

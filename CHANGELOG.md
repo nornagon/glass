@@ -2,6 +2,7 @@
 
 ## 2026-04-12
 
+- Clarified in `AGENTS.md` that commits must run `date` before updating `CHANGELOG.md`.
 - Made `Escape` exit group selection mode and clear the current single selection.
 - Added `Shift`-click promotion from a single selected card or deck into group selection.
 - Restored the add button's open/close rotation animation and fixed the add-menu scrim layering so the menu stays above the backdrop.
