@@ -1,10 +1,12 @@
 import {
+  useDocHandle,
   useDocument,
   type AutomergeUrl,
 } from '@automerge/react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { startTransition, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import { BoardView } from '../board/BoardView'
 import { syncTurnBadge } from './badge'
+import { isRoomEphemeralMessage } from '../model/ephemeral'
 import { loadJoinedPlayerId, loadCameraState, loadRoomTemplates, saveCameraState, saveJoinedPlayerId, saveRoomHistoryEntry, saveRoomTemplate } from '../model/local'
 import {
   addCardToDeck,
@@ -36,7 +38,7 @@ import {
   bringObjectForward,
   moveObject,
 } from '../model/room'
-import type { Board, CameraState, Card, GameObject, RoomDoc, SpriteSpec } from '../model/types'
+import type { Board, CameraState, Card, GameObject, Id, RoomDoc, SpriteSpec, Transform2D } from '../model/types'
 import { roomHash } from '../model/repo'
 import { DEFAULT_BOARD_SIZE, DEFAULT_CARD_SIZE } from '../model/types'
 
@@ -44,6 +46,51 @@ const DEFAULT_CAMERA: CameraState = {
   centerX: 0,
   centerY: 0,
   zoom: 1,
+}
+
+const REMOTE_DRAG_STALE_MS = 5000
+
+interface RemoteDragSession {
+  clientId: string
+  objectId: Id
+  transform: Transform2D
+  updatedAt: number
+  ending: boolean
+}
+
+function createClientId() {
+  return globalThis.crypto?.randomUUID?.() ?? `glass-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function sameTransform(a: Transform2D | undefined, b: Transform2D | undefined) {
+  if (!a || !b) {
+    return a === b
+  }
+
+  return a.x === b.x && a.y === b.y && a.rotation === b.rotation
+}
+
+function sameTransformMap(a: Record<Id, Transform2D>, b: Record<Id, Transform2D>) {
+  const aKeys = Object.keys(a)
+  const bKeys = Object.keys(b)
+  if (aKeys.length !== bKeys.length) {
+    return false
+  }
+
+  return aKeys.every((key) => sameTransform(a[key], b[key]))
+}
+
+function dragTransformsByObject(sessions: Map<string, RemoteDragSession>) {
+  const transforms: Record<Id, Transform2D> = {}
+  const latestByObject = new Map<Id, number>()
+  for (const session of sessions.values()) {
+    const previousUpdatedAt = latestByObject.get(session.objectId) ?? Number.NEGATIVE_INFINITY
+    if (session.updatedAt >= previousUpdatedAt) {
+      latestByObject.set(session.objectId, session.updatedAt)
+      transforms[session.objectId] = session.transform
+    }
+  }
+  return transforms
 }
 
 function currentOriginUrl(roomUrl: string) {
@@ -506,6 +553,7 @@ export function RoomScreen({ roomUrl }: { roomUrl: AutomergeUrl }) {
 
 function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   const [room, changeRoom] = useDocument<RoomDoc>(roomUrl, { suspense: true })
+  const roomHandle = useDocHandle<RoomDoc>(roomUrl, { suspense: true })
   const [selectedId, setSelectedId] = useState<string>()
   const [joinedPlayerId, setJoinedPlayerId] = useState<string | undefined>(() => loadJoinedPlayerId(roomUrl))
   const [panelMode, setPanelMode] = useState<PanelMode | undefined>()
@@ -516,7 +564,13 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   const [boardDraftError, setBoardDraftError] = useState('')
   const [sheetDeckDraft, setSheetDeckDraft] = useState<SheetDeckDraft>(() => defaultSheetDeckDraft())
   const [sheetDeckError, setSheetDeckError] = useState('')
+  const [ephemeralTransforms, setEphemeralTransforms] = useState<Record<Id, Transform2D>>({})
   const spawnCountRef = useRef(0)
+  const clientIdRef = useRef(createClientId())
+  const remoteDragSessionsRef = useRef(new Map<string, RemoteDragSession>())
+  const remoteDragExpiryRef = useRef(new Map<string, number>())
+  const localDragPreviewRef = useRef<{ objectId: Id; transform: Transform2D } | null>(null)
+  const localDragPreviewFrameRef = useRef<number | undefined>(undefined)
   const selectedObject = selectedId ? room.objects[selectedId] : undefined
   const boardSelectedId = selectedObject?.id
   const visiblePanelMode = panelMode === 'selection' && !selectedObject ? undefined : panelMode
@@ -524,6 +578,179 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   const canEdit = Boolean(currentPlayer)
   const roomTitle = formatRoomTitle(room)
   const linkedTemplate = room.sourceTemplateId ? loadRoomTemplates().find((template) => template.id === room.sourceTemplateId) : undefined
+
+  const syncEphemeralTransforms = useEffectEvent(() => {
+    const next = dragTransformsByObject(remoteDragSessionsRef.current)
+    startTransition(() => {
+      setEphemeralTransforms((current) => (sameTransformMap(current, next) ? current : next))
+    })
+  })
+
+  const clearRemoteDragExpiry = useEffectEvent((clientId: string) => {
+    const timeoutId = remoteDragExpiryRef.current.get(clientId)
+    if (timeoutId === undefined) {
+      return
+    }
+    window.clearTimeout(timeoutId)
+    remoteDragExpiryRef.current.delete(clientId)
+  })
+
+  const removeRemoteDragSession = useEffectEvent((clientId: string) => {
+    clearRemoteDragExpiry(clientId)
+    if (remoteDragSessionsRef.current.delete(clientId)) {
+      syncEphemeralTransforms()
+    }
+  })
+
+  const scheduleRemoteDragExpiry = useEffectEvent((clientId: string) => {
+    clearRemoteDragExpiry(clientId)
+    const timeoutId = window.setTimeout(() => {
+      remoteDragExpiryRef.current.delete(clientId)
+      if (remoteDragSessionsRef.current.delete(clientId)) {
+        syncEphemeralTransforms()
+      }
+    }, REMOTE_DRAG_STALE_MS)
+    remoteDragExpiryRef.current.set(clientId, timeoutId)
+  })
+
+  function flushLocalDragPreview() {
+    const pending = localDragPreviewRef.current
+    if (!pending) {
+      return
+    }
+
+    roomHandle.broadcast({
+      kind: 'drag-preview',
+      clientId: clientIdRef.current,
+      objectId: pending.objectId,
+      transform: pending.transform,
+    })
+  }
+
+  function previewTransform(objectId: Id, transform: Transform2D) {
+    localDragPreviewRef.current = { objectId, transform }
+    if (localDragPreviewFrameRef.current !== undefined) {
+      return
+    }
+
+    localDragPreviewFrameRef.current = window.requestAnimationFrame(() => {
+      localDragPreviewFrameRef.current = undefined
+      flushLocalDragPreview()
+    })
+  }
+
+  function clearPreviewTransform(objectId: Id) {
+    const pendingPreview = localDragPreviewRef.current
+    if (pendingPreview?.objectId === objectId) {
+      if (localDragPreviewFrameRef.current !== undefined) {
+        window.cancelAnimationFrame(localDragPreviewFrameRef.current)
+        localDragPreviewFrameRef.current = undefined
+      }
+      flushLocalDragPreview()
+    } else if (localDragPreviewFrameRef.current !== undefined) {
+      window.cancelAnimationFrame(localDragPreviewFrameRef.current)
+      localDragPreviewFrameRef.current = undefined
+    }
+
+    localDragPreviewRef.current = null
+    roomHandle.broadcast({
+      kind: 'drag-preview-end',
+      clientId: clientIdRef.current,
+      objectId,
+    })
+  }
+
+  useEffect(() => {
+    const clientId = clientIdRef.current
+    const remoteDragSessions = remoteDragSessionsRef.current
+    const remoteDragExpiries = remoteDragExpiryRef.current
+
+    const handleIncomingMessage = (event: { message: unknown }) => {
+      const message = event.message
+      if (!isRoomEphemeralMessage(message) || message.clientId === clientId) {
+        return
+      }
+
+      if (message.kind === 'drag-preview') {
+        const updatedAt = Date.now()
+        remoteDragSessions.set(message.clientId, {
+          clientId: message.clientId,
+          objectId: message.objectId,
+          transform: message.transform,
+          updatedAt,
+          ending: false,
+        })
+        scheduleRemoteDragExpiry(message.clientId)
+        syncEphemeralTransforms()
+        return
+      }
+
+      const existing = remoteDragSessions.get(message.clientId)
+      if (!existing || existing.objectId !== message.objectId) {
+        removeRemoteDragSession(message.clientId)
+        return
+      }
+
+      remoteDragSessions.set(message.clientId, {
+        ...existing,
+        updatedAt: Date.now(),
+        ending: true,
+      })
+      scheduleRemoteDragExpiry(message.clientId)
+      syncEphemeralTransforms()
+    }
+
+    roomHandle.on('ephemeral-message', handleIncomingMessage)
+    return () => {
+      roomHandle.removeListener('ephemeral-message', handleIncomingMessage)
+
+      if (localDragPreviewFrameRef.current !== undefined) {
+        window.cancelAnimationFrame(localDragPreviewFrameRef.current)
+        localDragPreviewFrameRef.current = undefined
+      }
+
+      const pendingPreview = localDragPreviewRef.current
+      localDragPreviewRef.current = null
+      if (pendingPreview) {
+        roomHandle.broadcast({
+          kind: 'drag-preview-end',
+          clientId,
+          objectId: pendingPreview.objectId,
+        })
+      }
+
+      for (const timeoutId of remoteDragExpiries.values()) {
+        window.clearTimeout(timeoutId)
+      }
+      remoteDragExpiries.clear()
+      remoteDragSessions.clear()
+    }
+  }, [roomHandle])
+
+  useEffect(() => {
+    let changed = false
+    const root = getRootPlane(room)
+    for (const [clientId, session] of remoteDragSessionsRef.current) {
+      const object = room.objects[session.objectId]
+      if (!object || object.parentId !== room.rootId) {
+        clearRemoteDragExpiry(clientId)
+        remoteDragSessionsRef.current.delete(clientId)
+        changed = true
+        continue
+      }
+
+      const persistedTransform = root.childTransforms[session.objectId]
+      if (session.ending && sameTransform(persistedTransform, session.transform)) {
+        clearRemoteDragExpiry(clientId)
+        remoteDragSessionsRef.current.delete(clientId)
+        changed = true
+      }
+    }
+
+    if (changed) {
+      syncEphemeralTransforms()
+    }
+  }, [room, room.rootId])
 
   useEffect(() => {
     const entry = {
@@ -874,6 +1101,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
           key={roomUrl}
           room={room}
           roomUrl={roomUrl}
+          ephemeralTransforms={ephemeralTransforms}
           selectedId={boardSelectedId}
           currentPlayerId={currentPlayer?.id}
           canEdit={canEdit}
@@ -889,6 +1117,8 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
               moveObject(draft, objectId, transform)
             })
           }
+          onPreviewTransform={previewTransform}
+          onClearPreviewTransform={clearPreviewTransform}
           onBringCardToFront={(cardId) =>
             mutate((draft) => {
               bringObjectToFront(draft, cardId)
