@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-04-13
+
+- Made the room-image upload control accept Finder drag-and-drop reliably by treating file drags as valid drop targets during hover and blocking the browser's default file-drop navigation.
+
 ## 2026-04-12
 
 - Replaced the bottom-right `Select` label with an icon-only selection-mode button.

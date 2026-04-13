@@ -4,7 +4,7 @@ import {
   useRepo,
   type AutomergeUrl,
 } from '@automerge/react'
-import { startTransition, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
+import { startTransition, useEffect, useEffectEvent, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from 'react'
 import { BoardView } from '../board/BoardView'
 import { syncTurnBadge } from './badge'
 import { applyRoomEphemeralMessage, isRoomEphemeralMessage, type RemoteDragSession } from '../model/ephemeral'
@@ -272,10 +272,30 @@ function ImageSourceInput({
 }) {
   const repo = useRepo()
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const dragDepthRef = useRef(0)
   const [uploadError, setUploadError] = useState('')
   const [isUploading, setIsUploading] = useState(false)
+  const [isDropTarget, setIsDropTarget] = useState(false)
   const source = resolveImageSource(value, imageAssets)
   const storedAsset = source?.asset
+
+  function hasFileTransfer(dataTransfer: DataTransfer) {
+    return [...dataTransfer.types].includes('Files')
+  }
+
+  function imageFileFromTransfer(dataTransfer: DataTransfer) {
+    for (const item of dataTransfer.items) {
+      if (item.kind !== 'file') {
+        continue
+      }
+      const file = item.getAsFile()
+      if (file?.type.startsWith('image/')) {
+        return file
+      }
+    }
+
+    return [...dataTransfer.files].find((file) => file.type.startsWith('image/'))
+  }
 
   async function uploadFile(file: File) {
     if (!file.type.startsWith('image/')) {
@@ -293,7 +313,97 @@ function ImageSourceInput({
       setUploadError('Could not import that image into the room.')
     } finally {
       setIsUploading(false)
+      }
+  }
+
+  function resetDropTarget() {
+    dragDepthRef.current = 0
+    setIsDropTarget(false)
+  }
+
+  useEffect(() => {
+    const preventWindowDropNavigation = (event: globalThis.DragEvent) => {
+      if (!event.dataTransfer || !hasFileTransfer(event.dataTransfer)) {
+        return
+      }
+
+      event.preventDefault()
     }
+
+    window.addEventListener('dragover', preventWindowDropNavigation)
+    window.addEventListener('drop', preventWindowDropNavigation)
+
+    return () => {
+      window.removeEventListener('dragover', preventWindowDropNavigation)
+      window.removeEventListener('drop', preventWindowDropNavigation)
+    }
+  }, [])
+
+  function handleUploadDragEnter(event: ReactDragEvent<HTMLButtonElement>) {
+    if (disabled || isUploading) {
+      return
+    }
+
+    if (!hasFileTransfer(event.dataTransfer)) {
+      return
+    }
+
+    event.preventDefault()
+    dragDepthRef.current += 1
+    setIsDropTarget(true)
+  }
+
+  function handleUploadDragOver(event: ReactDragEvent<HTMLButtonElement>) {
+    if (disabled || isUploading) {
+      return
+    }
+
+    if (!hasFileTransfer(event.dataTransfer)) {
+      return
+    }
+
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+    if (!isDropTarget) {
+      setIsDropTarget(true)
+    }
+  }
+
+  function handleUploadDragLeave(event: ReactDragEvent<HTMLButtonElement>) {
+    if (disabled || isUploading) {
+      return
+    }
+
+    if (!hasFileTransfer(event.dataTransfer)) {
+      return
+    }
+
+    event.preventDefault()
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+    if (dragDepthRef.current === 0) {
+      setIsDropTarget(false)
+    }
+  }
+
+  function handleUploadDrop(event: ReactDragEvent<HTMLButtonElement>) {
+    if (disabled || isUploading) {
+      return
+    }
+
+    if (!hasFileTransfer(event.dataTransfer)) {
+      return
+    }
+
+    event.preventDefault()
+    const file = imageFileFromTransfer(event.dataTransfer)
+    resetDropTarget()
+
+    if (!file) {
+      setUploadError('Please drop an image file.')
+      return
+    }
+
+    void uploadFile(file)
   }
 
   return (
@@ -324,8 +434,22 @@ function ImageSourceInput({
       </label>
 
       <div className="button-row">
-        <button disabled={disabled || isUploading} onClick={() => fileInputRef.current?.click()}>
-          {isUploading ? 'Uploading...' : source?.isStored ? 'Replace Image' : 'Upload Into Room'}
+        <button
+          className={`upload-drop-button ${isDropTarget ? 'is-drop-target' : ''}`}
+          disabled={disabled || isUploading}
+          onClick={() => fileInputRef.current?.click()}
+          onDragEnter={handleUploadDragEnter}
+          onDragOver={handleUploadDragOver}
+          onDragLeave={handleUploadDragLeave}
+          onDrop={handleUploadDrop}
+        >
+          {isUploading
+            ? 'Uploading...'
+            : isDropTarget
+              ? 'Drop Image to Upload'
+              : source?.isStored
+                ? 'Replace Image'
+                : 'Upload Into Room'}
         </button>
         {value ? (
           <button disabled={disabled || isUploading} onClick={() => onChange('')}>
@@ -349,6 +473,9 @@ function ImageSourceInput({
           void uploadFile(file)
         }}
       />
+      <p className="field-note">
+        Drag an image onto the upload button or choose a file.
+      </p>
       {uploadError ? <p className="inline-error">{uploadError}</p> : null}
     </>
   )

@@ -1148,6 +1148,12 @@ textarea {
   font-size: 0.78rem;
 }
 
+.upload-drop-button.is-drop-target {
+  background: rgba(203, 114, 54, 0.22);
+  border-color: rgba(255, 203, 114, 0.3);
+  box-shadow: inset 0 0 0 1px rgba(255, 203, 114, 0.14);
+}
+
 .stats-card {
   display: flex;
   justify-content: space-between;
