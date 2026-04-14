@@ -11,6 +11,7 @@ interface BoardViewProps {
   room: RoomDoc
   roomUrl: string
   imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>
+  dropImageError?: string
   ephemeralTransforms?: Partial<Record<Id, Transform2D>>
   selectionMode: 'normal' | 'group'
   selectedId?: Id
@@ -34,6 +35,7 @@ interface BoardViewProps {
   onFlipBoard: (boardId: Id) => void
   onFlipDeck: (deckId: Id) => void
   onDrawDeck: (deckId: Id) => void
+  onDropImageFileAt: (file: File, point: { x: number; y: number }) => void
   onShuffleDeck: (deckId: Id) => void
   onOpenSelectionPanel: () => void
 }
@@ -179,6 +181,25 @@ function viewportToLogicalPoint(viewport: ViewportWorldGeometry, point: { x: num
     x: point.x - offset.x,
     y: point.y - offset.y,
   }
+}
+
+function hasFileTransfer(dataTransfer: DataTransfer) {
+  return [...dataTransfer.types].includes('Files')
+}
+
+function imageFileFromTransfer(dataTransfer: DataTransfer) {
+  for (const item of dataTransfer.items) {
+    if (item.kind !== 'file') {
+      continue
+    }
+
+    const file = item.getAsFile()
+    if (file?.type.startsWith('image/')) {
+      return file
+    }
+  }
+
+  return [...dataTransfer.files].find((file) => file.type.startsWith('image/'))
 }
 
 function collectCardVisualStates(room: RoomDoc, currentPlayerId: string | undefined) {
@@ -1512,6 +1533,7 @@ export function BoardView({
   room,
   roomUrl,
   imageAssets,
+  dropImageError,
   ephemeralTransforms = {},
   selectionMode,
   selectedId,
@@ -1535,9 +1557,11 @@ export function BoardView({
   onFlipBoard,
   onFlipDeck,
   onDrawDeck,
+  onDropImageFileAt,
   onShuffleDeck,
   onOpenSelectionPanel,
 }: BoardViewProps) {
+  const rootRef = useRef<HTMLDivElement>(null)
   const hostRef = useRef<HTMLDivElement>(null)
   const appRef = useRef<Application | null>(null)
   const viewportRef = useRef<Viewport | null>(null)
@@ -1583,12 +1607,14 @@ export function BoardView({
     onSelect,
     onToggleGroupSelection,
     onAddToGroupSelection,
+    onDropImageFileAt,
     onShuffleDeck,
   })
   const cameraSnapshot = useRef<string>('')
   const requestRenderRef = useRef(() => {
     redrawSceneRef.current()
   })
+  const [isImageDropTarget, setIsImageDropTarget] = useState(false)
 
   roomRef.current = room
   imageAssetsRef.current = imageAssets
@@ -1617,6 +1643,7 @@ export function BoardView({
     onSelect,
     onToggleGroupSelection,
     onAddToGroupSelection,
+    onDropImageFileAt,
     onShuffleDeck,
   }
   redrawSceneRef.current = () => {
@@ -1674,8 +1701,6 @@ export function BoardView({
 
     if (object.type === 'deck') {
       return [
-        { id: 'flip', label: 'Flip', icon: 'flip', onClick: () => onFlipDeck(object.id) },
-        { id: 'draw', label: 'Draw', onClick: () => onDrawDeck(object.id) },
         { id: 'shuffle', label: 'Shuffle', onClick: () => onShuffleDeck(object.id) },
         { id: 'more', label: 'More actions', icon: 'more', onClick: onOpenSelectionPanel },
       ]
@@ -1689,7 +1714,7 @@ export function BoardView({
     }
 
     return []
-  }, [canEdit, onDrawDeck, onFlipBoard, onFlipCard, onFlipDeck, onOpenSelectionPanel, onShuffleDeck, room.objects, selectedId, selectionMode])
+  }, [canEdit, onFlipBoard, onFlipCard, onOpenSelectionPanel, onShuffleDeck, room.objects, selectedId, selectionMode])
 
   useEffect(() => {
     const updateShiftState = (event: KeyboardEvent) => {
@@ -1714,15 +1739,89 @@ export function BoardView({
   useEffect(() => {
     let cancelled = false
     const hostElement = hostRef.current
-    if (!hostElement) {
+    const rootElement = rootRef.current
+    if (!hostElement || !rootElement) {
       return
     }
     const host: HTMLDivElement = hostElement
+    const root: HTMLDivElement = rootElement
     const renderedObjects = renderedRef.current
     const cardTextureCache = cardTextureCacheRef.current
+    let dropDepth = 0
 
     const suppressNativeTouch = (event: Event) => {
       event.preventDefault()
+    }
+
+    const resetDropTarget = () => {
+      dropDepth = 0
+      setIsImageDropTarget(false)
+    }
+
+    const preventWindowDropNavigation = (event: globalThis.DragEvent) => {
+      if (!event.dataTransfer || !hasFileTransfer(event.dataTransfer)) {
+        return
+      }
+
+      event.preventDefault()
+    }
+
+    const handleRootDragEnter = (event: globalThis.DragEvent) => {
+      if (!canEditRef.current || !event.dataTransfer || !hasFileTransfer(event.dataTransfer)) {
+        return
+      }
+
+      event.preventDefault()
+      dropDepth += 1
+      setIsImageDropTarget(true)
+    }
+
+    const handleRootDragOver = (event: globalThis.DragEvent) => {
+      if (!canEditRef.current || !event.dataTransfer || !hasFileTransfer(event.dataTransfer)) {
+        return
+      }
+
+      event.preventDefault()
+      event.dataTransfer.dropEffect = 'copy'
+      setIsImageDropTarget(true)
+    }
+
+    const handleRootDragLeave = (event: globalThis.DragEvent) => {
+      if (!event.dataTransfer || !hasFileTransfer(event.dataTransfer)) {
+        return
+      }
+
+      event.preventDefault()
+      dropDepth = Math.max(0, dropDepth - 1)
+      if (dropDepth === 0) {
+        setIsImageDropTarget(false)
+      }
+    }
+
+    const handleRootDrop = (event: globalThis.DragEvent) => {
+      if (!canEditRef.current || !event.dataTransfer || !hasFileTransfer(event.dataTransfer)) {
+        return
+      }
+
+      event.preventDefault()
+      const file = imageFileFromTransfer(event.dataTransfer)
+      resetDropTarget()
+      if (!file) {
+        return
+      }
+
+      const viewport = viewportRef.current
+      if (!viewport) {
+        return
+      }
+
+      const hostRect = host.getBoundingClientRect()
+      const screenPoint = {
+        x: event.clientX - hostRect.left,
+        y: event.clientY - hostRect.top,
+      }
+      const point = viewportToLogicalPoint(viewport, viewport.toWorld(screenPoint))
+      callbacksRef.current.onDropImageFileAt(file, point)
     }
 
     host.addEventListener('touchstart', suppressNativeTouch, { passive: false })
@@ -1730,6 +1829,12 @@ export function BoardView({
     host.addEventListener('contextmenu', suppressNativeTouch)
     host.addEventListener('selectstart', suppressNativeTouch)
     host.addEventListener('dragstart', suppressNativeTouch)
+    root.addEventListener('dragenter', handleRootDragEnter)
+    root.addEventListener('dragover', handleRootDragOver)
+    root.addEventListener('dragleave', handleRootDragLeave)
+    root.addEventListener('drop', handleRootDrop)
+    window.addEventListener('dragover', preventWindowDropNavigation)
+    window.addEventListener('drop', preventWindowDropNavigation)
 
     async function init() {
       const app = new Application()
@@ -2220,6 +2325,13 @@ export function BoardView({
       host.removeEventListener('contextmenu', suppressNativeTouch)
       host.removeEventListener('selectstart', suppressNativeTouch)
       host.removeEventListener('dragstart', suppressNativeTouch)
+      root.removeEventListener('dragenter', handleRootDragEnter)
+      root.removeEventListener('dragover', handleRootDragOver)
+      root.removeEventListener('dragleave', handleRootDragLeave)
+      root.removeEventListener('drop', handleRootDrop)
+      window.removeEventListener('dragover', preventWindowDropNavigation)
+      window.removeEventListener('drop', preventWindowDropNavigation)
+      resetDropTarget()
       viewportRef.current?.destroy({ children: true })
       appRef.current?.destroy(true, { children: true })
       for (const entry of cardTextureCache.values()) {
@@ -2291,8 +2403,14 @@ export function BoardView({
   }, [ephemeralTransforms, room])
 
   return (
-    <div className="board-root">
+    <div className={`board-root ${isImageDropTarget ? 'is-image-drop-target' : ''}`} ref={rootRef}>
       <div className="board-canvas" ref={hostRef} />
+      {isImageDropTarget ? (
+        <div className="board-drop-overlay">Drop image to create board</div>
+      ) : null}
+      {dropImageError ? (
+        <div className="board-drop-error" role="status">{dropImageError}</div>
+      ) : null}
       {lassoPath.length > 1 ? (
         <svg className="lasso-overlay" viewBox={`0 0 ${hostRef.current?.clientWidth ?? 1} ${hostRef.current?.clientHeight ?? 1}`} preserveAspectRatio="none">
           <path

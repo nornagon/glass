@@ -170,6 +170,23 @@ async function loadImageSourceDimensions(
   return loadImageDimensions(url)
 }
 
+function boardSizeFromImageDimensions(dimensions: { width: number; height: number }) {
+  return {
+    width: Math.max(160, Math.round(dimensions.width)),
+    height: Math.max(160, Math.round(dimensions.height)),
+  }
+}
+
+function boardNameFromImageFile(file: File) {
+  const trimmedName = file.name.trim()
+  if (!trimmedName) {
+    return undefined
+  }
+
+  const nameWithoutExtension = trimmedName.replace(/\.[^.]+$/, '').trim()
+  return nameWithoutExtension || trimmedName
+}
+
 function cardSizeForAspect(aspect: number) {
   const safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : DEFAULT_CARD_SIZE.width / DEFAULT_CARD_SIZE.height
   const targetArea = DEFAULT_CARD_SIZE.width * DEFAULT_CARD_SIZE.height
@@ -864,6 +881,7 @@ export function RoomScreen({ roomUrl }: { roomUrl: AutomergeUrl }) {
 function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   const [room, changeRoom] = useDocument<RoomDoc>(roomUrl, { suspense: true })
   const roomHandle = useDocHandle<RoomDoc>(roomUrl, { suspense: true })
+  const repo = useRepo()
   const [selectedId, setSelectedId] = useState<string>()
   const [selectionMode, setSelectionMode] = useState<SelectionMode>('normal')
   const [groupSelectionIds, setGroupSelectionIds] = useState<string[]>([])
@@ -878,6 +896,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   const [allowSelectLocked, setAllowSelectLocked] = useState(false)
   const [boardDraft, setBoardDraft] = useState<BoardDraft>(() => defaultBoardDraft())
   const [boardDraftError, setBoardDraftError] = useState('')
+  const [boardDropError, setBoardDropError] = useState('')
   const [sheetDeckDraft, setSheetDeckDraft] = useState<SheetDeckDraft>(() => defaultSheetDeckDraft())
   const [sheetDeckError, setSheetDeckError] = useState('')
   const [ephemeralTransforms, setEphemeralTransforms] = useState<Record<Id, Transform2D>>({})
@@ -1415,33 +1434,41 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     setIsAddMenuOpen(false)
   }
 
-  async function createBoardFromImage() {
-    const faceUrl = boardDraft.faceUrl.trim()
-    if (!faceUrl) {
-      setBoardDraftError('A board image or image URL is required.')
-      return
+  async function createBoardFromImageSource({
+    faceUrl,
+    backUrl,
+    name,
+    transform,
+    onError,
+  }: {
+    faceUrl: string
+    backUrl?: string
+    name?: string
+    transform: Transform2D
+    onError?: (message: string) => void
+  }) {
+    const trimmedFaceUrl = faceUrl.trim()
+    if (!trimmedFaceUrl) {
+      onError?.('A board image or image URL is required.')
+      return undefined
     }
 
     let size: { width: number; height: number } = { ...DEFAULT_BOARD_SIZE }
     try {
-      const dimensions = await loadImageSourceDimensions(faceUrl, resolvedImageAssets)
-      size = {
-        width: Math.max(160, Math.round(dimensions.width)),
-        height: Math.max(160, Math.round(dimensions.height)),
-      }
+      const dimensions = await loadImageSourceDimensions(trimmedFaceUrl, resolvedImageAssets)
+      size = boardSizeFromImageDimensions(dimensions)
     } catch {
-      setBoardDraftError('Could not load the board image to determine board size.')
-      return
+      onError?.('Could not load the board image to determine board size.')
+      return undefined
     }
 
-    const offset = spawnCountRef.current++
     let createdBoardId: string | undefined
     mutate((draft) => {
       createdBoardId = createBoardOnPlane(
         draft,
         draft.rootId,
-        nextSpawnTransform(camera, offset),
-        boardDraft.name.trim() || undefined,
+        transform,
+        name?.trim() || undefined,
       )
 
       if (!createdBoardId) {
@@ -1457,30 +1484,78 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
       createdBoard.meta.aspectRatio = size.width / size.height
       createdBoard.face = {
         kind: 'image-url',
-        url: faceUrl,
+        url: trimmedFaceUrl,
         fit: 'cover',
       }
 
-      const backUrl = boardDraft.backUrl.trim()
-      if (backUrl) {
+      const trimmedBackUrl = backUrl?.trim()
+      if (trimmedBackUrl) {
         createdBoard.back = {
           kind: 'image-url',
-          url: backUrl,
+          url: trimmedBackUrl,
           fit: 'cover',
         }
       }
     })
 
     if (!createdBoardId) {
-      setBoardDraftError('Could not create the board from that image.')
+      onError?.('Could not create the board from that image.')
+      return
+    }
+
+    return createdBoardId
+  }
+
+  async function createBoardFromImage() {
+    const offset = spawnCountRef.current++
+    const createdBoardId = await createBoardFromImageSource({
+      faceUrl: boardDraft.faceUrl,
+      backUrl: boardDraft.backUrl,
+      name: boardDraft.name,
+      transform: nextSpawnTransform(camera, offset),
+      onError: setBoardDraftError,
+    })
+
+    if (!createdBoardId) {
       return
     }
 
     setBoardDraft(defaultBoardDraft())
     setBoardDraftError('')
+    setBoardDropError('')
     updateSelection(createdBoardId)
     setRightPanelMode('selection')
     setCreationMode(undefined)
+  }
+
+  async function handleDropImageFileAt(file: File, point: { x: number; y: number }) {
+    setBoardDropError('')
+
+    try {
+      const assetDoc = await buildImageAssetDoc(file)
+      const assetHandle = repo.create<ImageAssetDoc>(assetDoc)
+      const createdBoardId = await createBoardFromImageSource({
+        faceUrl: assetHandle.url,
+        name: boardNameFromImageFile(file),
+        transform: {
+          x: point.x,
+          y: point.y,
+          rotation: 0,
+        },
+        onError: setBoardDropError,
+      })
+
+      if (!createdBoardId) {
+        return
+      }
+
+      setBoardDraftError('')
+      updateSelection(createdBoardId)
+      setRightPanelMode('selection')
+      setCreationMode(undefined)
+    } catch {
+      setBoardDropError('Could not import that image into the room.')
+    }
   }
 
   async function createDeckFromSheet() {
@@ -1609,6 +1684,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
           room={room}
           roomUrl={roomUrl}
           imageAssets={resolvedImageAssets}
+          dropImageError={boardDropError}
           ephemeralTransforms={ephemeralTransforms}
           selectionMode={selectionMode}
           selectedId={boardPrimarySelectedId}
@@ -1682,6 +1758,9 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
               drawFromDeck(draft, deckId)
             })
           }
+          onDropImageFileAt={(file, point) => {
+            void handleDropImageFileAt(file, point)
+          }}
           onShuffleDeck={(deckId) =>
             mutate((draft) => {
               shuffleDeck(draft, deckId)
