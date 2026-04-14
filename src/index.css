@@ -1095,6 +1095,91 @@ textarea {
   border: 1px solid rgba(255, 237, 208, 0.08);
 }
 
+.board-size-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  margin-top: 0.15rem;
+  padding-top: 0.95rem;
+  border-top: 1px solid rgba(255, 237, 208, 0.08);
+}
+
+.board-size-editor-header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.board-size-editor-copy {
+  display: flex;
+  flex-direction: column;
+}
+
+.board-size-editor-copy strong {
+  color: #fff5e8;
+  font-size: 0.94rem;
+  font-weight: 650;
+  line-height: 1.1;
+}
+
+.board-size-editor-dimensions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.board-size-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+  padding: 0.58rem 0.72rem;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 237, 208, 0.08);
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.board-size-chip:focus-within {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 203, 114, 0.2);
+  box-shadow: inset 0 0 0 1px rgba(255, 203, 114, 0.08);
+}
+
+.board-size-chip span {
+  flex: 0 0 auto;
+  color: rgba(255, 241, 218, 0.42);
+  font-size: 0.84rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+
+.board-size-chip-input {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: #fff9f0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.board-size-chip-input:focus {
+  outline: none;
+}
+
+.board-size-chip-input::placeholder {
+  color: rgba(255, 241, 218, 0.32);
+}
+
 .section-copy {
   display: flex;
   flex-direction: column;
@@ -1594,6 +1679,28 @@ button,
   .room-panel-group {
     padding: 0.9rem;
     border-radius: 20px;
+  }
+
+  .board-size-editor {
+    padding-top: 0.82rem;
+    gap: 0.48rem;
+  }
+
+  .board-size-editor-copy strong {
+    font-size: 0.9rem;
+  }
+
+  .board-size-editor-dimensions {
+    gap: 0.45rem;
+  }
+
+  .board-size-chip {
+    padding: 0.52rem 0.66rem;
+  }
+
+  .board-size-chip span,
+  .board-size-chip-input {
+    font-size: 0.88rem;
   }
 
   .player-card {

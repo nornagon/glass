@@ -60,6 +60,11 @@ import {
 } from '../model/assets'
 import type { Board, CameraState, Card, GameObject, Id, RoomDoc, SpriteSpec, Transform2D } from '../model/types'
 import { DEFAULT_BOARD_SIZE, DEFAULT_CARD_SIZE } from '../model/types'
+import {
+  boardSizeFromHeight,
+  boardSizeFromWidth,
+  parseNumericExpression,
+} from './boardSizing'
 
 const DEFAULT_CAMERA: CameraState = {
   centerX: 0,
@@ -823,25 +828,34 @@ function BoardSizeEditor({
   }, [height])
 
   function commitWidth() {
-    const nextWidth = Math.max(48, Number.parseInt(widthDraft, 10) || width)
+    const nextWidth = parseNumericExpression(widthDraft) ?? width
+    setWidthDraft(String(nextWidth))
     void onCommitWidth(nextWidth)
   }
 
   function commitHeight() {
-    const nextHeight = Math.max(48, Number.parseInt(heightDraft, 10) || height)
+    const nextHeight = parseNumericExpression(heightDraft) ?? height
+    setHeightDraft(String(nextHeight))
     void onCommitHeight(nextHeight)
   }
 
   return (
-    <>
-      <div className="field-row">
-        <label className="field">
-          <span>Width</span>
+    <section className="board-size-editor">
+      <div className="board-size-editor-header">
+        <div className="board-size-editor-copy">
+          <strong>Layout</strong>
+        </div>
+      </div>
+      <div className="board-size-editor-dimensions">
+        <label className="board-size-chip">
+          <span>W</span>
           <input
             disabled={disabled}
-            type="number"
-            min="48"
-            step="1"
+            type="text"
+            inputMode="text"
+            autoComplete="off"
+            spellCheck={false}
+            className="board-size-chip-input"
             value={widthDraft}
             onChange={(event) => setWidthDraft(event.target.value)}
             onBlur={commitWidth}
@@ -852,13 +866,15 @@ function BoardSizeEditor({
             }}
           />
         </label>
-        <label className="field">
-          <span>Height</span>
+        <label className="board-size-chip">
+          <span>H</span>
           <input
             disabled={disabled}
-            type="number"
-            min="48"
-            step="1"
+            type="text"
+            inputMode="text"
+            autoComplete="off"
+            spellCheck={false}
+            className="board-size-chip-input"
             value={heightDraft}
             onChange={(event) => setHeightDraft(event.target.value)}
             onBlur={commitHeight}
@@ -870,8 +886,7 @@ function BoardSizeEditor({
           />
         </label>
       </div>
-      <p className="field-note">Aspect ratio is locked while resizing boards.</p>
-    </>
+    </section>
   )
 }
 
@@ -2144,8 +2159,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                       mutate((draft) => {
                         const nextBoard = draft.objects[selectedObject.id]
                         if (isBoard(nextBoard)) {
-                          nextBoard.size.width = width
-                          nextBoard.size.height = Math.max(48, Math.round(width / aspectRatio))
+                          nextBoard.size = boardSizeFromWidth(width, aspectRatio)
                         }
                       })
                     }}
@@ -2159,8 +2173,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                       mutate((draft) => {
                         const nextBoard = draft.objects[selectedObject.id]
                         if (isBoard(nextBoard)) {
-                          nextBoard.size.width = Math.max(48, Math.round(height * aspectRatio))
-                          nextBoard.size.height = height
+                          nextBoard.size = boardSizeFromHeight(height, aspectRatio)
                         }
                       })
                     }}
