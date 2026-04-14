@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   addCardToDeck,
   canSeeCardFace,
+  createBoardOnPlane,
   createCardOnPlane,
   createDeckOnPlane,
   createDeckFromSpriteSheetOnPlane,
@@ -9,6 +10,7 @@ import {
   drawFromDeck,
   duplicateObject,
   getRootPlane,
+  isGroupSelectableObject,
   moveObject,
   removePlayer,
   renameOrAddPlayer,
@@ -25,6 +27,18 @@ describe('room model', () => {
     expect(room.objects[cardId]).toBeDefined()
     expect(room.objects[deckId]).toBeDefined()
     expect(getRootPlane(room).childOrder).toEqual([cardId, deckId])
+  })
+
+  it('treats boards as group-selectable objects', () => {
+    const room = createRoomDoc()
+    const boardId = createBoardOnPlane(room, room.rootId, { x: 0, y: 0, rotation: 0 }, 'Board')
+    const cardId = createCardOnPlane(room, room.rootId, { x: 10, y: 20, rotation: 0 })
+    const deckId = createDeckOnPlane(room, room.rootId, { x: 30, y: 40, rotation: 0 })
+
+    expect(isGroupSelectableObject(room.objects[boardId])).toBe(true)
+    expect(isGroupSelectableObject(room.objects[cardId])).toBe(true)
+    expect(isGroupSelectableObject(room.objects[deckId])).toBe(true)
+    expect(isGroupSelectableObject(room.objects[room.rootId])).toBe(false)
   })
 
   it('moves cards into and out of decks', () => {

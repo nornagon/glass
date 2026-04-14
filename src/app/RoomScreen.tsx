@@ -38,6 +38,7 @@ import {
   isBoard,
   isCard,
   isDeck,
+  isGroupSelectableObject,
   liftTopCardFromDeck,
   mergeDeckIntoDeck,
   renameOrAddPlayer,
@@ -1132,8 +1133,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     }
 
     const nextIds = groupSelectionIds.filter((id) => {
-      const object = room.objects[id]
-      return Boolean(object && (object.type === 'card' || object.type === 'deck'))
+      return isGroupSelectableObject(room.objects[id])
     })
 
     if (nextIds.length === groupSelectionIds.length) {
@@ -1188,7 +1188,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
 
   function enterGroupSelectionMode() {
     const seedId =
-      selectedId && room.objects[selectedId] && (room.objects[selectedId].type === 'card' || room.objects[selectedId].type === 'deck')
+      selectedId && isGroupSelectableObject(room.objects[selectedId])
         ? selectedId
         : undefined
     setSelectionMode('group')
@@ -1209,7 +1209,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
 
   function toggleGroupSelection(id: string) {
     const object = room.objects[id]
-    if (!object || (object.type !== 'card' && object.type !== 'deck')) {
+    if (!isGroupSelectableObject(object)) {
       return
     }
 
@@ -1241,8 +1241,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
 
   function addToGroupSelection(ids: string[]) {
     const validIds = ids.filter((id) => {
-      const object = room.objects[id]
-      return Boolean(object && (object.type === 'card' || object.type === 'deck'))
+      return isGroupSelectableObject(room.objects[id])
     })
     if (validIds.length === 0) {
       setIsLassoMode(false)

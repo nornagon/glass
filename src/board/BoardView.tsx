@@ -5,7 +5,7 @@ import { Application, Assets, Cache, Container, FederatedPointerEvent, Graphics,
 import { Viewport } from 'pixi-viewport'
 import { resolveImageSource, type ResolvedImageAsset } from '../model/assets'
 import { BOARD_WORLD_SIZE, DEFAULT_CARD_SIZE, type CameraState, type Id, type RoomDoc, type SpriteSpec, type Transform2D } from '../model/types'
-import { canSeeCardFace, getRootPlane, getTransform, isBoard, isBoardFaceUp, isCard, isDeck } from '../model/room'
+import { canSeeCardFace, getRootPlane, getTransform, isBoard, isBoardFaceUp, isCard, isDeck, isGroupSelectableObject } from '../model/room'
 
 interface BoardViewProps {
   room: RoomDoc
@@ -46,8 +46,7 @@ function isMovableObjectType(room: RoomDoc, objectId: Id) {
 }
 
 function isMultiselectObjectType(room: RoomDoc, objectId: Id) {
-  const object = room.objects[objectId]
-  return Boolean(isCard(object) || isDeck(object))
+  return isGroupSelectableObject(room.objects[objectId])
 }
 
 interface RenderedObject {

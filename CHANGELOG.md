@@ -2,6 +2,7 @@
 
 ## 2026-04-13
 
+- Let group selection mix boards with cards and decks, while still keeping boards out of deck drops.
 - Let image files dropped onto the board import into the room and immediately create a board at the drop location, with drop-target and error feedback on the canvas.
 - Made the room-image upload control accept Finder drag-and-drop reliably by treating file drags as valid drop targets during hover and blocking the browser's default file-drop navigation.
 

@@ -107,6 +107,10 @@ export function isBoard(object: GameObject | undefined): object is Board {
   return object?.type === 'board'
 }
 
+export function isGroupSelectableObject(object: GameObject | undefined): object is Card | Deck | Board {
+  return isCard(object) || isDeck(object) || isBoard(object)
+}
+
 export function getTransform(room: RoomDoc, id: Id) {
   const object = room.objects[id]
   if (!object || !object.parentId) {
