@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-04-15
+
+- Added alpha-following Pixi outline selection chrome for image-backed boards, with higher-resolution generated masks to keep transparent edges crisp.
+
 ## 2026-04-13
 
 - Let group selection mix boards with cards and decks, while still keeping boards out of deck drops.

@@ -1,6 +1,7 @@
 import type { AutomergeUrl } from '@automerge/react'
 import { useEffect, useMemo, useRef } from 'react'
 import { useState } from 'react'
+import { OutlineFilter } from 'pixi-filters/outline'
 import { Application, Assets, Cache, Container, FederatedPointerEvent, Graphics, PerspectiveMesh, Rectangle, Sprite, Text, Texture } from 'pixi.js'
 import { Viewport } from 'pixi-viewport'
 import { resolveImageSource, type ResolvedImageAsset } from '../model/assets'
@@ -128,6 +129,13 @@ interface CardTextureCacheEntry {
   texture: Texture
 }
 
+interface FittedSpriteContent {
+  sprite: Sprite
+  contentWidth: number
+  contentHeight: number
+  inset: number
+}
+
 const TAP_GRACE_DISTANCE = 10
 const DECK_LONG_PRESS_MS = 360
 const MIN_ZOOM_SCALE = 0.2
@@ -135,6 +143,8 @@ const MAX_ZOOM_SCALE = 2.5
 const PAN_CLAMP_MARGIN = 640
 const FLIP_DURATION_MS = 220
 const FLIP_DEBUG_DURATION_MS = 1800
+const BOARD_SELECTION_TEXTURE_MAX_RESOLUTION = 4
+const BOARD_SELECTION_TEXTURE_MAX_DIMENSION = 4096
 
 type EphemeralTransformMap = Partial<Record<Id, Transform2D>>
 
@@ -546,14 +556,42 @@ function addSpriteContents(
   requestRender: () => void,
   imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
 ) {
+  const fitted = createFittedSpriteContent(spec, width, height, requestRender, imageAssets)
+  if (!fitted) {
+    return
+  }
+
+  const { sprite, contentWidth, contentHeight, inset } = fitted
+  const mask = new Graphics()
+  if (cornerRadius > 0) {
+    mask
+      .roundRect(-contentWidth / 2, -contentHeight / 2, contentWidth, contentHeight, Math.max(0, cornerRadius - inset))
+      .fill({ color: '#ffffff' })
+  } else {
+    mask
+      .rect(-contentWidth / 2, -contentHeight / 2, contentWidth, contentHeight)
+      .fill({ color: '#ffffff' })
+  }
+  container.addChild(mask)
+  sprite.mask = mask
+  container.addChild(sprite)
+}
+
+function createFittedSpriteContent(
+  spec: { url?: string; crop?: { x: number; y: number; width: number; height: number }; fit?: 'cover' | 'contain' },
+  width: number,
+  height: number,
+  requestRender: () => void,
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
+): FittedSpriteContent | undefined {
   const source = resolveImageSource(spec.url, imageAssets)
   if (!source?.renderUrl) {
-    return
+    return undefined
   }
 
   const texture = requestTextureAsset(source.renderUrl, requestRender)
   if (!texture) {
-    return
+    return undefined
   }
 
   const displayTexture = textureForSpriteSpec(source.renderUrl, texture, spec.crop)
@@ -584,19 +622,140 @@ function addSpriteContents(
     }
   }
 
-  const mask = new Graphics()
-  if (cornerRadius > 0) {
-    mask
-      .roundRect(-contentWidth / 2, -contentHeight / 2, contentWidth, contentHeight, Math.max(0, cornerRadius - inset))
-      .fill({ color: '#ffffff' })
-  } else {
-    mask
-      .rect(-contentWidth / 2, -contentHeight / 2, contentWidth, contentHeight)
-      .fill({ color: '#ffffff' })
+  return {
+    sprite,
+    contentWidth,
+    contentHeight,
+    inset,
   }
-  container.addChild(mask)
-  sprite.mask = mask
+}
+
+function visibleBoardSpec(room: RoomDoc, objectId: Id) {
+  const object = room.objects[objectId]
+  if (!isBoard(object)) {
+    return undefined
+  }
+
+  return isBoardFaceUp(object) ? object.face : object.back
+}
+
+function addBoardSelectionOutline(
+  container: Container,
+  renderer: Application['renderer'],
+  textureCache: Map<string, CardTextureCacheEntry>,
+  room: RoomDoc,
+  objectId: Id,
+  width: number,
+  height: number,
+  thickness: number,
+  color: string,
+  alpha: number,
+  requestRender: () => void,
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
+) {
+  const spec = visibleBoardSpec(room, objectId)
+  if (spec?.kind !== 'image-url') {
+    return false
+  }
+
+  const texture = getBoardSelectionTexture(
+    renderer,
+    textureCache,
+    `board-selection:${objectId}`,
+    width,
+    height,
+    spec,
+    requestRender,
+    imageAssets,
+  )
+  if (!texture) {
+    return false
+  }
+
+  const sprite = new Sprite(texture)
+  sprite.anchor.set(0.5)
+  sprite.width = width
+  sprite.height = height
+  const filter = new OutlineFilter({
+    thickness,
+    color,
+    alpha,
+    quality: 0.35,
+    knockout: true,
+  })
+  filter.resolution = 'inherit'
+  filter.antialias = 'inherit'
+  sprite.filters = [filter]
   container.addChild(sprite)
+  return true
+}
+
+function boardSelectionTextureSignature(
+  width: number,
+  height: number,
+  spec: SpriteSpec,
+  resolution: number,
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
+) {
+  return JSON.stringify({
+    width,
+    height,
+    resolution,
+    spec,
+    textureState: spriteSpecTextureState(spec, imageAssets),
+  })
+}
+
+function boardSelectionTextureResolution(rendererResolution: number, width: number, height: number) {
+  const maxDimensionResolution = BOARD_SELECTION_TEXTURE_MAX_DIMENSION / Math.max(width, height)
+  return Math.max(
+    1,
+    Math.min(
+      BOARD_SELECTION_TEXTURE_MAX_RESOLUTION,
+      rendererResolution * 2,
+      maxDimensionResolution,
+    ),
+  )
+}
+
+function getBoardSelectionTexture(
+  renderer: Application['renderer'],
+  textureCache: Map<string, CardTextureCacheEntry>,
+  cacheKey: string,
+  width: number,
+  height: number,
+  spec: SpriteSpec,
+  requestRender: () => void,
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
+) {
+  const resolution = boardSelectionTextureResolution(renderer.resolution, width, height)
+  const signature = boardSelectionTextureSignature(width, height, spec, resolution, imageAssets)
+  const cached = textureCache.get(cacheKey)
+  if (cached && cached.signature === signature) {
+    return cached.texture
+  }
+
+  const surface = new Container()
+  addSpriteContents(surface, spec, width, height, 0, requestRender, imageAssets)
+  if (surface.children.length === 0) {
+    surface.destroy({ children: true })
+    return undefined
+  }
+
+  cached?.texture.destroy(true)
+
+  const texture = renderer.generateTexture({
+    target: surface,
+    frame: new Rectangle(-width / 2, -height / 2, width, height),
+    resolution,
+    antialias: false,
+    textureSourceOptions: {
+      scaleMode: 'linear',
+    },
+  })
+  surface.destroy({ children: true })
+  textureCache.set(cacheKey, { signature, texture })
+  return texture
 }
 
 function addCardSurface(
@@ -1124,30 +1283,52 @@ function populateViewportScene(
 
     const hitArea = new Graphics()
     const hidesSelectionChrome = isCard(object) && flipAnimations.has(objectId)
-    if (isBoard(object)) {
-      hitArea
-        .rect(-width / 2, -height / 2, width, height)
-        .stroke({
-          width:
-            hoverDeckId === objectId
+    const selectionStrokeWidth =
+      hoverDeckId === objectId
+        ? 5
+        : selectionMode === 'group'
+          ? selectedIdsSet.has(objectId)
+            ? selectedId === objectId
               ? 5
-              : selectionMode === 'group'
-                ? selectedIdsSet.has(objectId)
-                  ? selectedId === objectId
-                    ? 5
-                    : 4
-                  : 0
-                : selectedId === objectId
-                  ? 4
-                  : 0,
-          color:
-            hoverDeckId === objectId
-              ? '#ff8d47'
-              : selectionMode === 'group' && selectedId === objectId
-                ? '#ffd78a'
-                : '#ffcb72',
-          alpha: hoverDeckId === objectId ? 1 : 0.95,
-        })
+              : 4
+            : 0
+          : selectedId === objectId
+            ? 4
+            : 0
+    const selectionStrokeColor =
+      hoverDeckId === objectId
+        ? '#ff8d47'
+        : selectionMode === 'group' && selectedId === objectId
+          ? '#ffd78a'
+          : '#ffcb72'
+    const selectionStrokeAlpha = hoverDeckId === objectId ? 1 : 0.95
+    if (isBoard(object)) {
+      const addedImageOutline =
+        selectionStrokeWidth > 0 &&
+        addBoardSelectionOutline(
+          container,
+          renderer,
+          textureCache,
+          room,
+          objectId,
+          width,
+          height,
+          selectionStrokeWidth,
+          selectionStrokeColor,
+          selectionStrokeAlpha,
+          requestRender,
+          imageAssets,
+        )
+
+      if (!addedImageOutline) {
+        hitArea
+          .rect(-width / 2, -height / 2, width, height)
+          .stroke({
+            width: selectionStrokeWidth,
+            color: selectionStrokeColor,
+            alpha: selectionStrokeAlpha,
+          })
+      }
     } else {
       hitArea
         .roundRect(-width / 2, -height / 2, width, height, 18)
@@ -1155,24 +1336,9 @@ function populateViewportScene(
           width:
             hidesSelectionChrome
               ? 0
-              : hoverDeckId === objectId
-                ? 5
-                : selectionMode === 'group'
-                  ? selectedIdsSet.has(objectId)
-                    ? selectedId === objectId
-                      ? 5
-                      : 4
-                    : 0
-                  : selectedId === objectId
-                    ? 4
-                    : 0,
-          color:
-            hoverDeckId === objectId
-              ? '#ff8d47'
-              : selectionMode === 'group' && selectedId === objectId
-                ? '#ffd78a'
-                : '#ffcb72',
-          alpha: hoverDeckId === objectId ? 1 : 0.95,
+              : selectionStrokeWidth,
+          color: selectionStrokeColor,
+          alpha: selectionStrokeAlpha,
         })
     }
     container.addChild(hitArea)
