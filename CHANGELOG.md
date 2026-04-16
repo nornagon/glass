@@ -4,6 +4,7 @@
 
 - Added alpha-following Pixi outline selection chrome for image-backed boards, with higher-resolution generated masks to keep transparent edges crisp.
 - Made card and deck selection outlines keep a consistent screen-pixel thickness while zooming the board.
+- Made dragged boards raise to the front using the same lift-to-front behavior as other movable objects.
 
 ## 2026-04-13
 

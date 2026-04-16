@@ -1722,9 +1722,9 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
           }
           onPreviewTransform={previewTransform}
           onClearPreviewTransform={clearPreviewTransform}
-          onBringCardToFront={(cardId) =>
+          onBringObjectToFront={(objectId) =>
             mutate((draft) => {
-              bringObjectToFront(draft, cardId)
+              bringObjectToFront(draft, objectId)
             })
           }
           onDropObjectToDeck={(objectId, deckId) => {

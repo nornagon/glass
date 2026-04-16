@@ -30,7 +30,7 @@ interface BoardViewProps {
   onPreviewTransform: (id: Id, transform: Transform2D) => void
   onClearPreviewTransform: (id: Id, finalTransform?: Transform2D) => void
   onDropObjectToDeck: (objectId: Id, deckId: Id) => void
-  onBringCardToFront: (cardId: Id) => void
+  onBringObjectToFront: (objectId: Id) => void
   onLiftTopCardFromDeck: (deckId: Id) => Id | undefined
   onFlipCard: (cardId: Id) => void
   onFlipBoard: (boardId: Id) => void
@@ -1721,7 +1721,7 @@ export function BoardView({
   onPreviewTransform,
   onClearPreviewTransform,
   onDropObjectToDeck,
-  onBringCardToFront,
+  onBringObjectToFront,
   onLiftTopCardFromDeck,
   onFlipCard,
   onFlipBoard,
@@ -1767,7 +1767,7 @@ export function BoardView({
     onCommitTransform,
     onPreviewTransform,
     onClearPreviewTransform,
-    onBringCardToFront,
+    onBringObjectToFront,
     onDrawDeck,
     onFlipDeck,
     onLiftTopCardFromDeck,
@@ -1803,7 +1803,7 @@ export function BoardView({
     onCommitTransform,
     onPreviewTransform,
     onClearPreviewTransform,
-    onBringCardToFront,
+    onBringObjectToFront,
     onDrawDeck,
     onFlipDeck,
     onLiftTopCardFromDeck,
@@ -2171,7 +2171,7 @@ export function BoardView({
             const liftedCardId = callbacksRef.current.onLiftTopCardFromDeck(pendingDeckPress.deckId)
             const dragId = liftedCardId ?? pendingDeckPress.deckId
             if (liftedCardId) {
-              callbacksRef.current.onBringCardToFront(liftedCardId)
+              callbacksRef.current.onBringObjectToFront(liftedCardId)
               callbacksRef.current.onSelect(liftedCardId)
             }
 
@@ -2218,9 +2218,9 @@ export function BoardView({
           drag.moved &&
           !drag.raisedToFront &&
           (!drag.groupMembers || drag.groupMembers.length === 0) &&
-          roomRef.current.objects[drag.id]?.type === 'card'
+          isMovableObjectType(roomRef.current, drag.id)
         ) {
-          callbacksRef.current.onBringCardToFront(drag.id)
+          callbacksRef.current.onBringObjectToFront(drag.id)
           drag.raisedToFront = true
         }
 
