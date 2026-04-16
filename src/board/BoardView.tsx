@@ -383,6 +383,15 @@ function normalizeCrop(crop?: { x: number; y: number; width: number; height: num
   return { x, y, width, height }
 }
 
+function pixelAlignedFrame(x: number, y: number, width: number, height: number) {
+  const left = Math.round(x)
+  const top = Math.round(y)
+  const right = Math.max(left + 1, Math.round(x + width))
+  const bottom = Math.max(top + 1, Math.round(y + height))
+
+  return new Rectangle(left, top, right - left, bottom - top)
+}
+
 function textureForSpriteSpec(
   url: string,
   texture: Texture,
@@ -402,12 +411,60 @@ function textureForSpriteSpec(
   const frame = texture.frame
   const croppedTexture = new Texture({
     source: texture.source,
-    frame: new Rectangle(
+    frame: pixelAlignedFrame(
       frame.x + frame.width * normalizedCrop.x,
       frame.y + frame.height * normalizedCrop.y,
       frame.width * normalizedCrop.width,
       frame.height * normalizedCrop.height,
     ),
+  })
+  croppedTextureCache.set(cacheKey, croppedTexture)
+  return croppedTexture
+}
+
+function cropSignature(crop?: { x: number; y: number; width: number; height: number }) {
+  const normalizedCrop = normalizeCrop(crop)
+  if (!normalizedCrop) {
+    return 'full'
+  }
+
+  return `${normalizedCrop.x},${normalizedCrop.y},${normalizedCrop.width},${normalizedCrop.height}`
+}
+
+function textureForCoverAspect(cacheKeyBase: string, texture: Texture, targetAspect: number) {
+  if (!Number.isFinite(targetAspect) || targetAspect <= 0) {
+    return texture
+  }
+
+  const frame = texture.frame
+  const sourceAspect = frame.width / frame.height
+
+  if (!Number.isFinite(sourceAspect) || sourceAspect <= 0 || Math.abs(sourceAspect - targetAspect) < 1e-4) {
+    return texture
+  }
+
+  const cacheKey = `${cacheKeyBase}|cover:${targetAspect.toFixed(6)}`
+  const cached = croppedTextureCache.get(cacheKey)
+  if (cached) {
+    return cached
+  }
+
+  let cropX = frame.x
+  let cropY = frame.y
+  let cropWidth = frame.width
+  let cropHeight = frame.height
+
+  if (sourceAspect > targetAspect) {
+    cropWidth = frame.height * targetAspect
+    cropX += (frame.width - cropWidth) / 2
+  } else {
+    cropHeight = frame.width / targetAspect
+    cropY += (frame.height - cropHeight) / 2
+  }
+
+  const croppedTexture = new Texture({
+    source: texture.source,
+    frame: pixelAlignedFrame(cropX, cropY, cropWidth, cropHeight),
   })
   croppedTextureCache.set(cacheKey, croppedTexture)
   return croppedTexture
@@ -566,18 +623,14 @@ function addSpriteContents(
   }
 
   const { sprite, contentWidth, contentHeight, inset } = fitted
-  const mask = new Graphics()
   if (cornerRadius > 0) {
+    const mask = new Graphics()
     mask
       .roundRect(-contentWidth / 2, -contentHeight / 2, contentWidth, contentHeight, Math.max(0, cornerRadius - inset))
       .fill({ color: '#ffffff' })
-  } else {
-    mask
-      .rect(-contentWidth / 2, -contentHeight / 2, contentWidth, contentHeight)
-      .fill({ color: '#ffffff' })
+    container.addChild(mask)
+    sprite.mask = mask
   }
-  container.addChild(mask)
-  sprite.mask = mask
   container.addChild(sprite)
 }
 
@@ -598,15 +651,19 @@ function createFittedSpriteContent(
     return undefined
   }
 
-  const displayTexture = textureForSpriteSpec(source.renderUrl, texture, spec.crop)
   const fit = spec.fit ?? 'cover'
   const inset = fit === 'contain' ? 7 : 0
   const contentWidth = width - inset * 2
   const contentHeight = height - inset * 2
+  const targetAspect = contentWidth / contentHeight
+  const baseTexture = textureForSpriteSpec(source.renderUrl, texture, spec.crop)
+  const displayTexture =
+    fit === 'cover'
+      ? textureForCoverAspect(`${source.renderUrl}|${cropSignature(spec.crop)}`, baseTexture, targetAspect)
+      : baseTexture
   const sprite = new Sprite(displayTexture)
   sprite.anchor.set(0.5)
   const sourceAspect = displayTexture.width / displayTexture.height
-  const targetAspect = contentWidth / contentHeight
 
   if (fit === 'contain') {
     if (sourceAspect > targetAspect) {
@@ -617,13 +674,8 @@ function createFittedSpriteContent(
       sprite.width = sprite.height * sourceAspect
     }
   } else {
-    if (sourceAspect > targetAspect) {
-      sprite.height = contentHeight
-      sprite.width = sprite.height * sourceAspect
-    } else {
-      sprite.width = contentWidth
-      sprite.height = sprite.width / sourceAspect
-    }
+    sprite.width = contentWidth
+    sprite.height = contentHeight
   }
 
   return {
@@ -917,7 +969,6 @@ function addCardContents(
   const liftLayer = new Container()
   liftLayer.position.set(offsetY * Math.sin(worldRotation), offsetY * Math.cos(worldRotation))
   container.addChild(liftLayer)
-
   const texture = getCardSurfaceTexture(
     renderer,
     textureCache,
@@ -1220,6 +1271,10 @@ function populateViewportScene(
   scene.position.set(worldOffset.x, worldOffset.y)
   viewport.addChild(scene)
   scene.addChild(boardBackground())
+  const boardLayer = new Container()
+  const pieceLayer = new Container({ isRenderGroup: true })
+  scene.addChild(boardLayer)
+  scene.addChild(pieceLayer)
 
   const root = getRootPlane(room)
   const selectedIdsSet = new Set(selectedIds)
@@ -1616,7 +1671,11 @@ function populateViewportScene(
       container.addChild(handle)
     }
 
-    scene.addChild(container)
+    if (isBoard(object)) {
+      boardLayer.addChild(container)
+    } else {
+      pieceLayer.addChild(container)
+    }
     renderedObjects.set(objectId, {
       container,
       width,

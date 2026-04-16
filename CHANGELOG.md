@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-04-16
+
+- Fixed the WebGL `glDrawElements: Insufficient buffer size` warnings in large image-heavy rooms by tightening sprite texture cropping and separating movable pieces into their own Pixi render group.
+
 ## 2026-04-15
 
 - Added alpha-following Pixi outline selection chrome for image-backed boards, with higher-resolution generated masks to keep transparent edges crisp.
