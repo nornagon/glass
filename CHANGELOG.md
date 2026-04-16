@@ -1,7 +1,12 @@
 # Changelog
 
+## 2026-04-16
+
+- Reworked board and card shadows into a simpler layered contact-shadow implementation, kept alpha-following image-board shadows, and tuned the effect to read darker and sharper without slowing zoom.
+
 ## 2026-04-15
 
+- Added stronger lift-style shadows under cards plus higher-resolution alpha-following shadows for image-backed boards so pieces pop more clearly off the table.
 - Added alpha-following Pixi outline selection chrome for image-backed boards, with higher-resolution generated masks to keep transparent edges crisp.
 - Made card and deck selection outlines keep a consistent screen-pixel thickness while zooming the board.
 - Made dragged boards raise to the front using the same lift-to-front behavior as other movable objects.

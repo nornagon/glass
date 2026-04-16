@@ -2,7 +2,7 @@ import type { AutomergeUrl } from '@automerge/react'
 import { useEffect, useMemo, useRef } from 'react'
 import { useState } from 'react'
 import { OutlineFilter } from 'pixi-filters/outline'
-import { Application, Assets, Cache, Container, FederatedPointerEvent, Graphics, PerspectiveMesh, Rectangle, Sprite, Text, Texture } from 'pixi.js'
+import { Application, Assets, BlurFilter, Cache, Container, FederatedPointerEvent, Graphics, PerspectiveMesh, Rectangle, Sprite, Text, Texture } from 'pixi.js'
 import { Viewport } from 'pixi-viewport'
 import { resolveImageSource, type ResolvedImageAsset } from '../model/assets'
 import { BOARD_WORLD_SIZE, DEFAULT_CARD_SIZE, type CameraState, type Id, type RoomDoc, type SpriteSpec, type Transform2D } from '../model/types'
@@ -125,6 +125,7 @@ interface CardFlipPresentation {
 }
 
 interface CardTextureCacheEntry {
+  objectId: Id
   signature: string
   texture: Texture
 }
@@ -136,6 +137,23 @@ interface FittedSpriteContent {
   inset: number
 }
 
+const CONTACT_SHADOW_UNDERLAY_ALPHA = 0.06
+const CONTACT_SHADOW_MID_ALPHA = 0.13
+const CONTACT_SHADOW_CAST_ALPHA = 0.22
+const CONTACT_SHADOW_UNDERLAY_BLUR_PX = 1.25
+const CONTACT_SHADOW_MID_BLUR_PX = 2
+const CONTACT_SHADOW_CAST_BLUR_PX = 3
+const CONTACT_SHADOW_UNDERLAY_OFFSET_PX = 1
+const CONTACT_SHADOW_MID_OFFSET_PX = 2
+const CONTACT_SHADOW_CAST_OFFSET_PX = 4
+const CONTACT_SHADOW_MID_SPREAD_PX = 1
+const CONTACT_SHADOW_CAST_SPREAD_PX = 2
+const CONTACT_SHADOW_LAYERS = [
+  { alpha: CONTACT_SHADOW_UNDERLAY_ALPHA, blur: CONTACT_SHADOW_UNDERLAY_BLUR_PX, offsetPx: CONTACT_SHADOW_UNDERLAY_OFFSET_PX, spreadPx: 0 },
+  { alpha: CONTACT_SHADOW_MID_ALPHA, blur: CONTACT_SHADOW_MID_BLUR_PX, offsetPx: CONTACT_SHADOW_MID_OFFSET_PX, spreadPx: CONTACT_SHADOW_MID_SPREAD_PX },
+  { alpha: CONTACT_SHADOW_CAST_ALPHA, blur: CONTACT_SHADOW_CAST_BLUR_PX, offsetPx: CONTACT_SHADOW_CAST_OFFSET_PX, spreadPx: CONTACT_SHADOW_CAST_SPREAD_PX },
+] as const
+
 const TAP_GRACE_DISTANCE = 10
 const DECK_LONG_PRESS_MS = 360
 const MIN_ZOOM_SCALE = 0.2
@@ -145,8 +163,19 @@ const FLIP_DURATION_MS = 220
 const FLIP_DEBUG_DURATION_MS = 1800
 const BOARD_SELECTION_TEXTURE_MAX_RESOLUTION = 4
 const BOARD_SELECTION_TEXTURE_MAX_DIMENSION = 4096
+const IMAGE_SHADOW_TEXTURE_MAX_RESOLUTION = 12
+const IMAGE_SHADOW_TEXTURE_MAX_DIMENSION = 12288
 
 type EphemeralTransformMap = Partial<Record<Id, Transform2D>>
+
+function shadowOffsetWorldUnits(viewport: Viewport) {
+  return CONTACT_SHADOW_LAYERS.map((layer) => ({
+    alpha: layer.alpha,
+    blur: layer.blur,
+    offsetY: screenPixelsToWorldUnits(viewport, layer.offsetPx),
+    spread: screenPixelsToWorldUnits(viewport, layer.spreadPx),
+  }))
+}
 
 interface ViewportWorldGeometry {
   worldWidth: number
@@ -662,13 +691,24 @@ function addBoardSelectionOutline(
     return false
   }
 
-  const texture = getBoardSelectionTexture(
+  const texture = getImageContentsTexture(
     renderer,
     textureCache,
     `board-selection:${objectId}`,
+    objectId,
     width,
     height,
     spec,
+    0,
+    imageContentsResolution(
+      renderer.resolution,
+      width,
+      height,
+      BOARD_SELECTION_TEXTURE_MAX_RESOLUTION,
+      BOARD_SELECTION_TEXTURE_MAX_DIMENSION,
+      2,
+    ),
+    false,
     requestRender,
     imageAssets,
   )
@@ -694,53 +734,65 @@ function addBoardSelectionOutline(
   return true
 }
 
-function boardSelectionTextureSignature(
+function imageContentsTextureSignature(
   width: number,
   height: number,
   spec: SpriteSpec,
+  cornerRadius: number,
   resolution: number,
   imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
 ) {
   return JSON.stringify({
     width,
     height,
+    cornerRadius,
     resolution,
     spec,
     textureState: spriteSpecTextureState(spec, imageAssets),
   })
 }
 
-function boardSelectionTextureResolution(rendererResolution: number, width: number, height: number) {
-  const maxDimensionResolution = BOARD_SELECTION_TEXTURE_MAX_DIMENSION / Math.max(width, height)
+function imageContentsResolution(
+  rendererResolution: number,
+  width: number,
+  height: number,
+  maxResolution: number,
+  maxDimension: number,
+  scaleMultiplier: number,
+) {
+  const maxDimensionResolution = maxDimension / Math.max(width, height)
   return Math.max(
     1,
     Math.min(
-      BOARD_SELECTION_TEXTURE_MAX_RESOLUTION,
-      rendererResolution * 2,
+      maxResolution,
+      rendererResolution * scaleMultiplier,
       maxDimensionResolution,
     ),
   )
 }
 
-function getBoardSelectionTexture(
+function getImageContentsTexture(
   renderer: Application['renderer'],
   textureCache: Map<string, CardTextureCacheEntry>,
   cacheKey: string,
+  objectId: Id,
   width: number,
   height: number,
   spec: SpriteSpec,
+  cornerRadius: number,
+  resolution: number,
+  antialias: boolean,
   requestRender: () => void,
   imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
 ) {
-  const resolution = boardSelectionTextureResolution(renderer.resolution, width, height)
-  const signature = boardSelectionTextureSignature(width, height, spec, resolution, imageAssets)
+  const signature = imageContentsTextureSignature(width, height, spec, cornerRadius, resolution, imageAssets)
   const cached = textureCache.get(cacheKey)
   if (cached && cached.signature === signature) {
     return cached.texture
   }
 
   const surface = new Container()
-  addSpriteContents(surface, spec, width, height, 0, requestRender, imageAssets)
+  addSpriteContents(surface, spec, width, height, cornerRadius, requestRender, imageAssets)
   if (surface.children.length === 0) {
     surface.destroy({ children: true })
     return undefined
@@ -752,13 +804,13 @@ function getBoardSelectionTexture(
     target: surface,
     frame: new Rectangle(-width / 2, -height / 2, width, height),
     resolution,
-    antialias: false,
+    antialias,
     textureSourceOptions: {
       scaleMode: 'linear',
     },
   })
   surface.destroy({ children: true })
-  textureCache.set(cacheKey, { signature, texture })
+  textureCache.set(cacheKey, { objectId, signature, texture })
   return texture
 }
 
@@ -844,6 +896,7 @@ function getCardSurfaceTexture(
   renderer: Application['renderer'],
   textureCache: Map<string, CardTextureCacheEntry>,
   cacheKey: string,
+  objectId: Id,
   width: number,
   height: number,
   spec: SpriteSpec,
@@ -867,8 +920,113 @@ function getCardSurfaceTexture(
     antialias: true,
   })
   surface.destroy({ children: true })
-  textureCache.set(cacheKey, { signature, texture })
+  textureCache.set(cacheKey, { objectId, signature, texture })
   return texture
+}
+
+function addRectContactShadow(
+  container: Container,
+  width: number,
+  height: number,
+  cornerRadius: number,
+  offsetY: number,
+  spread: number,
+  alpha: number,
+  blur: number,
+) {
+  const shadow = new Graphics()
+  shadow
+    .roundRect(
+      -width / 2 - spread,
+      -height / 2 - spread + offsetY,
+      width + spread * 2,
+      height + spread * 2,
+      Math.max(0, cornerRadius + spread),
+    )
+    .fill({ color: '#000000', alpha })
+  if (blur > 0) {
+    shadow.filters = [new BlurFilter({ strength: blur, quality: 1, kernelSize: 5 })]
+  }
+  container.addChild(shadow)
+}
+
+function addSpriteContactShadow(
+  container: Container,
+  texture: Texture,
+  width: number,
+  height: number,
+  offsetY: number,
+  spread: number,
+  alpha: number,
+  blur: number,
+) {
+  const shadow = new Sprite(texture)
+  shadow.anchor.set(0.5)
+  shadow.position.y = offsetY
+  shadow.width = width + spread * 2
+  shadow.height = height + spread * 2
+  shadow.tint = 0x000000
+  shadow.alpha = alpha
+  if (blur > 0) {
+    shadow.filters = [new BlurFilter({ strength: blur, quality: 1, kernelSize: 5 })]
+  }
+  container.addChild(shadow)
+}
+
+function addCardShadow(container: Container, viewport: Viewport, width: number, height: number) {
+  for (const layer of shadowOffsetWorldUnits(viewport)) {
+    addRectContactShadow(container, width, height, 18, layer.offsetY, layer.spread, layer.alpha, layer.blur)
+  }
+}
+
+function addBoardShadow(
+  container: Container,
+  viewport: Viewport,
+  renderer: Application['renderer'],
+  textureCache: Map<string, CardTextureCacheEntry>,
+  room: RoomDoc,
+  objectId: Id,
+  width: number,
+  height: number,
+  requestRender: () => void,
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
+) {
+  const shadowLayers = shadowOffsetWorldUnits(viewport)
+  const spec = visibleBoardSpec(room, objectId)
+  if (spec?.kind === 'image-url') {
+    const scaleBucket = !Number.isFinite(viewport.scaled) || viewport.scaled <= 1 ? 1 : Math.round(viewport.scaled * 8) / 8
+    const texture = getImageContentsTexture(
+      renderer,
+      textureCache,
+      `board-shadow:${objectId}`,
+      objectId,
+      width,
+      height,
+      spec,
+      0,
+      imageContentsResolution(
+        renderer.resolution,
+        width,
+        height,
+        IMAGE_SHADOW_TEXTURE_MAX_RESOLUTION,
+        IMAGE_SHADOW_TEXTURE_MAX_DIMENSION,
+        8 * scaleBucket,
+      ),
+      true,
+      requestRender,
+      imageAssets,
+    )
+    if (texture) {
+      for (const layer of shadowLayers) {
+        addSpriteContactShadow(container, texture, width, height, layer.offsetY, layer.spread, layer.alpha, layer.blur)
+      }
+      return
+    }
+  }
+
+  for (const layer of shadowLayers) {
+    addRectContactShadow(container, width, height, 0, layer.offsetY, layer.spread, layer.alpha, layer.blur)
+  }
 }
 
 function projectCardCorner(x: number, y: number, angle: number, cameraDistance: number) {
@@ -922,6 +1080,7 @@ function addCardContents(
     renderer,
     textureCache,
     `${objectId}:${faceVisible ? 'face' : 'back'}`,
+    objectId,
     width,
     height,
     spec,
@@ -1249,6 +1408,7 @@ function populateViewportScene(
     if (isCard(object)) {
       width = object.size.width
       height = object.size.height
+      addCardShadow(container, viewport, width, height)
       addCardContents(
         container,
         renderer,
@@ -1265,6 +1425,7 @@ function populateViewportScene(
     } else if (isBoard(object)) {
       width = object.size.width
       height = object.size.height
+      addBoardShadow(container, viewport, renderer, textureCache, room, objectId, width, height, requestRender, imageAssets)
       addBoardContents(container, room, objectId, requestRender, imageAssets)
     } else if (isDeck(object)) {
       const dimensions = objectDimensions(room, objectId)
@@ -1756,6 +1917,7 @@ export function BoardView({
   const cardVisualStatesRef = useRef<Map<Id, CardVisualState>>(new Map())
   const flipAnimationsRef = useRef<Map<Id, FlipAnimation>>(new Map())
   const cardTextureCacheRef = useRef<Map<string, CardTextureCacheEntry>>(new Map())
+  const renderedShadowScaleBucketRef = useRef(1)
   const redrawSceneRef = useRef(() => {})
   const [hoverDeckId, setHoverDeckId] = useState<Id | undefined>()
   const hoverDeckIdRef = useRef<Id | undefined>(hoverDeckId)
@@ -1822,6 +1984,9 @@ export function BoardView({
     if (!viewport || !app) {
       return
     }
+
+    renderedShadowScaleBucketRef.current =
+      !Number.isFinite(viewport.scaled) || viewport.scaled <= 1 ? 1 : Math.round(viewport.scaled * 8) / 8
 
     populateViewportScene(
       viewport,
@@ -2418,6 +2583,12 @@ export function BoardView({
           renderedSelectionScale = viewport.scaled
           needsAnimationFrame = true
         }
+        if (
+          (!Number.isFinite(viewport.scaled) || viewport.scaled <= 1 ? 1 : Math.round(viewport.scaled * 8) / 8)
+          !== renderedShadowScaleBucketRef.current
+        ) {
+          needsAnimationFrame = true
+        }
 
         for (const [objectId, animation] of flipAnimationsRef.current) {
           if (now - animation.startedAt >= animation.durationMs) {
@@ -2561,8 +2732,8 @@ export function BoardView({
     }
 
     for (const [cacheKey, entry] of cardTextureCacheRef.current) {
-      const [cardId] = cacheKey.split(':')
-      if (nextCardVisualStates.has(cardId)) {
+      const objectId = entry.objectId
+      if (room.objects[objectId]) {
         continue
       }
 
