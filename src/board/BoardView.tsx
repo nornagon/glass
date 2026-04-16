@@ -137,21 +137,12 @@ interface FittedSpriteContent {
   inset: number
 }
 
-const CONTACT_SHADOW_UNDERLAY_ALPHA = 0.06
-const CONTACT_SHADOW_MID_ALPHA = 0.13
-const CONTACT_SHADOW_CAST_ALPHA = 0.22
-const CONTACT_SHADOW_UNDERLAY_BLUR_PX = 1.25
-const CONTACT_SHADOW_MID_BLUR_PX = 2
-const CONTACT_SHADOW_CAST_BLUR_PX = 3
-const CONTACT_SHADOW_UNDERLAY_OFFSET_PX = 1
-const CONTACT_SHADOW_MID_OFFSET_PX = 2
-const CONTACT_SHADOW_CAST_OFFSET_PX = 4
-const CONTACT_SHADOW_MID_SPREAD_PX = 1
-const CONTACT_SHADOW_CAST_SPREAD_PX = 2
+const CONTACT_SHADOW_ALPHA = 0.5
+const CONTACT_SHADOW_BLUR_PX = 2.5
+const CONTACT_SHADOW_OFFSET_PX = 1
+const CONTACT_SHADOW_SPREAD_PX = 0
 const CONTACT_SHADOW_LAYERS = [
-  { alpha: CONTACT_SHADOW_UNDERLAY_ALPHA, blur: CONTACT_SHADOW_UNDERLAY_BLUR_PX, offsetPx: CONTACT_SHADOW_UNDERLAY_OFFSET_PX, spreadPx: 0 },
-  { alpha: CONTACT_SHADOW_MID_ALPHA, blur: CONTACT_SHADOW_MID_BLUR_PX, offsetPx: CONTACT_SHADOW_MID_OFFSET_PX, spreadPx: CONTACT_SHADOW_MID_SPREAD_PX },
-  { alpha: CONTACT_SHADOW_CAST_ALPHA, blur: CONTACT_SHADOW_CAST_BLUR_PX, offsetPx: CONTACT_SHADOW_CAST_OFFSET_PX, spreadPx: CONTACT_SHADOW_CAST_SPREAD_PX },
+  { alpha: CONTACT_SHADOW_ALPHA, blur: CONTACT_SHADOW_BLUR_PX, offsetPx: CONTACT_SHADOW_OFFSET_PX, spreadPx: CONTACT_SHADOW_SPREAD_PX },
 ] as const
 
 const TAP_GRACE_DISTANCE = 10
@@ -1431,6 +1422,7 @@ function populateViewportScene(
       const dimensions = objectDimensions(room, objectId)
       width = dimensions.width
       height = dimensions.height
+      addCardShadow(container, viewport, width, height)
       addDeckContents(
         container,
         renderer,

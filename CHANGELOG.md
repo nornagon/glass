@@ -3,6 +3,7 @@
 ## 2026-04-16
 
 - Reworked board and card shadows into a simpler layered contact-shadow implementation, kept alpha-following image-board shadows, and tuned the effect to read darker and sharper without slowing zoom.
+- Simplified the new contact shadow down to a single darker layer with tighter offset/spread tuning, and applied the same shadow treatment to decks.
 
 ## 2026-04-15
 
