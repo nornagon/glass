@@ -192,6 +192,10 @@ function viewportToLogicalPoint(viewport: ViewportWorldGeometry, point: { x: num
   }
 }
 
+function screenPixelsToWorldUnits(viewport: Viewport, pixels: number) {
+  return pixels / Math.max(viewport.scaled, 0.001)
+}
+
 function hasFileTransfer(dataTransfer: DataTransfer) {
   return [...dataTransfer.types].includes('Files')
 }
@@ -1302,6 +1306,7 @@ function populateViewportScene(
           ? '#ffd78a'
           : '#ffcb72'
     const selectionStrokeAlpha = hoverDeckId === objectId ? 1 : 0.95
+    const selectionGraphicsStrokeWidth = screenPixelsToWorldUnits(viewport, selectionStrokeWidth)
     if (isBoard(object)) {
       const addedImageOutline =
         selectionStrokeWidth > 0 &&
@@ -1324,7 +1329,7 @@ function populateViewportScene(
         hitArea
           .rect(-width / 2, -height / 2, width, height)
           .stroke({
-            width: selectionStrokeWidth,
+            width: selectionGraphicsStrokeWidth,
             color: selectionStrokeColor,
             alpha: selectionStrokeAlpha,
           })
@@ -1336,7 +1341,7 @@ function populateViewportScene(
           width:
             hidesSelectionChrome
               ? 0
-              : selectionStrokeWidth,
+              : selectionGraphicsStrokeWidth,
           color: selectionStrokeColor,
           alpha: selectionStrokeAlpha,
         })
@@ -2092,6 +2097,7 @@ export function BoardView({
 
       app.stage.eventMode = 'static'
       app.stage.hitArea = new Rectangle(0, 0, host.clientWidth, host.clientHeight)
+      let renderedSelectionScale = viewport.scaled
 
       const emitCamera = () => {
         const worldOffset = viewportWorldOffset(viewport)
@@ -2404,6 +2410,15 @@ export function BoardView({
       app.ticker.add(() => {
         const now = performance.now()
         let needsAnimationFrame = false
+        const hasSelectionChrome =
+          Boolean(selectedIdRef.current) ||
+          selectedIdsRef.current.length > 0 ||
+          Boolean(hoverDeckIdRef.current)
+        if (hasSelectionChrome && Math.abs(viewport.scaled - renderedSelectionScale) > 0.001) {
+          renderedSelectionScale = viewport.scaled
+          needsAnimationFrame = true
+        }
+
         for (const [objectId, animation] of flipAnimationsRef.current) {
           if (now - animation.startedAt >= animation.durationMs) {
             flipAnimationsRef.current.delete(objectId)

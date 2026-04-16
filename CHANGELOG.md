@@ -3,6 +3,7 @@
 ## 2026-04-15
 
 - Added alpha-following Pixi outline selection chrome for image-backed boards, with higher-resolution generated masks to keep transparent edges crisp.
+- Made card and deck selection outlines keep a consistent screen-pixel thickness while zooming the board.
 
 ## 2026-04-13
 
