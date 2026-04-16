@@ -4,7 +4,7 @@ import {
   useRepo,
   type AutomergeUrl,
 } from '@automerge/react'
-import { startTransition, useEffect, useEffectEvent, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from 'react'
+import { startTransition, useCallback, useEffect, useEffectEvent, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from 'react'
 import { BoardView } from '../board/BoardView'
 import { syncTurnBadge } from './badge'
 import { applyRoomEphemeralMessage, isRoomEphemeralMessage, type RemoteDragSession } from '../model/ephemeral'
@@ -909,6 +909,8 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   const [isAddMenuOpen, setIsAddMenuOpen] = useState(false)
   const [creationMode, setCreationMode] = useState<CreationMode | undefined>()
   const [camera, setCamera] = useState<CameraState>(() => loadCameraState(roomUrl) ?? DEFAULT_CAMERA)
+  const cameraRef = useRef<CameraState>(camera)
+  const cameraCommitTimeoutRef = useRef<number | undefined>(undefined)
   const [allowSelectLocked, setAllowSelectLocked] = useState(false)
   const [boardDraft, setBoardDraft] = useState<BoardDraft>(() => defaultBoardDraft())
   const [boardDraftError, setBoardDraftError] = useState('')
@@ -948,12 +950,43 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   const linkedTemplate = room.sourceTemplateId ? loadRoomTemplates().find((template) => template.id === room.sourceTemplateId) : undefined
   const isGroupSelectionMode = selectionMode === 'group'
 
+  const flushCameraState = useCallback((next: CameraState) => {
+    cameraRef.current = next
+    setCamera(next)
+    saveCameraState(roomUrl, next)
+  }, [roomUrl])
+
+  const queueCameraState = useCallback((next: CameraState) => {
+    cameraRef.current = next
+    const existingTimeoutId = cameraCommitTimeoutRef.current
+    if (existingTimeoutId !== undefined) {
+      window.clearTimeout(existingTimeoutId)
+    }
+
+    cameraCommitTimeoutRef.current = window.setTimeout(() => {
+      cameraCommitTimeoutRef.current = undefined
+      flushCameraState(cameraRef.current)
+    }, 120)
+  }, [flushCameraState])
+
   const syncEphemeralTransforms = useEffectEvent(() => {
     const next = dragTransformsByObject(remoteDragSessionsRef.current)
     startTransition(() => {
       setEphemeralTransforms((current) => (sameTransformMap(current, next) ? current : next))
     })
   })
+
+  useEffect(
+    () => () => {
+      const timeoutId = cameraCommitTimeoutRef.current
+      if (timeoutId !== undefined) {
+        window.clearTimeout(timeoutId)
+        cameraCommitTimeoutRef.current = undefined
+        saveCameraState(roomUrl, cameraRef.current)
+      }
+    },
+    [roomUrl],
+  )
 
   const clearRemoteDragExpiry = useEffectEvent((sessionKey: string) => {
     const timeoutId = remoteDragExpiryRef.current.get(sessionKey)
@@ -1420,7 +1453,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   function createCardHere() {
     const offset = spawnCountRef.current++
     mutate((draft) => {
-      createCardOnPlane(draft, draft.rootId, nextSpawnTransform(camera, offset))
+      createCardOnPlane(draft, draft.rootId, nextSpawnTransform(cameraRef.current, offset))
     })
     setIsAddMenuOpen(false)
   }
@@ -1428,7 +1461,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   function createDeckHere() {
     const offset = spawnCountRef.current++
     mutate((draft) => {
-      createDeckOnPlane(draft, draft.rootId, nextSpawnTransform(camera, offset))
+      createDeckOnPlane(draft, draft.rootId, nextSpawnTransform(cameraRef.current, offset))
     })
     setIsAddMenuOpen(false)
   }
@@ -1437,7 +1470,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     const offset = spawnCountRef.current++
     let createdBoardId: string | undefined
     mutate((draft) => {
-      createdBoardId = createBoardOnPlane(draft, draft.rootId, nextSpawnTransform(camera, offset))
+      createdBoardId = createBoardOnPlane(draft, draft.rootId, nextSpawnTransform(cameraRef.current, offset))
     })
 
     if (createdBoardId) {
@@ -1526,7 +1559,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
       faceUrl: boardDraft.faceUrl,
       backUrl: boardDraft.backUrl,
       name: boardDraft.name,
-      transform: nextSpawnTransform(camera, offset),
+      transform: nextSpawnTransform(cameraRef.current, offset),
       onError: setBoardDraftError,
     })
 
@@ -1628,7 +1661,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
       createdDeckId = createDeckFromSpriteSheetOnPlane(
         draft,
         draft.rootId,
-        nextSpawnTransform(camera, offset),
+        nextSpawnTransform(cameraRef.current, offset),
         {
           name: sheetDeckDraft.name.trim() || undefined,
           faces: {
@@ -1708,10 +1741,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
           canEdit={canEdit}
           allowSelectLocked={allowSelectLocked}
           initialCamera={camera}
-          onCameraChange={(next) => {
-            setCamera(next)
-            saveCameraState(roomUrl, next)
-          }}
+          onCameraChange={queueCameraState}
           onSelect={updateSelection}
           onToggleGroupSelection={toggleGroupSelection}
           onAddToGroupSelection={addToGroupSelection}
