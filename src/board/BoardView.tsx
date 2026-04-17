@@ -2474,6 +2474,25 @@ export function BoardView({
   }, [markPrewarmInteraction, resetPointerPanState, stopCameraMomentum, updateCamera, viewportSize])
 
   useEffect(() => {
+    const host = hostRef.current
+    if (!host) {
+      return
+    }
+
+    const preventNativeTouchBehavior = (event: TouchEvent) => {
+      event.preventDefault()
+    }
+
+    host.addEventListener('touchstart', preventNativeTouchBehavior, { passive: false })
+    host.addEventListener('touchmove', preventNativeTouchBehavior, { passive: false })
+
+    return () => {
+      host.removeEventListener('touchstart', preventNativeTouchBehavior)
+      host.removeEventListener('touchmove', preventNativeTouchBehavior)
+    }
+  }, [])
+
+  useEffect(() => {
     const preventWindowDropNavigation = (event: DragEvent) => {
       if (!event.dataTransfer || !hasFileTransfer(event.dataTransfer)) {
         return
@@ -3060,6 +3079,10 @@ export function BoardView({
       return
     }
 
+    if (event.pointerType === 'touch') {
+      event.preventDefault()
+    }
+
     markPrewarmInteraction()
     stopCameraMomentum()
     resetPointerPanState()
@@ -3113,6 +3136,10 @@ export function BoardView({
     const localPoint = clientToLocal(rootRef.current, event.clientX, event.clientY)
     if (!localPoint) {
       return
+    }
+
+    if (isTouchPointer) {
+      event.preventDefault()
     }
 
     markPrewarmInteraction()
@@ -3270,6 +3297,10 @@ export function BoardView({
     const localPoint = clientToLocal(rootRef.current, event.clientX, event.clientY)
     if (!localPoint) {
       return
+    }
+
+    if (event.pointerType === 'touch') {
+      event.preventDefault()
     }
 
     markPrewarmInteraction()

@@ -491,6 +491,13 @@ textarea {
   isolation: isolate;
 }
 
+.board-object,
+.board-object * {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
 .board-object.is-dragging {
   filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.42));
 }
@@ -590,9 +597,19 @@ textarea {
   inset: 0;
   max-width: none;
   max-height: none;
+  -webkit-user-drag: none;
   -webkit-user-select: none;
   user-select: none;
   pointer-events: none;
+}
+
+.board-surface,
+.board-card-shell,
+.board-card-flip,
+.board-card-face,
+.board-deck-shell,
+.board-selection-alpha-canvas {
+  -webkit-user-drag: none;
 }
 
 .board-surface-label {
