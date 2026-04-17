@@ -2044,6 +2044,49 @@ export function BoardView({
     pendingDeckPressRef.current = null
   }, [])
 
+  const beginCameraPointer = useCallback((pointerId: number, localPoint: Point) => {
+    cameraPointersRef.current.set(pointerId, localPoint)
+    if (cameraPointersRef.current.size === 1) {
+      const now = performance.now() / 1000
+      pointerPanStateRef.current = {
+        active: true,
+        lastVelocity: { x: 0, y: 0 },
+        lastSampleTime: now,
+        recentSamples: [{ point: localPoint, time: now }],
+      }
+    }
+  }, [])
+
+  const cancelTouchObjectInteraction = useCallback((handoffPointer?: { pointerId: number; localPoint: Point }) => {
+    clearPendingDeckPress()
+    tapCandidateRef.current = null
+    backgroundTapCandidateRef.current = null
+
+    const activeDrag = dragRef.current
+    if (!activeDrag) {
+      if (handoffPointer) {
+        cameraPointersRef.current.set(handoffPointer.pointerId, handoffPointer.localPoint)
+      }
+      return
+    }
+
+    if (handoffPointer) {
+      cameraPointersRef.current.set(activeDrag.pointerId, activeDrag.currentPoint)
+      cameraPointersRef.current.set(handoffPointer.pointerId, handoffPointer.localPoint)
+    }
+
+    dragRef.current = null
+    setHoverDeckId(undefined)
+    if (activeDrag.groupMembers && activeDrag.groupMembers.length > 0) {
+      for (const member of activeDrag.groupMembers) {
+        onClearPreviewTransform(member.id)
+      }
+    } else {
+      onClearPreviewTransform(activeDrag.id)
+    }
+    replacePreviewTransforms({})
+  }, [clearPendingDeckPress, onClearPreviewTransform, replacePreviewTransforms])
+
   const currentTransformForObject = useCallback((objectId: Id) => {
     return displayedTransformForObject(
       roomRef.current,
@@ -2242,6 +2285,7 @@ export function BoardView({
     groupMembers?: DragState['groupMembers'],
   ) => {
     tapCandidateRef.current = null
+    cameraPointersRef.current.delete(pointerId)
     dragRef.current = {
       id,
       pointerId,
@@ -3130,6 +3174,25 @@ export function BoardView({
 
     if (event.pointerType === 'touch') {
       event.preventDefault()
+      const activeDrag = dragRef.current
+      if (activeDrag && activeDrag.pointerId !== event.pointerId) {
+        if (activeDrag.moved) {
+          beginCameraPointer(event.pointerId, localPoint)
+        } else {
+          cancelTouchObjectInteraction({
+            pointerId: event.pointerId,
+            localPoint,
+          })
+        }
+        return
+      }
+      if (cameraPointersRef.current.size > 0) {
+        cancelTouchObjectInteraction({
+          pointerId: event.pointerId,
+          localPoint,
+        })
+        return
+      }
     }
 
     markPrewarmInteraction()
@@ -3154,17 +3217,8 @@ export function BoardView({
       onSelect(undefined)
     }
 
-    cameraPointersRef.current.set(event.pointerId, localPoint)
-    if (cameraPointersRef.current.size === 1) {
-      const now = performance.now() / 1000
-      pointerPanStateRef.current = {
-        active: true,
-        lastVelocity: { x: 0, y: 0 },
-        lastSampleTime: now,
-        recentSamples: [{ point: localPoint, time: now }],
-      }
-    }
-  }, [lassoMode, markPrewarmInteraction, onSelect, resetPointerPanState, selectionMode, stopCameraMomentum])
+    beginCameraPointer(event.pointerId, localPoint)
+  }, [beginCameraPointer, cancelTouchObjectInteraction, lassoMode, markPrewarmInteraction, onSelect, resetPointerPanState, selectionMode, stopCameraMomentum])
 
   const handleObjectPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>, objectId: Id) => {
     const object = room.objects[objectId]
@@ -3189,11 +3243,36 @@ export function BoardView({
 
     if (isTouchPointer) {
       event.preventDefault()
+      const activeDrag = dragRef.current
+      if (activeDrag && activeDrag.pointerId !== event.pointerId) {
+        event.stopPropagation()
+        if (activeDrag.moved) {
+          beginCameraPointer(event.pointerId, localPoint)
+        } else {
+          cancelTouchObjectInteraction({
+            pointerId: event.pointerId,
+            localPoint,
+          })
+        }
+        return
+      }
+      if (cameraPointersRef.current.size > 0) {
+        event.stopPropagation()
+        cancelTouchObjectInteraction({
+          pointerId: event.pointerId,
+          localPoint,
+        })
+        return
+      }
     }
 
     markPrewarmInteraction()
     stopCameraMomentum()
     resetPointerPanState()
+
+    if (isTouchPointer) {
+      beginCameraPointer(event.pointerId, localPoint)
+    }
 
     const currentTransform = currentTransformForObject(objectId)
     if (!currentTransform) {
@@ -3333,6 +3412,8 @@ export function BoardView({
     selectionMode,
     startDrag,
     stopCameraMomentum,
+    beginCameraPointer,
+    cancelTouchObjectInteraction,
     markPrewarmInteraction,
   ])
 
