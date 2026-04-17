@@ -12,6 +12,7 @@
 - Made prepared image-surface prewarming yield to active interaction and memoized per-object board content so startup decode work and camera churn interfere less with pan and zoom.
 - Switched prepared sprite-surface generation to prefer cached `ImageBitmap` crop-and-resize work before blob encoding, reducing the amount of main-thread canvas resizing in the image prep path.
 - Suppressed native iOS Safari touch selection and loupe behavior inside the board canvas so dragging cards on mobile no longer triggers the system magnifier.
+- Reduced mobile Safari zoom-out crash pressure by removing the giant transformed world-sized grid surface, lowering Safari image prep caps, and simplifying card rendering to only keep the visible side mounted on that path.
 
 ## 2026-04-16
 

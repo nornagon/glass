@@ -457,12 +457,15 @@ textarea {
 .board-grid,
 .board-objects {
   position: absolute;
-  inset: 0 auto auto 0;
+  left: 0;
+  top: 0;
 }
 
 .board-world {
   overflow: visible;
   transform-origin: 0 0;
+  width: 0;
+  height: 0;
 }
 
 .board-grid {
@@ -478,8 +481,10 @@ textarea {
 }
 
 .board-objects {
-  inset: 0;
+  width: 0;
+  height: 0;
   pointer-events: none;
+  overflow: visible;
 }
 
 .board-object {
@@ -630,6 +635,10 @@ textarea {
   inset: 0;
   perspective: 1200px;
   border-radius: 18px;
+}
+
+.board-card-shell.is-constrained {
+  perspective: none;
 }
 
 .board-object-card .board-surface {

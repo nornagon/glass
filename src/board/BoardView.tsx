@@ -105,7 +105,6 @@ const DECK_LONG_PRESS_MS = 360
 const MIN_ZOOM_SCALE = 0.2
 const MAX_ZOOM_SCALE = 2.5
 const PAN_CLAMP_MARGIN = 640
-const BOARD_WORLD_CENTER = BOARD_WORLD_SIZE / 2
 const PAN_MOMENTUM_DECAY = 6.5
 const PAN_MOMENTUM_CUTOFF_SCREEN_VELOCITY = 10
 const PAN_MOMENTUM_MAX_DT_SECONDS = 1 / 15
@@ -119,6 +118,7 @@ const ALPHA_OUTLINE_MAX_RASTER_DIMENSION = 1024
 const ALPHA_OUTLINE_MIN_SAMPLES = 12
 const ALPHA_OUTLINE_MAX_SAMPLES = 64
 const PREPARED_SPRITE_MAX_DIMENSION = 4096
+const PREPARED_SPRITE_MOBILE_SAFARI_MAX_DIMENSION = 2048
 const PREPARED_SPRITE_PREWARM_INITIAL_DELAY_MS = 1500
 const PREPARED_SPRITE_PREWARM_QUIET_MS = 1000
 const PREPARED_SPRITE_PREWARM_FALLBACK_DELAY_MS = 250
@@ -170,6 +170,7 @@ function preparedSpriteSurfaceRasterSize(
   fitWorldHeight: number,
   intrinsicSize: Size,
 ) {
+  const maxDimension = isLikelyMobileSafari() ? PREPARED_SPRITE_MOBILE_SAFARI_MAX_DIMENSION : PREPARED_SPRITE_MAX_DIMENSION
   const qualityScale =
     typeof window === 'undefined'
       ? MAX_ZOOM_SCALE
@@ -182,13 +183,26 @@ function preparedSpriteSurfaceRasterSize(
   const uncappedRasterHeight = Math.min(targetRasterHeight, cropPixelHeight)
   const scaleLimit = Math.min(
     1,
-    PREPARED_SPRITE_MAX_DIMENSION / Math.max(uncappedRasterWidth, uncappedRasterHeight, 1),
+    maxDimension / Math.max(uncappedRasterWidth, uncappedRasterHeight, 1),
   )
 
   return {
     rasterWidth: Math.max(1, Math.round(uncappedRasterWidth * scaleLimit)),
     rasterHeight: Math.max(1, Math.round(uncappedRasterHeight * scaleLimit)),
   }
+}
+
+function isLikelyMobileSafari() {
+  if (typeof navigator === 'undefined') {
+    return false
+  }
+
+  const userAgent = navigator.userAgent
+  const vendor = navigator.vendor ?? ''
+  const isAppleWebKit = vendor.includes('Apple') && userAgent.includes('WebKit')
+  const isOtherIosBrowser = /CriOS|FxiOS|EdgiOS|OPiOS|DuckDuckGo|GSA/.test(userAgent)
+  const isTouchAppleDevice = navigator.maxTouchPoints > 1 && (/iP(hone|ad|od)/.test(userAgent) || userAgent.includes('Macintosh'))
+  return isAppleWebKit && !isOtherIosBrowser && isTouchAppleDevice
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -255,15 +269,15 @@ function cameraForAnchor(
 
 function cameraTranslation(viewport: Size, camera: CameraState) {
   return {
-    x: viewport.width / 2 - (camera.centerX + BOARD_WORLD_CENTER) * camera.zoom,
-    y: viewport.height / 2 - (camera.centerY + BOARD_WORLD_CENTER) * camera.zoom,
+    x: viewport.width / 2 - camera.centerX * camera.zoom,
+    y: viewport.height / 2 - camera.centerY * camera.zoom,
   }
 }
 
 function cameraFromTranslation(viewport: Size, translation: Point, zoom: number): CameraState {
   return clampCamera({
-    centerX: (viewport.width / 2 - translation.x) / zoom - BOARD_WORLD_CENTER,
-    centerY: (viewport.height / 2 - translation.y) / zoom - BOARD_WORLD_CENTER,
+    centerX: (viewport.width / 2 - translation.x) / zoom,
+    centerY: (viewport.height / 2 - translation.y) / zoom,
     zoom,
   })
 }
@@ -474,13 +488,6 @@ function objectIdAtClientPoint(clientX: number, clientY: number) {
     target instanceof Element ? target.closest<HTMLElement>('[data-board-object-id]') : null
 
   return objectElement?.dataset.boardObjectId as Id | undefined
-}
-
-function worldPoint(point: Point): Point {
-  return {
-    x: BOARD_WORLD_CENTER + point.x,
-    y: BOARD_WORLD_CENTER + point.y,
-  }
 }
 
 function objectCursor(
@@ -1512,15 +1519,32 @@ interface CardObjectProps {
   currentPlayerId: string | undefined
   imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>
   size: Size
+  constrainedEffects: boolean
 }
 
-function CardObject({ cardId, room, currentPlayerId, imageAssets, size }: CardObjectProps) {
+function CardObject({ cardId, room, currentPlayerId, imageAssets, size, constrainedEffects }: CardObjectProps) {
   const card = room.objects[cardId]
   if (!isCard(card)) {
     return null
   }
 
   const faceVisible = canSeeCardFace(card, currentPlayerId)
+  const visibleSpec = faceVisible ? card.face : card.back
+  const visibleFallbackLabel = faceVisible ? card.name : 'Back'
+
+  if (constrainedEffects) {
+    return (
+      <div className="board-card-shell is-constrained">
+        <BoardSurface
+          spec={visibleSpec}
+          fallbackLabel={visibleFallbackLabel}
+          size={size}
+          imageAssets={imageAssets}
+          rounded
+        />
+      </div>
+    )
+  }
 
   return (
     <div className="board-card-shell">
@@ -1617,6 +1641,7 @@ interface BoardObjectContentProps {
   currentPlayerId: string | undefined
   imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>
   size: Size
+  constrainedEffects: boolean
 }
 
 function BoardObjectContent({
@@ -1625,6 +1650,7 @@ function BoardObjectContent({
   currentPlayerId,
   imageAssets,
   size,
+  constrainedEffects,
 }: BoardObjectContentProps) {
   const object = room.objects[objectId]
   if (isCard(object)) {
@@ -1635,6 +1661,7 @@ function BoardObjectContent({
         currentPlayerId={currentPlayerId}
         imageAssets={imageAssets}
         size={size}
+        constrainedEffects={constrainedEffects}
       />
     )
   }
@@ -1674,6 +1701,9 @@ const MemoBoardObjectContent = memo(BoardObjectContent, (prevProps, nextProps) =
     return false
   }
   if (prevProps.imageAssets !== nextProps.imageAssets) {
+    return false
+  }
+  if (prevProps.constrainedEffects !== nextProps.constrainedEffects) {
     return false
   }
   if (
@@ -1926,6 +1956,7 @@ export function BoardView({
   const rootRef = useRef<HTMLDivElement>(null)
   const hostRef = useRef<HTMLDivElement>(null)
   const boardWorldRef = useRef<HTMLDivElement>(null)
+  const boardGridRef = useRef<HTMLDivElement>(null)
   const roomRef = useRef(room)
   const cameraRef = useRef(clampCamera(initialCamera))
   const recorderContextRef = useRef({
@@ -1979,6 +2010,7 @@ export function BoardView({
   const [hoverDeckId, setHoverDeckId] = useState<Id | undefined>()
   const [lassoPath, setLassoPath] = useState<Point[]>([])
   const [isImageDropTarget, setIsImageDropTarget] = useState(false)
+  const constrainedEffects = useMemo(() => isLikelyMobileSafari(), [])
 
   roomRef.current = room
   recorderContextRef.current = {
@@ -2023,6 +2055,7 @@ export function BoardView({
 
   const applyCameraToBoardWorld = useCallback((nextCamera: CameraState) => {
     const boardWorld = boardWorldRef.current
+    const boardGrid = boardGridRef.current
     if (!boardWorld) {
       return
     }
@@ -2030,6 +2063,12 @@ export function BoardView({
     const { x: translateX, y: translateY } = cameraTranslation(viewportSize, nextCamera)
     boardWorld.style.transform = `translate3d(${translateX}px, ${translateY}px, 0) scale(${nextCamera.zoom})`
     boardWorld.style.setProperty('--board-zoom', `${nextCamera.zoom}`)
+    if (boardGrid) {
+      const gridSize = Math.max(1, 160 * nextCamera.zoom)
+      boardGrid.style.backgroundPosition = `${viewportSize.width / 2 - nextCamera.centerX * nextCamera.zoom}px ${viewportSize.height / 2 - nextCamera.centerY * nextCamera.zoom}px`
+      boardGrid.style.backgroundSize = `${gridSize}px ${gridSize}px, ${gridSize}px ${gridSize}px, 100% 100%`
+      boardGrid.style.setProperty('--board-zoom', `${nextCamera.zoom}`)
+    }
   }, [viewportSize])
 
   const markPrewarmInteraction = useCallback(() => {
@@ -2296,6 +2335,11 @@ export function BoardView({
 
     const tasks = Object.values(room.objects).flatMap((object) => {
       if (isCard(object)) {
+        const visibleSpec = canSeeCardFace(object, currentPlayerId) ? object.face : object.back
+        if (constrainedEffects) {
+          return [{ spec: visibleSpec, size: object.size }]
+        }
+
         return [
           { spec: object.face, size: object.size },
           { spec: object.back, size: object.size },
@@ -2303,6 +2347,11 @@ export function BoardView({
       }
 
       if (isBoard(object)) {
+        const visibleSpec = isBoardFaceUp(object) ? object.face : object.back
+        if (constrainedEffects) {
+          return [{ spec: visibleSpec, size: object.size }]
+        }
+
         return [
           { spec: object.face, size: object.size },
           { spec: object.back, size: object.size },
@@ -2442,7 +2491,7 @@ export function BoardView({
         globalThis.clearTimeout(timeoutId)
       }
     }
-  }, [imageAssets, room.objects])
+  }, [constrainedEffects, currentPlayerId, imageAssets, room.objects])
 
   useEffect(() => {
     const host = hostRef.current
@@ -3052,17 +3101,17 @@ export function BoardView({
 
   const boardWorldStyle = useMemo<CSSProperties>(() => {
     return {
-      width: `${BOARD_WORLD_SIZE}px`,
-      height: `${BOARD_WORLD_SIZE}px`,
+      width: '0px',
+      height: '0px',
     }
   }, [])
 
   const boardGridStyle = useMemo<CSSProperties>(
     () => ({
-      backgroundPosition: `${BOARD_WORLD_CENTER}px ${BOARD_WORLD_CENTER}px`,
-      backgroundSize: '160px 160px, 160px 160px, 100% 100%',
+      backgroundPosition: `${viewportSize.width / 2 - camera.centerX * camera.zoom}px ${viewportSize.height / 2 - camera.centerY * camera.zoom}px`,
+      backgroundSize: `${Math.max(1, 160 * camera.zoom)}px ${Math.max(1, 160 * camera.zoom)}px, ${Math.max(1, 160 * camera.zoom)}px ${Math.max(1, 160 * camera.zoom)}px, 100% 100%`,
     }),
-    [],
+    [camera.centerX, camera.centerY, camera.zoom, viewportSize.height, viewportSize.width],
   )
 
   const handleRootPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
@@ -3399,7 +3448,7 @@ export function BoardView({
         const usesCardOutlineSelection = isCard(object) && selectionStrokeWidth > 0
         const showsRotateHandle =
           selectionMode === 'normal' && selectedId === objectId && canEdit && !object.locked
-        const worldPosition = worldPoint(transform)
+        const worldPosition = transform
 
         return (
           <div
@@ -3442,6 +3491,7 @@ export function BoardView({
               currentPlayerId={currentPlayerId}
               imageAssets={imageAssets}
               size={worldSize}
+              constrainedEffects={constrainedEffects}
             />
             {selectionStrokeWidth > 0 && !usesCardOutlineSelection && (!boardSelectionSpec || !usesAlphaBoardSelection) ? (
               <div
@@ -3464,6 +3514,7 @@ export function BoardView({
       allowSelectLocked,
       canEdit,
       currentPlayerId,
+      constrainedEffects,
       handleObjectPointerDown,
       handleRotatePointerDown,
       hoverDeckId,
@@ -3492,8 +3543,8 @@ export function BoardView({
         ref={hostRef}
         onPointerDown={handleRootPointerDown}
       >
+        <div className="board-grid" ref={boardGridRef} style={boardGridStyle} />
         <div className="board-world" ref={boardWorldRef} style={boardWorldStyle}>
-          <div className="board-grid" style={boardGridStyle} />
           <div className="board-objects">{objectElements}</div>
         </div>
       </div>
