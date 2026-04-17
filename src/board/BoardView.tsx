@@ -2424,6 +2424,7 @@ export function BoardView({
           boardSelectionSpec.kind === 'image-url' &&
           (boardSelectionSpec.bg === undefined || boardSelectionSpec.bg === 'transparent'),
         )
+        const usesCardOutlineSelection = isCard(object) && selectionStrokeWidth > 0
         const showsRotateHandle =
           selectionMode === 'normal' && selectedId === objectId && canEdit && !object.locked
         const worldPosition = worldPoint(transform)
@@ -2431,7 +2432,7 @@ export function BoardView({
         return (
           <div
             key={objectId}
-            className={`board-object board-object-${object.type}${isDragging ? ' is-dragging' : ''}`}
+            className={`board-object board-object-${object.type}${isDragging ? ' is-dragging' : ''}${usesCardOutlineSelection ? ' has-card-outline-selection' : ''}`}
             data-board-object-id={objectId}
             data-board-object-type={object.type}
             style={{
@@ -2442,6 +2443,12 @@ export function BoardView({
               transform: `translate(-50%, -50%) rotate(${transform.rotation}rad)`,
               zIndex: isDragging ? 1000 + index : index + 1,
               cursor: objectCursor(object, canEdit, allowSelectLocked, isDragging),
+              ...(selectionStrokeWidth > 0
+                ? ({
+                    ['--board-selection-width' as const]: `${selectionStrokeWidth}px`,
+                    ['--board-selection-color' as const]: selectionStrokeColor,
+                  } as CSSProperties)
+                : undefined),
             }}
             title={object.name}
             aria-label={`${object.type}: ${object.name}`}
@@ -2464,15 +2471,9 @@ export function BoardView({
               imageAssets={imageAssets}
               size={worldSize}
             />
-            {selectionStrokeWidth > 0 && (!boardSelectionSpec || !usesAlphaBoardSelection) ? (
+            {selectionStrokeWidth > 0 && !usesCardOutlineSelection && (!boardSelectionSpec || !usesAlphaBoardSelection) ? (
               <div
                 className={`board-object-selection ${object.type === 'board' ? 'is-square' : 'is-rounded'}`}
-                style={
-                  {
-                    '--board-selection-width': `${selectionStrokeWidth}px`,
-                    '--board-selection-color': selectionStrokeColor,
-                  } as CSSProperties
-                }
               />
             ) : null}
             {showsRotateHandle ? (

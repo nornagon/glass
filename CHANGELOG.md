@@ -5,6 +5,7 @@
 - Rebuilt the board renderer as pure HTML/CSS, removing the PixiJS dependency while keeping board pan/zoom, selection, dragging, deck interactions, and image-backed surfaces working in the DOM.
 - Reduced camera panning overhead by moving the board world with a single transform and debouncing persisted camera updates.
 - Fixed deck card lift-out dragging, removed default board chrome from transparent image boards, and replaced image-board selection rendering with a cached canvas-generated alpha outline that behaves better across zoom levels and cropped assets.
+- Moved card selection to CSS outlines, pushed regular selection rings fully outside cards and decks, and repositioned the rotate handle above the selected object without hover drift.
 
 ## 2026-04-15
 
