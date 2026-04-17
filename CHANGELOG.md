@@ -9,6 +9,7 @@
 - Added Google Maps-style pan momentum to the DOM board camera, then fixed the release/clamping math so background flings glide smoothly instead of snapping or dying on the first tick.
 - Tightened resting and pickup shadows for boards, cards, and decks so object separation reads more crisply without the earlier diffuse blur.
 - Made alpha-masked board selection outlines track live zoom updates continuously so they rerasterize during the gesture instead of snapping at the end.
+- Made prepared image-surface prewarming yield to active interaction and memoized per-object board content so startup decode work and camera churn interfere less with pan and zoom.
 
 ## 2026-04-16
 

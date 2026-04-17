@@ -1,5 +1,5 @@
 import type { AutomergeUrl } from '@automerge/react'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { resolveImageSource, type ResolvedImageAsset } from '../model/assets'
 import { BOARD_WORLD_SIZE, DEFAULT_CARD_SIZE, type CameraState, type Id, type RoomDoc, type SpriteSpec, type Transform2D } from '../model/types'
 import { canSeeCardFace, getRootPlane, getTransform, isBoard, isBoardFaceUp, isCard, isDeck, isGroupSelectableObject } from '../model/room'
@@ -119,6 +119,10 @@ const ALPHA_OUTLINE_MAX_RASTER_DIMENSION = 1024
 const ALPHA_OUTLINE_MIN_SAMPLES = 12
 const ALPHA_OUTLINE_MAX_SAMPLES = 64
 const PREPARED_SPRITE_MAX_DIMENSION = 4096
+const PREPARED_SPRITE_PREWARM_INITIAL_DELAY_MS = 1500
+const PREPARED_SPRITE_PREWARM_QUIET_MS = 1000
+const PREPARED_SPRITE_PREWARM_FALLBACK_DELAY_MS = 250
+const PREPARED_SPRITE_PREWARM_MIN_IDLE_MS = 12
 
 const intrinsicImageSizeCache = new Map<string, Size | null>()
 const resolvedSourceImageElementCache = new Map<string, HTMLImageElement>()
@@ -127,6 +131,63 @@ const preparedSpriteSurfaceUrlCache = new Map<string, string | null>()
 const preparedSpriteSurfaceRequestCache = new Map<string, Promise<string | null>>()
 const opaqueRegionBoundsCache = new Map<string, { x: number; y: number; width: number; height: number } | null>()
 const opaqueRegionRequestCache = new Map<string, Promise<{ x: number; y: number; width: number; height: number } | null>>()
+
+function computeSurfaceFit(
+  crop: ReturnType<typeof normalizeCrop>,
+  targetSize: Size,
+  sourceSize: Size,
+  fit: SpriteSpec['fit'],
+) {
+  const targetAspect = targetSize.width > 0 && targetSize.height > 0 ? targetSize.width / targetSize.height : 1
+  const sourceAspect = sourceSize.width / sourceSize.height
+  const cropAspect = sourceAspect * crop.width / crop.height
+
+  let fitWidth = 1
+  let fitHeight = 1
+  if (fit === 'contain') {
+    if (cropAspect > targetAspect) {
+      fitHeight = targetAspect / cropAspect
+    } else {
+      fitWidth = cropAspect / targetAspect
+    }
+  } else if (cropAspect > targetAspect) {
+    fitWidth = cropAspect / targetAspect
+  } else {
+    fitHeight = targetAspect / cropAspect
+  }
+
+  return {
+    fitWidth,
+    fitHeight,
+  }
+}
+
+function preparedSpriteSurfaceRasterSize(
+  crop: ReturnType<typeof normalizeCrop>,
+  fitWorldWidth: number,
+  fitWorldHeight: number,
+  intrinsicSize: Size,
+) {
+  const qualityScale =
+    typeof window === 'undefined'
+      ? MAX_ZOOM_SCALE
+      : Math.max(1, (window.devicePixelRatio || 1) * MAX_ZOOM_SCALE)
+  const cropPixelWidth = Math.max(1, Math.round(intrinsicSize.width * crop.width))
+  const cropPixelHeight = Math.max(1, Math.round(intrinsicSize.height * crop.height))
+  const targetRasterWidth = Math.max(1, Math.round(fitWorldWidth * qualityScale))
+  const targetRasterHeight = Math.max(1, Math.round(fitWorldHeight * qualityScale))
+  const uncappedRasterWidth = Math.min(targetRasterWidth, cropPixelWidth)
+  const uncappedRasterHeight = Math.min(targetRasterHeight, cropPixelHeight)
+  const scaleLimit = Math.min(
+    1,
+    PREPARED_SPRITE_MAX_DIMENSION / Math.max(uncappedRasterWidth, uncappedRasterHeight, 1),
+  )
+
+  return {
+    rasterWidth: Math.max(1, Math.round(uncappedRasterWidth * scaleLimit)),
+    rasterHeight: Math.max(1, Math.round(uncappedRasterHeight * scaleLimit)),
+  }
+}
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
@@ -569,30 +630,12 @@ function usePreparedSpriteSurfaceUrl(
   intrinsicSize?: Size,
 ) {
   const hasRenderableImage = Boolean(imageUrl)
-  const qualityScale =
-    typeof window === 'undefined'
-      ? MAX_ZOOM_SCALE
-      : Math.max(1, (window.devicePixelRatio || 1) * MAX_ZOOM_SCALE)
-  const cropPixelWidth = intrinsicSize
-    ? Math.max(1, Math.round(intrinsicSize.width * crop.width))
-    : undefined
-  const cropPixelHeight = intrinsicSize
-    ? Math.max(1, Math.round(intrinsicSize.height * crop.height))
-    : undefined
-  const targetRasterWidth = Math.max(1, Math.round(fitWorldWidth * qualityScale))
-  const targetRasterHeight = Math.max(1, Math.round(fitWorldHeight * qualityScale))
-  const uncappedRasterWidth = cropPixelWidth
-    ? Math.min(targetRasterWidth, cropPixelWidth)
-    : targetRasterWidth
-  const uncappedRasterHeight = cropPixelHeight
-    ? Math.min(targetRasterHeight, cropPixelHeight)
-    : targetRasterHeight
-  const scaleLimit = Math.min(
-    1,
-    PREPARED_SPRITE_MAX_DIMENSION / Math.max(uncappedRasterWidth, uncappedRasterHeight, 1),
-  )
-  const rasterWidth = Math.max(1, Math.round(uncappedRasterWidth * scaleLimit))
-  const rasterHeight = Math.max(1, Math.round(uncappedRasterHeight * scaleLimit))
+  const { rasterWidth, rasterHeight } = intrinsicSize
+    ? preparedSpriteSurfaceRasterSize(crop, fitWorldWidth, fitWorldHeight, intrinsicSize)
+    : {
+      rasterWidth: Math.max(1, Math.round(fitWorldWidth)),
+      rasterHeight: Math.max(1, Math.round(fitWorldHeight)),
+    }
   const cacheKey = imageUrl && hasRenderableImage
     ? preparedSpriteSurfaceCacheKey(imageUrl, crop, rasterWidth, rasterHeight)
     : undefined
@@ -678,6 +721,41 @@ function usePreparedSpriteSurfaceUrl(
     preparedSurfaceUrl,
     stage,
   }
+}
+
+function requestPreparedSpriteSurface(
+  imageUrl: string,
+  crop: ReturnType<typeof normalizeCrop>,
+  fitWorldWidth: number,
+  fitWorldHeight: number,
+  intrinsicSize: Size,
+) {
+  const { rasterWidth, rasterHeight } = preparedSpriteSurfaceRasterSize(crop, fitWorldWidth, fitWorldHeight, intrinsicSize)
+  const cacheKey = preparedSpriteSurfaceCacheKey(imageUrl, crop, rasterWidth, rasterHeight)
+  const cached = preparedSpriteSurfaceUrlCache.get(cacheKey)
+  if (cached !== undefined) {
+    return Promise.resolve(cached)
+  }
+
+  const existingRequest = preparedSpriteSurfaceRequestCache.get(cacheKey)
+  if (existingRequest) {
+    return existingRequest
+  }
+
+  const request = buildPreparedSpriteSurfaceUrl(imageUrl, crop, rasterWidth, rasterHeight)
+    .then((url) => {
+      preparedSpriteSurfaceUrlCache.set(cacheKey, url)
+      preparedSpriteSurfaceRequestCache.delete(cacheKey)
+      return url
+    })
+    .catch(() => {
+      preparedSpriteSurfaceUrlCache.set(cacheKey, null)
+      preparedSpriteSurfaceRequestCache.delete(cacheKey)
+      return null
+    })
+
+  preparedSpriteSurfaceRequestCache.set(cacheKey, request)
+  return request
 }
 
 function composeCrop(
@@ -1512,6 +1590,47 @@ function BoardObjectContent({
   return null
 }
 
+const MemoBoardObjectContent = memo(BoardObjectContent, (prevProps, nextProps) => {
+  if (prevProps.objectId !== nextProps.objectId) {
+    return false
+  }
+  if (prevProps.currentPlayerId !== nextProps.currentPlayerId) {
+    return false
+  }
+  if (prevProps.imageAssets !== nextProps.imageAssets) {
+    return false
+  }
+  if (
+    prevProps.size.width !== nextProps.size.width ||
+    prevProps.size.height !== nextProps.size.height
+  ) {
+    return false
+  }
+
+  const prevObject = prevProps.room.objects[prevProps.objectId]
+  const nextObject = nextProps.room.objects[nextProps.objectId]
+  if (prevObject !== nextObject) {
+    return false
+  }
+
+  if (isDeck(prevObject) && isDeck(nextObject)) {
+    const prevTopCardId = prevObject.childIds[prevObject.childIds.length - 1]
+    const nextTopCardId = nextObject.childIds[nextObject.childIds.length - 1]
+    if (prevTopCardId !== nextTopCardId) {
+      return false
+    }
+    if (
+      prevTopCardId &&
+      nextTopCardId &&
+      prevProps.room.objects[prevTopCardId] !== nextProps.room.objects[nextTopCardId]
+    ) {
+      return false
+    }
+  }
+
+  return true
+})
+
 interface BoardSelectionOverlayProps {
   spec: SpriteSpec
   size: Size
@@ -1761,6 +1880,9 @@ export function BoardView({
   const cameraMomentumPositionRef = useRef<Point>({ x: 0, y: 0 })
   const cameraMomentumVelocityRef = useRef<Point>({ x: 0, y: 0 })
   const cameraMomentumTimeRef = useRef(performance.now() / 1000)
+  const prewarmPauseUntilRef = useRef(
+    typeof performance === 'undefined' ? 0 : performance.now() + PREPARED_SPRITE_PREWARM_INITIAL_DELAY_MS,
+  )
   const hasActiveAlphaSelectionRef = useRef(false)
   const pointerPanStateRef = useRef<{
     active: boolean
@@ -1833,6 +1955,14 @@ export function BoardView({
     boardWorld.style.transform = `translate3d(${translateX}px, ${translateY}px, 0) scale(${nextCamera.zoom})`
     boardWorld.style.setProperty('--board-zoom', `${nextCamera.zoom}`)
   }, [viewportSize])
+
+  const markPrewarmInteraction = useCallback(() => {
+    if (typeof performance === 'undefined') {
+      return
+    }
+
+    prewarmPauseUntilRef.current = performance.now() + PREPARED_SPRITE_PREWARM_QUIET_MS
+  }, [])
 
   const scheduleCameraRenderSync = useCallback(() => {
     if (cameraRenderSyncTimeoutRef.current !== null) {
@@ -1922,6 +2052,7 @@ export function BoardView({
 
       if (!sameCamera(currentCamera, nextCamera)) {
         applyCommittedCamera(nextCamera)
+        markPrewarmInteraction()
       }
 
       const screenVelocity = Math.hypot(nextVelocityX, nextVelocityY) * nextCamera.zoom
@@ -1933,7 +2064,7 @@ export function BoardView({
     }
 
     cameraMomentumFrameRef.current = window.requestAnimationFrame(tickMomentum)
-  }, [applyCommittedCamera, stopCameraMomentum, viewportSize])
+  }, [applyCommittedCamera, markPrewarmInteraction, stopCameraMomentum, viewportSize])
 
   const flushPendingCameraUpdate = useCallback(() => {
     if (cameraAnimationFrameRef.current !== null) {
@@ -2083,6 +2214,161 @@ export function BoardView({
   }, [])
 
   useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    const tasks = Object.values(room.objects).flatMap((object) => {
+      if (isCard(object)) {
+        return [
+          { spec: object.face, size: object.size },
+          { spec: object.back, size: object.size },
+        ]
+      }
+
+      if (isBoard(object)) {
+        return [
+          { spec: object.face, size: object.size },
+          { spec: object.back, size: object.size },
+        ]
+      }
+
+      return []
+    })
+
+    const seenTaskKeys = new Set<string>()
+    const queue = tasks.filter(({ spec, size }) => {
+      if (spec.kind !== 'image-url' || !spec.url) {
+        return false
+      }
+
+      const crop = normalizeCrop(spec.crop)
+      const taskKey = [
+        spec.url,
+        size.width,
+        size.height,
+        spec.fit ?? 'cover',
+        crop.x.toFixed(4),
+        crop.y.toFixed(4),
+        crop.width.toFixed(4),
+        crop.height.toFixed(4),
+      ].join('|')
+      if (seenTaskKeys.has(taskKey)) {
+        return false
+      }
+
+      seenTaskKeys.add(taskKey)
+      return true
+    })
+
+    let cancelled = false
+    let idleCallbackId: number | undefined
+    let timeoutId: ReturnType<typeof globalThis.setTimeout> | undefined
+    let nextTaskIndex = 0
+
+    const runNextTask = async () => {
+      const task = queue[nextTaskIndex]
+      nextTaskIndex += 1
+      if (!task || task.spec.kind !== 'image-url' || !task.spec.url) {
+        return
+      }
+
+      const source = resolveImageSource(task.spec.url, imageAssets)
+      const imageUrl = source?.renderUrl
+      if (!imageUrl) {
+        return
+      }
+
+      const image = await loadSourceImageElement(imageUrl).catch(() => undefined)
+      if (!image || cancelled) {
+        return
+      }
+
+      const intrinsicSize =
+        source?.asset?.width && source.asset.height
+          ? {
+            width: source.asset.width,
+            height: source.asset.height,
+          }
+          : {
+            width: image.naturalWidth,
+            height: image.naturalHeight,
+          }
+      const crop = normalizeCrop(task.spec.crop)
+      const { fitWidth, fitHeight } = computeSurfaceFit(crop, task.size, intrinsicSize, task.spec.fit ?? 'cover')
+      await requestPreparedSpriteSurface(
+        imageUrl,
+        crop,
+        task.size.width * fitWidth,
+        task.size.height * fitHeight,
+        intrinsicSize,
+      )
+    }
+
+    const scheduleNextTask = (delayMs = 0) => {
+      if (cancelled || nextTaskIndex >= queue.length) {
+        return
+      }
+
+      if (delayMs > 0) {
+        timeoutId = globalThis.setTimeout(() => {
+          timeoutId = undefined
+          scheduleNextTask()
+        }, delayMs)
+        return
+      }
+
+      const quietDelayMs = Math.max(0, prewarmPauseUntilRef.current - performance.now())
+      if (quietDelayMs > 0) {
+        timeoutId = globalThis.setTimeout(() => {
+          timeoutId = undefined
+          scheduleNextTask()
+        }, quietDelayMs)
+        return
+      }
+
+      if ('requestIdleCallback' in window) {
+        idleCallbackId = window.requestIdleCallback(async (deadline) => {
+          idleCallbackId = undefined
+          if (
+            prewarmPauseUntilRef.current > performance.now() ||
+            deadline.timeRemaining() < PREPARED_SPRITE_PREWARM_MIN_IDLE_MS
+          ) {
+            scheduleNextTask(PREPARED_SPRITE_PREWARM_FALLBACK_DELAY_MS)
+            return
+          }
+
+          await runNextTask()
+          scheduleNextTask()
+        })
+        return
+      }
+
+      timeoutId = globalThis.setTimeout(async () => {
+        timeoutId = undefined
+        if (prewarmPauseUntilRef.current > performance.now()) {
+          scheduleNextTask()
+          return
+        }
+        await runNextTask()
+        scheduleNextTask()
+      }, PREPARED_SPRITE_PREWARM_FALLBACK_DELAY_MS)
+    }
+
+    scheduleNextTask()
+
+    return () => {
+      cancelled = true
+      if (idleCallbackId !== undefined && 'cancelIdleCallback' in window) {
+        window.cancelIdleCallback(idleCallbackId)
+      }
+      if (timeoutId !== undefined) {
+        globalThis.clearTimeout(timeoutId)
+      }
+    }
+  }, [imageAssets, room.objects])
+
+  useEffect(() => {
     const host = hostRef.current
     if (!host) {
       return
@@ -2090,6 +2376,7 @@ export function BoardView({
 
     const handleWheel = (event: WheelEvent) => {
       event.preventDefault()
+      markPrewarmInteraction()
       stopCameraMomentum()
       resetPointerPanState()
       const localPoint = clientToLocal(rootRef.current, event.clientX, event.clientY)
@@ -2108,7 +2395,7 @@ export function BoardView({
     return () => {
       host.removeEventListener('wheel', handleWheel)
     }
-  }, [resetPointerPanState, stopCameraMomentum, updateCamera, viewportSize])
+  }, [markPrewarmInteraction, resetPointerPanState, stopCameraMomentum, updateCamera, viewportSize])
 
   useEffect(() => {
     const preventWindowDropNavigation = (event: DragEvent) => {
@@ -2265,6 +2552,8 @@ export function BoardView({
         return
       }
 
+      markPrewarmInteraction()
+
       cameraPointers.set(event.pointerId, localPoint)
       const pointerEntries = [...cameraPointers.entries()]
 
@@ -2340,6 +2629,7 @@ export function BoardView({
     }
 
     const handlePointerUp = (event: PointerEvent) => {
+      markPrewarmInteraction()
       clearPendingDeckPress()
       const hadCameraPointer = cameraPointersRef.current.has(event.pointerId)
       const shouldStartMomentum =
@@ -2475,6 +2765,7 @@ export function BoardView({
     }
 
     const handlePointerCancel = (event: PointerEvent) => {
+      markPrewarmInteraction()
       if (dragRef.current?.pointerId === event.pointerId) {
         const drag = dragRef.current
         dragRef.current = null
@@ -2536,6 +2827,7 @@ export function BoardView({
     resetPointerPanState,
     startCameraMomentum,
     stopCameraMomentum,
+    markPrewarmInteraction,
   ])
 
   useEffect(
@@ -2692,6 +2984,7 @@ export function BoardView({
       return
     }
 
+    markPrewarmInteraction()
     stopCameraMomentum()
     resetPointerPanState()
 
@@ -2723,7 +3016,7 @@ export function BoardView({
         recentSamples: [{ point: localPoint, time: now }],
       }
     }
-  }, [lassoMode, onSelect, resetPointerPanState, selectionMode, stopCameraMomentum])
+  }, [lassoMode, markPrewarmInteraction, onSelect, resetPointerPanState, selectionMode, stopCameraMomentum])
 
   const handleObjectPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>, objectId: Id) => {
     const object = room.objects[objectId]
@@ -2746,6 +3039,7 @@ export function BoardView({
       return
     }
 
+    markPrewarmInteraction()
     stopCameraMomentum()
     resetPointerPanState()
 
@@ -2887,6 +3181,7 @@ export function BoardView({
     selectionMode,
     startDrag,
     stopCameraMomentum,
+    markPrewarmInteraction,
   ])
 
   const handleRotatePointerDown = useCallback((event: ReactPointerEvent<HTMLButtonElement>, objectId: Id) => {
@@ -2901,10 +3196,11 @@ export function BoardView({
       return
     }
 
+    markPrewarmInteraction()
     stopCameraMomentum()
     resetPointerPanState()
     startDrag(objectId, event.pointerId, 'rotate', localPoint, currentTransform)
-  }, [currentTransformForObject, resetPointerPanState, startDrag, stopCameraMomentum])
+  }, [currentTransformForObject, markPrewarmInteraction, resetPointerPanState, startDrag, stopCameraMomentum])
 
   function resetDropTarget() {
     dropDepthRef.current = 0
@@ -3033,7 +3329,7 @@ export function BoardView({
                 selectionStrokeColor={selectionStrokeColor}
               />
             ) : null}
-            <BoardObjectContent
+            <MemoBoardObjectContent
               objectId={objectId}
               room={room}
               currentPlayerId={currentPlayerId}
