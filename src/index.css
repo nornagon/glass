@@ -463,7 +463,6 @@ textarea {
 .board-world {
   overflow: visible;
   transform-origin: 0 0;
-  will-change: transform;
 }
 
 .board-grid {
@@ -489,6 +488,7 @@ textarea {
   transform-origin: center center;
   overflow: visible;
   touch-action: none;
+  isolation: isolate;
 }
 
 .board-object.is-dragging {
@@ -583,6 +583,7 @@ textarea {
 .board-sprite-image {
   position: absolute;
   display: block;
+  inset: 0;
   max-width: none;
   max-height: none;
   -webkit-user-select: none;

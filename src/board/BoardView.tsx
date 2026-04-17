@@ -3,6 +3,12 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { resolveImageSource, type ResolvedImageAsset } from '../model/assets'
 import { BOARD_WORLD_SIZE, DEFAULT_CARD_SIZE, type CameraState, type Id, type RoomDoc, type SpriteSpec, type Transform2D } from '../model/types'
 import { canSeeCardFace, getRootPlane, getTransform, isBoard, isBoardFaceUp, isCard, isDeck, isGroupSelectableObject } from '../model/room'
+import {
+  bindBoardInputRecorder,
+  recordBoardInputRecorderCamera,
+  recordBoardInputRecorderSelection,
+  recordBoardInputRecorderViewport,
+} from '../debug/inputRecorder'
 
 interface BoardViewProps {
   room: RoomDoc
@@ -106,10 +112,13 @@ const ALPHA_OUTLINE_RENDER_THRESHOLD = 24
 const ALPHA_OUTLINE_MAX_RASTER_DIMENSION = 1024
 const ALPHA_OUTLINE_MIN_SAMPLES = 12
 const ALPHA_OUTLINE_MAX_SAMPLES = 64
+const PREPARED_SPRITE_MAX_DIMENSION = 1024
 
 const intrinsicImageSizeCache = new Map<string, Size | null>()
 const resolvedSourceImageElementCache = new Map<string, HTMLImageElement>()
 const sourceImageElementCache = new Map<string, Promise<HTMLImageElement>>()
+const preparedSpriteSurfaceUrlCache = new Map<string, string | null>()
+const preparedSpriteSurfaceRequestCache = new Map<string, Promise<string | null>>()
 const opaqueRegionBoundsCache = new Map<string, { x: number; y: number; width: number; height: number } | null>()
 const opaqueRegionRequestCache = new Map<string, Promise<{ x: number; y: number; width: number; height: number } | null>>()
 
@@ -441,8 +450,17 @@ function loadSourceImageElement(url: string) {
     image.crossOrigin = 'anonymous'
     image.decoding = 'async'
     image.onload = () => {
-      resolvedSourceImageElementCache.set(url, image)
-      resolve(image)
+      const finalize = () => {
+        resolvedSourceImageElementCache.set(url, image)
+        resolve(image)
+      }
+
+      if (typeof image.decode !== 'function') {
+        finalize()
+        return
+      }
+
+      void image.decode().then(finalize).catch(finalize)
     }
     image.onerror = () => {
       resolvedSourceImageElementCache.delete(url)
@@ -454,6 +472,160 @@ function loadSourceImageElement(url: string) {
 
   sourceImageElementCache.set(url, request)
   return request
+}
+
+function useSourceImagePreload(url: string | undefined) {
+  useEffect(() => {
+    if (!url) {
+      return
+    }
+
+    void loadSourceImageElement(url).catch(() => {})
+  }, [url])
+}
+
+function preparedSpriteSurfaceCacheKey(
+  imageUrl: string,
+  crop: ReturnType<typeof normalizeCrop>,
+  rasterWidth: number,
+  rasterHeight: number,
+) {
+  return [
+    imageUrl,
+    crop.x.toFixed(4),
+    crop.y.toFixed(4),
+    crop.width.toFixed(4),
+    crop.height.toFixed(4),
+    rasterWidth,
+    rasterHeight,
+  ].join('|')
+}
+
+async function buildPreparedSpriteSurfaceUrl(
+  imageUrl: string,
+  crop: ReturnType<typeof normalizeCrop>,
+  rasterWidth: number,
+  rasterHeight: number,
+) {
+  if (typeof document === 'undefined') {
+    return null
+  }
+
+  const image = await loadSourceImageElement(imageUrl)
+  const canvas = document.createElement('canvas')
+  canvas.width = rasterWidth
+  canvas.height = rasterHeight
+  const context = canvas.getContext('2d')
+  if (!context) {
+    return null
+  }
+
+  context.clearRect(0, 0, rasterWidth, rasterHeight)
+  context.drawImage(
+    image,
+    image.naturalWidth * crop.x,
+    image.naturalHeight * crop.y,
+    image.naturalWidth * crop.width,
+    image.naturalHeight * crop.height,
+    0,
+    0,
+    rasterWidth,
+    rasterHeight,
+  )
+
+  const blob = await new Promise<Blob | null>((resolve) => {
+    canvas.toBlob((nextBlob) => resolve(nextBlob), 'image/png')
+  })
+
+  return blob ? URL.createObjectURL(blob) : null
+}
+
+function usePreparedSpriteSurfaceUrl(
+  imageUrl: string | undefined,
+  crop: ReturnType<typeof normalizeCrop>,
+  fitWorldWidth: number,
+  fitWorldHeight: number,
+) {
+  const requiresPreparedSurface = Boolean(
+    imageUrl &&
+    (
+      crop.x > 0 ||
+      crop.y > 0 ||
+      crop.width < 0.999 ||
+      crop.height < 0.999
+    ),
+  )
+  const qualityScale =
+    typeof window === 'undefined'
+      ? MAX_ZOOM_SCALE
+      : Math.max(1, (window.devicePixelRatio || 1) * MAX_ZOOM_SCALE)
+  const scaleLimit = Math.min(
+    1,
+    PREPARED_SPRITE_MAX_DIMENSION / Math.max(fitWorldWidth * qualityScale, fitWorldHeight * qualityScale, 1),
+  )
+  const rasterWidth = Math.max(1, Math.round(fitWorldWidth * qualityScale * scaleLimit))
+  const rasterHeight = Math.max(1, Math.round(fitWorldHeight * qualityScale * scaleLimit))
+  const cacheKey = imageUrl && requiresPreparedSurface
+    ? preparedSpriteSurfaceCacheKey(imageUrl, crop, rasterWidth, rasterHeight)
+    : undefined
+  const cachedPreparedSurfaceUrl = cacheKey ? preparedSpriteSurfaceUrlCache.get(cacheKey) : undefined
+  const [preparedSurfaceUrl, setPreparedSurfaceUrl] = useState<string | undefined>(() => {
+    if (!requiresPreparedSurface || !cacheKey) {
+      return undefined
+    }
+
+    return cachedPreparedSurfaceUrl ?? undefined
+  })
+
+  useEffect(() => {
+    if (!requiresPreparedSurface || !imageUrl || !cacheKey) {
+      return
+    }
+
+    const cached = preparedSpriteSurfaceUrlCache.get(cacheKey)
+    if (cached !== undefined) {
+      return
+    }
+
+    let cancelled = false
+    const request =
+      preparedSpriteSurfaceRequestCache.get(cacheKey) ??
+      buildPreparedSpriteSurfaceUrl(imageUrl, crop, rasterWidth, rasterHeight)
+        .then((url) => {
+          preparedSpriteSurfaceUrlCache.set(cacheKey, url)
+          preparedSpriteSurfaceRequestCache.delete(cacheKey)
+          return url
+        })
+        .catch(() => {
+          preparedSpriteSurfaceUrlCache.set(cacheKey, null)
+          preparedSpriteSurfaceRequestCache.delete(cacheKey)
+          return null
+        })
+
+    preparedSpriteSurfaceRequestCache.set(cacheKey, request)
+    void request.then((url) => {
+      if (!cancelled) {
+        setPreparedSurfaceUrl(url ?? undefined)
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [cacheKey, crop, imageUrl, rasterHeight, rasterWidth, requiresPreparedSurface])
+
+  const isPreparing = Boolean(
+    requiresPreparedSurface &&
+    cacheKey &&
+    cachedPreparedSurfaceUrl === undefined &&
+    (preparedSpriteSurfaceRequestCache.has(cacheKey) || preparedSurfaceUrl === undefined),
+  )
+
+  return {
+    preparedSurfaceUrl: preparedSurfaceUrl ?? cachedPreparedSurfaceUrl ?? undefined,
+    requiresPreparedSurface,
+    isPreparing,
+  }
 }
 
 function composeCrop(
@@ -957,25 +1129,22 @@ function useIntrinsicImageSize(url: string | undefined, initialSize?: Size) {
     }
 
     let cancelled = false
-    const image = new Image()
-    image.crossOrigin = 'anonymous'
-    image.decoding = 'async'
-    image.onload = () => {
-      if (cancelled || image.naturalWidth <= 0 || image.naturalHeight <= 0) {
-        return
-      }
+    void loadSourceImageElement(url)
+      .then((image) => {
+        if (cancelled || image.naturalWidth <= 0 || image.naturalHeight <= 0) {
+          return
+        }
 
-      const nextSize = {
-        width: image.naturalWidth,
-        height: image.naturalHeight,
-      }
-      intrinsicImageSizeCache.set(url, nextSize)
-      setLoadedImage({ url, size: nextSize })
-    }
-    image.onerror = () => {
-      intrinsicImageSizeCache.set(url, null)
-    }
-    image.src = url
+        const nextSize = {
+          width: image.naturalWidth,
+          height: image.naturalHeight,
+        }
+        intrinsicImageSizeCache.set(url, nextSize)
+        setLoadedImage({ url, size: nextSize })
+      })
+      .catch(() => {
+        intrinsicImageSizeCache.set(url, null)
+      })
 
     return () => {
       cancelled = true
@@ -1011,17 +1180,19 @@ function useBoardSurfaceLayout(
 ): BoardSurfaceLayout {
   const imageSource = spec.kind === 'image-url' ? resolveImageSource(spec.url, imageAssets) : undefined
   const imageUrl = imageSource?.renderUrl
-  const intrinsicSize = useIntrinsicImageSize(
+  useSourceImagePreload(imageUrl)
+  const originalIntrinsicSize = useIntrinsicImageSize(
     imageUrl,
     imageSource?.asset?.width && imageSource.asset.height
       ? {
-          width: imageSource.asset.width,
+        width: imageSource.asset.width,
           height: imageSource.asset.height,
         }
       : undefined,
   )
 
   const crop = normalizeCrop(spec.crop)
+  const intrinsicSize = originalIntrinsicSize
   const targetAspect = size.width > 0 && size.height > 0 ? size.width / size.height : 1
   const sourceAspect = intrinsicSize
     ? intrinsicSize.width / intrinsicSize.height
@@ -1073,6 +1244,20 @@ function BoardSurface({
     labelFontSize,
     surfaceBackground,
   } = useBoardSurfaceLayout(spec, size, imageAssets, rounded)
+  const fitWorldWidth = size.width * fitWidth
+  const fitWorldHeight = size.height * fitHeight
+  const { preparedSurfaceUrl, isPreparing } = usePreparedSpriteSurfaceUrl(
+    imageUrl,
+    crop,
+    fitWorldWidth,
+    fitWorldHeight,
+  )
+  const renderedImageUrl = preparedSurfaceUrl ?? imageUrl
+  const usesPreparedSurface = Boolean(preparedSurfaceUrl)
+  const imageScaleX = usesPreparedSurface ? 1 : 1 / crop.width
+  const imageScaleY = usesPreparedSurface ? 1 : 1 / crop.height
+  const imageTranslateX = usesPreparedSurface ? 0 : -fitWorldWidth * crop.x / crop.width
+  const imageTranslateY = usesPreparedSurface ? 0 : -fitWorldHeight * crop.y / crop.height
 
   return (
     <div
@@ -1093,14 +1278,18 @@ function BoardSurface({
           >
             <img
               className="board-sprite-image"
-              src={imageUrl}
+              src={renderedImageUrl}
               alt=""
               draggable={false}
+              decoding="async"
+              loading="eager"
+              fetchPriority="high"
+              data-board-sprite-stage={usesPreparedSurface ? 'prepared' : isPreparing ? 'preparing' : 'source'}
               style={{
-                width: `${100 / crop.width}%`,
-                height: `${100 / crop.height}%`,
-                left: `${(-crop.x / crop.width) * 100}%`,
-                top: `${(-crop.y / crop.height) * 100}%`,
+                width: '100%',
+                height: '100%',
+                transformOrigin: 'top left',
+                transform: `translate(${imageTranslateX}px, ${imageTranslateY}px) scale(${imageScaleX}, ${imageScaleY})`,
               }}
             />
           </div>
@@ -1166,15 +1355,17 @@ interface DeckObjectProps {
 
 function DeckObject({ deckId, room, currentPlayerId, imageAssets, size }: DeckObjectProps) {
   const deck = room.objects[deckId]
-  if (!isDeck(deck)) {
-    return null
-  }
-
-  const stackCount = Math.min(deck.childIds.length, 4)
-  const topCardId = deck.childIds[deck.childIds.length - 1]
+  const deckChildIds = isDeck(deck) ? deck.childIds : []
+  const stackCount = Math.min(deckChildIds.length, 4)
+  const stackDepth = Math.max(0, stackCount - 1)
+  const topCardId = deckChildIds[deckChildIds.length - 1]
   const topCard = topCardId ? room.objects[topCardId] : undefined
   const topCardSpec =
     isCard(topCard) && canSeeCardFace(topCard, currentPlayerId) ? topCard.face : isCard(topCard) ? topCard.back : undefined
+
+  if (!isDeck(deck)) {
+    return null
+  }
 
   return (
     <div className={`board-deck-shell ${stackCount === 0 ? 'is-empty' : ''}`}>
@@ -1187,16 +1378,11 @@ function DeckObject({ deckId, room, currentPlayerId, imageAssets, size }: DeckOb
               key={`shadow-${index}`}
               className="board-deck-layer board-deck-shadow-layer"
               style={{
-                transform: `translate(${index * 4}px, ${index * 3}px)`,
+                transform: `translate(${(index - stackDepth) * 4}px, ${(index - stackDepth) * 3}px)`,
               }}
             />
           ))}
-          <div
-            className="board-deck-layer board-deck-top-layer"
-            style={{
-              transform: `translate(${Math.max(0, stackCount - 1) * 4}px, ${Math.max(0, stackCount - 1) * 3}px)`,
-            }}
-          >
+          <div className="board-deck-layer board-deck-top-layer">
             {topCardSpec ? (
               <BoardSurface
                 spec={topCardSpec}
@@ -1460,7 +1646,7 @@ function BoardSelectionOverlay({
 
 export function BoardView({
   room,
-  roomUrl: _roomUrl,
+  roomUrl,
   imageAssets,
   dropImageError,
   ephemeralTransforms = {},
@@ -1490,14 +1676,25 @@ export function BoardView({
   onShuffleDeck,
   onOpenSelectionPanel,
 }: BoardViewProps) {
-  void _roomUrl
   void _onFlipDeck
   void _onDrawDeck
 
   const rootRef = useRef<HTMLDivElement>(null)
   const hostRef = useRef<HTMLDivElement>(null)
+  const boardWorldRef = useRef<HTMLDivElement>(null)
   const roomRef = useRef(room)
-  const cameraRef = useRef(initialCamera)
+  const cameraRef = useRef(clampCamera(initialCamera))
+  const recorderContextRef = useRef({
+    roomUrl,
+    href: typeof window === 'undefined' ? '' : window.location.href,
+    hash: typeof window === 'undefined' ? '' : window.location.hash,
+    camera: clampCamera(initialCamera),
+    viewport: { width: 1, height: 1 },
+    selectedId,
+    selectedIds,
+    canEdit,
+    objectCount: Object.keys(room.objects).length,
+  })
   const ephemeralTransformsRef = useRef(ephemeralTransforms)
   const onClearPreviewTransformRef = useRef(onClearPreviewTransform)
   const selectionModeRef = useRef(selectionMode)
@@ -1508,16 +1705,29 @@ export function BoardView({
   const backgroundTapCandidateRef = useRef<BackgroundTapCandidate | null>(null)
   const lassoRef = useRef<LassoState | null>(null)
   const cameraPointersRef = useRef<Map<number, Point>>(new Map())
+  const pendingCameraUpdateRef = useRef<((current: CameraState) => CameraState) | null>(null)
+  const cameraAnimationFrameRef = useRef<number | null>(null)
+  const cameraRenderSyncTimeoutRef = useRef<number | null>(null)
   const dropDepthRef = useRef(0)
   const [viewportSize, setViewportSize] = useState<Size>({ width: 1, height: 1 })
-  const [camera, setCamera] = useState(() => clampCamera(initialCamera))
+  const [camera, setCamera] = useState(() => cameraRef.current)
   const [previewTransforms, setPreviewTransforms] = useState<EphemeralTransformMap>({})
   const [hoverDeckId, setHoverDeckId] = useState<Id | undefined>()
   const [lassoPath, setLassoPath] = useState<Point[]>([])
   const [isImageDropTarget, setIsImageDropTarget] = useState(false)
 
   roomRef.current = room
-  cameraRef.current = camera
+  recorderContextRef.current = {
+    roomUrl,
+    href: typeof window === 'undefined' ? '' : window.location.href,
+    hash: typeof window === 'undefined' ? '' : window.location.hash,
+    camera: cameraRef.current,
+    viewport: viewportSize,
+    selectedId,
+    selectedIds,
+    canEdit,
+    objectCount: Object.keys(room.objects).length,
+  }
   ephemeralTransformsRef.current = ephemeralTransforms
   onClearPreviewTransformRef.current = onClearPreviewTransform
   selectionModeRef.current = selectionMode
@@ -1547,13 +1757,86 @@ export function BoardView({
     )
   }, [])
 
-  const updateCamera = useCallback((nextCamera: CameraState | ((current: CameraState) => CameraState)) => {
-    setCamera((current) => {
-      const candidate = typeof nextCamera === 'function' ? nextCamera(current) : nextCamera
-      const clamped = clampCamera(candidate)
-      return sameCamera(current, clamped) ? current : clamped
-    })
+  const applyCameraToBoardWorld = useCallback((nextCamera: CameraState) => {
+    const boardWorld = boardWorldRef.current
+    if (!boardWorld) {
+      return
+    }
+
+    const translateX = viewportSize.width / 2 - (nextCamera.centerX + BOARD_WORLD_CENTER) * nextCamera.zoom
+    const translateY = viewportSize.height / 2 - (nextCamera.centerY + BOARD_WORLD_CENTER) * nextCamera.zoom
+    boardWorld.style.transform = `translate3d(${translateX}px, ${translateY}px, 0) scale(${nextCamera.zoom})`
+    boardWorld.style.setProperty('--board-zoom', `${nextCamera.zoom}`)
+  }, [viewportSize])
+
+  const scheduleCameraRenderSync = useCallback(() => {
+    if (cameraRenderSyncTimeoutRef.current !== null) {
+      window.clearTimeout(cameraRenderSyncTimeoutRef.current)
+    }
+
+    cameraRenderSyncTimeoutRef.current = window.setTimeout(() => {
+      cameraRenderSyncTimeoutRef.current = null
+      setCamera((current) => (sameCamera(current, cameraRef.current) ? current : cameraRef.current))
+    }, 90)
   }, [])
+
+  const flushPendingCameraUpdate = useCallback(() => {
+    if (cameraAnimationFrameRef.current !== null) {
+      window.cancelAnimationFrame(cameraAnimationFrameRef.current)
+      cameraAnimationFrameRef.current = null
+    }
+
+    const pendingUpdate = pendingCameraUpdateRef.current
+    if (!pendingUpdate) {
+      return
+    }
+
+    pendingCameraUpdateRef.current = null
+    const clamped = clampCamera(pendingUpdate(cameraRef.current))
+    if (sameCamera(cameraRef.current, clamped)) {
+      return
+    }
+
+    cameraRef.current = clamped
+    recorderContextRef.current.camera = clamped
+    applyCameraToBoardWorld(clamped)
+    scheduleCameraRenderSync()
+  }, [applyCameraToBoardWorld, scheduleCameraRenderSync])
+
+  const updateCamera = useCallback((nextCamera: CameraState | ((current: CameraState) => CameraState)) => {
+    const updater = typeof nextCamera === 'function' ? nextCamera : () => nextCamera
+    const pendingUpdate = pendingCameraUpdateRef.current
+    pendingCameraUpdateRef.current = pendingUpdate
+      ? (current) => updater(pendingUpdate(current))
+      : updater
+
+    if (cameraAnimationFrameRef.current !== null) {
+      return
+    }
+
+    cameraAnimationFrameRef.current = window.requestAnimationFrame(() => {
+      cameraAnimationFrameRef.current = null
+      const scheduledUpdate = pendingCameraUpdateRef.current
+      if (!scheduledUpdate) {
+        return
+      }
+
+      pendingCameraUpdateRef.current = null
+      const clamped = clampCamera(scheduledUpdate(cameraRef.current))
+      if (sameCamera(cameraRef.current, clamped)) {
+        return
+      }
+
+      cameraRef.current = clamped
+      recorderContextRef.current.camera = clamped
+      applyCameraToBoardWorld(clamped)
+      scheduleCameraRenderSync()
+    })
+  }, [applyCameraToBoardWorld, scheduleCameraRenderSync])
+
+  useLayoutEffect(() => {
+    applyCameraToBoardWorld(cameraRef.current)
+  }, [applyCameraToBoardWorld])
 
   const startDrag = useCallback((
     id: Id,
@@ -1580,6 +1863,48 @@ export function BoardView({
   useEffect(() => {
     onCameraChange(camera)
   }, [camera, onCameraChange])
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) {
+      return
+    }
+
+    const host = hostRef.current
+    const root = rootRef.current
+    if (!host || !root) {
+      return
+    }
+
+    return bindBoardInputRecorder({
+      host,
+      root,
+      getContext: () => recorderContextRef.current,
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) {
+      return
+    }
+
+    recordBoardInputRecorderCamera(camera)
+  }, [camera])
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) {
+      return
+    }
+
+    recordBoardInputRecorderSelection(selectedId, selectedIds)
+  }, [selectedId, selectedIds])
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) {
+      return
+    }
+
+    recordBoardInputRecorderViewport(viewportSize)
+  }, [viewportSize])
 
   useEffect(() => {
     const host = hostRef.current
@@ -2016,6 +2341,12 @@ export function BoardView({
 
   useEffect(
     () => () => {
+      flushPendingCameraUpdate()
+      pendingCameraUpdateRef.current = null
+      if (cameraRenderSyncTimeoutRef.current !== null) {
+        window.clearTimeout(cameraRenderSyncTimeoutRef.current)
+        cameraRenderSyncTimeoutRef.current = null
+      }
       clearPendingDeckPress()
       if (dragRef.current) {
         if (dragRef.current.groupMembers && dragRef.current.groupMembers.length > 0) {
@@ -2027,7 +2358,7 @@ export function BoardView({
         }
       }
     },
-    [clearPendingDeckPress],
+    [clearPendingDeckPress, flushPendingCameraUpdate],
   )
 
   const quickActions = useMemo<QuickAction[]>(() => {
@@ -2093,6 +2424,20 @@ export function BoardView({
     [selectedId, worldObjects],
   )
 
+  const hasActiveAlphaSelection = useMemo(() => {
+    const candidateIds = selectionMode === 'group' ? selectedIds : selectedId ? [selectedId] : []
+    return candidateIds.some((objectId) => {
+      const object = room.objects[objectId]
+      if (!isBoard(object)) {
+        return false
+      }
+      const spec = isBoardFaceUp(object) ? object.face : object.back
+      return spec.kind === 'image-url' && (spec.bg === undefined || spec.bg === 'transparent')
+    })
+  }, [room, selectedId, selectedIds, selectionMode])
+
+  const objectElementsZoomDependency = hasActiveAlphaSelection ? camera.zoom : undefined
+
   const quickActionsPosition = useMemo(() => {
     if (!selectedWorldObject || quickActions.length === 0) {
       return undefined
@@ -2110,20 +2455,16 @@ export function BoardView({
   }, [camera, quickActions.length, selectedWorldObject, viewportSize])
 
   const boardWorldStyle = useMemo<CSSProperties>(() => {
-    const translateX = viewportSize.width / 2 - (camera.centerX + BOARD_WORLD_CENTER) * camera.zoom
-    const translateY = viewportSize.height / 2 - (camera.centerY + BOARD_WORLD_CENTER) * camera.zoom
-
     return {
       width: `${BOARD_WORLD_SIZE}px`,
       height: `${BOARD_WORLD_SIZE}px`,
-      transform: `translate3d(${translateX}px, ${translateY}px, 0) scale(${camera.zoom})`,
-      ['--board-zoom' as const]: `${camera.zoom}`,
     }
-  }, [camera, viewportSize])
+  }, [])
 
   const boardGridStyle = useMemo<CSSProperties>(
     () => ({
       backgroundPosition: `${BOARD_WORLD_CENTER}px ${BOARD_WORLD_CENTER}px`,
+      backgroundSize: '160px 160px, 160px 160px, 100% 100%',
     }),
     [],
   )
@@ -2440,7 +2781,7 @@ export function BoardView({
               top: `${worldPosition.y}px`,
               width: `${worldSize.width}px`,
               height: `${worldSize.height}px`,
-              transform: `translate(-50%, -50%) rotate(${transform.rotation}rad)`,
+              transform: `translate3d(-50%, -50%, 0) rotate(${transform.rotation}rad)`,
               zIndex: isDragging ? 1000 + index : index + 1,
               cursor: objectCursor(object, canEdit, allowSelectLocked, isDragging),
               ...(selectionStrokeWidth > 0
@@ -2459,7 +2800,7 @@ export function BoardView({
                 spec={boardSelectionSpec}
                 size={worldSize}
                 imageAssets={imageAssets}
-                cameraZoom={camera.zoom}
+                cameraZoom={objectElementsZoomDependency ?? 1}
                 selectionStrokeWidth={selectionStrokeWidth}
                 selectionStrokeColor={selectionStrokeColor}
               />
@@ -2491,12 +2832,12 @@ export function BoardView({
     [
       allowSelectLocked,
       canEdit,
-      camera.zoom,
       currentPlayerId,
       handleObjectPointerDown,
       handleRotatePointerDown,
       hoverDeckId,
       imageAssets,
+      objectElementsZoomDependency,
       room,
       selectedId,
       selectedIdsSet,
@@ -2520,11 +2861,9 @@ export function BoardView({
         ref={hostRef}
         onPointerDown={handleRootPointerDown}
       >
-        <div className="board-world" style={boardWorldStyle}>
+        <div className="board-world" ref={boardWorldRef} style={boardWorldStyle}>
           <div className="board-grid" style={boardGridStyle} />
-          <div className="board-objects">
-            {objectElements}
-          </div>
+          <div className="board-objects">{objectElements}</div>
         </div>
       </div>
       {isImageDropTarget ? (

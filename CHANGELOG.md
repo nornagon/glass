@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-04-17
+
+- Smoothed steady-state board zooming by preparing cropped sprite-backed card and deck faces into dedicated image surfaces after load, which cuts repeated large sprite-sheet decode work out of the compositor hot path.
+- Added a board input recorder plus Playwright zoom and recorded-input replay harnesses so zoom and pan jank can be reproduced and measured against real room interactions.
+- Tightened board image preloading and DOM image layout for the HTML/CSS board renderer while preserving the card/deck/board selection and transform model.
+
 ## 2026-04-16
 
 - Rebuilt the board renderer as pure HTML/CSS, removing the PixiJS dependency while keeping board pan/zoom, selection, dragging, deck interactions, and image-backed surfaces working in the DOM.
