@@ -106,13 +106,19 @@ const MIN_ZOOM_SCALE = 0.2
 const MAX_ZOOM_SCALE = 2.5
 const PAN_CLAMP_MARGIN = 640
 const BOARD_WORLD_CENTER = BOARD_WORLD_SIZE / 2
+const PAN_MOMENTUM_DECAY = 6.5
+const PAN_MOMENTUM_CUTOFF_SCREEN_VELOCITY = 10
+const PAN_MOMENTUM_MAX_DT_SECONDS = 1 / 15
+const PAN_MOMENTUM_SAMPLE_WINDOW_SECONDS = 0.12
+const PAN_MOMENTUM_VELOCITY_GAIN = 1
+const PAN_MOMENTUM_CONSTRAINT_EPSILON = 1
 const ALPHA_COMPONENT_THRESHOLD = 96
 const ALPHA_COMPONENT_ANALYSIS_MAX_DIMENSION = 256
 const ALPHA_OUTLINE_RENDER_THRESHOLD = 24
 const ALPHA_OUTLINE_MAX_RASTER_DIMENSION = 1024
 const ALPHA_OUTLINE_MIN_SAMPLES = 12
 const ALPHA_OUTLINE_MAX_SAMPLES = 64
-const PREPARED_SPRITE_MAX_DIMENSION = 1024
+const PREPARED_SPRITE_MAX_DIMENSION = 4096
 
 const intrinsicImageSizeCache = new Map<string, Size | null>()
 const resolvedSourceImageElementCache = new Map<string, HTMLImageElement>()
@@ -180,6 +186,21 @@ function cameraForAnchor(
   return clampCamera({
     centerX: anchorWorld.x - (anchorScreen.x - viewport.width / 2) / zoom,
     centerY: anchorWorld.y - (anchorScreen.y - viewport.height / 2) / zoom,
+    zoom,
+  })
+}
+
+function cameraTranslation(viewport: Size, camera: CameraState) {
+  return {
+    x: viewport.width / 2 - (camera.centerX + BOARD_WORLD_CENTER) * camera.zoom,
+    y: viewport.height / 2 - (camera.centerY + BOARD_WORLD_CENTER) * camera.zoom,
+  }
+}
+
+function cameraFromTranslation(viewport: Size, translation: Point, zoom: number): CameraState {
+  return clampCamera({
+    centerX: (viewport.width / 2 - translation.x) / zoom - BOARD_WORLD_CENTER,
+    centerY: (viewport.height / 2 - translation.y) / zoom - BOARD_WORLD_CENTER,
     zoom,
   })
 }
@@ -545,40 +566,52 @@ function usePreparedSpriteSurfaceUrl(
   crop: ReturnType<typeof normalizeCrop>,
   fitWorldWidth: number,
   fitWorldHeight: number,
+  intrinsicSize?: Size,
 ) {
-  const requiresPreparedSurface = Boolean(
-    imageUrl &&
-    (
-      crop.x > 0 ||
-      crop.y > 0 ||
-      crop.width < 0.999 ||
-      crop.height < 0.999
-    ),
-  )
+  const hasRenderableImage = Boolean(imageUrl)
   const qualityScale =
     typeof window === 'undefined'
       ? MAX_ZOOM_SCALE
       : Math.max(1, (window.devicePixelRatio || 1) * MAX_ZOOM_SCALE)
+  const cropPixelWidth = intrinsicSize
+    ? Math.max(1, Math.round(intrinsicSize.width * crop.width))
+    : undefined
+  const cropPixelHeight = intrinsicSize
+    ? Math.max(1, Math.round(intrinsicSize.height * crop.height))
+    : undefined
+  const targetRasterWidth = Math.max(1, Math.round(fitWorldWidth * qualityScale))
+  const targetRasterHeight = Math.max(1, Math.round(fitWorldHeight * qualityScale))
+  const uncappedRasterWidth = cropPixelWidth
+    ? Math.min(targetRasterWidth, cropPixelWidth)
+    : targetRasterWidth
+  const uncappedRasterHeight = cropPixelHeight
+    ? Math.min(targetRasterHeight, cropPixelHeight)
+    : targetRasterHeight
   const scaleLimit = Math.min(
     1,
-    PREPARED_SPRITE_MAX_DIMENSION / Math.max(fitWorldWidth * qualityScale, fitWorldHeight * qualityScale, 1),
+    PREPARED_SPRITE_MAX_DIMENSION / Math.max(uncappedRasterWidth, uncappedRasterHeight, 1),
   )
-  const rasterWidth = Math.max(1, Math.round(fitWorldWidth * qualityScale * scaleLimit))
-  const rasterHeight = Math.max(1, Math.round(fitWorldHeight * qualityScale * scaleLimit))
-  const cacheKey = imageUrl && requiresPreparedSurface
+  const rasterWidth = Math.max(1, Math.round(uncappedRasterWidth * scaleLimit))
+  const rasterHeight = Math.max(1, Math.round(uncappedRasterHeight * scaleLimit))
+  const cacheKey = imageUrl && hasRenderableImage
     ? preparedSpriteSurfaceCacheKey(imageUrl, crop, rasterWidth, rasterHeight)
     : undefined
   const cachedPreparedSurfaceUrl = cacheKey ? preparedSpriteSurfaceUrlCache.get(cacheKey) : undefined
-  const [preparedSurfaceUrl, setPreparedSurfaceUrl] = useState<string | undefined>(() => {
-    if (!requiresPreparedSurface || !cacheKey) {
-      return undefined
-    }
+  const [loadedPreparedSurface, setLoadedPreparedSurface] = useState<{ key: string; url: string | null } | undefined>(
+    () => {
+      if (!cacheKey || cachedPreparedSurfaceUrl === undefined) {
+        return undefined
+      }
 
-    return cachedPreparedSurfaceUrl ?? undefined
-  })
+      return {
+        key: cacheKey,
+        url: cachedPreparedSurfaceUrl,
+      }
+    },
+  )
 
   useEffect(() => {
-    if (!requiresPreparedSurface || !imageUrl || !cacheKey) {
+    if (!imageUrl || !cacheKey) {
       return
     }
 
@@ -605,26 +638,45 @@ function usePreparedSpriteSurfaceUrl(
     preparedSpriteSurfaceRequestCache.set(cacheKey, request)
     void request.then((url) => {
       if (!cancelled) {
-        setPreparedSurfaceUrl(url ?? undefined)
+        setLoadedPreparedSurface({
+          key: cacheKey,
+          url,
+        })
       }
     })
 
     return () => {
       cancelled = true
     }
-  }, [cacheKey, crop, imageUrl, rasterHeight, rasterWidth, requiresPreparedSurface])
+  }, [cacheKey, crop, imageUrl, rasterHeight, rasterWidth])
 
-  const isPreparing = Boolean(
-    requiresPreparedSurface &&
-    cacheKey &&
-    cachedPreparedSurfaceUrl === undefined &&
-    (preparedSpriteSurfaceRequestCache.has(cacheKey) || preparedSurfaceUrl === undefined),
-  )
+  const loadedPreparedSurfaceUrl = loadedPreparedSurface?.key === cacheKey
+    ? loadedPreparedSurface?.url
+    : undefined
+
+  const preparedSurfaceUrl =
+    typeof loadedPreparedSurfaceUrl === 'string'
+      ? loadedPreparedSurfaceUrl
+      : typeof cachedPreparedSurfaceUrl === 'string'
+        ? cachedPreparedSurfaceUrl
+        : undefined
+
+  let stage: 'preparing' | 'ready' | 'failed' | undefined
+  if (!imageUrl || !cacheKey) {
+    stage = undefined
+  } else if (preparedSurfaceUrl) {
+    stage = 'ready'
+  } else if (loadedPreparedSurface?.key === cacheKey && loadedPreparedSurface?.url === null) {
+    stage = 'failed'
+  } else if (cachedPreparedSurfaceUrl === null) {
+    stage = 'failed'
+  } else {
+    stage = 'preparing'
+  }
 
   return {
-    preparedSurfaceUrl: preparedSurfaceUrl ?? cachedPreparedSurfaceUrl ?? undefined,
-    requiresPreparedSurface,
-    isPreparing,
+    preparedSurfaceUrl,
+    stage,
   }
 }
 
@@ -1165,6 +1217,7 @@ interface BoardSurfaceProps {
 
 interface BoardSurfaceLayout {
   imageUrl?: string
+  intrinsicSize?: Size
   crop: ReturnType<typeof normalizeCrop>
   fitWidth: number
   fitHeight: number
@@ -1220,6 +1273,7 @@ function useBoardSurfaceLayout(
 
   return {
     imageUrl,
+    intrinsicSize,
     crop,
     fitWidth,
     fitHeight,
@@ -1238,6 +1292,7 @@ function BoardSurface({
 }: BoardSurfaceProps) {
   const {
     imageUrl,
+    intrinsicSize,
     crop,
     fitWidth,
     fitHeight,
@@ -1246,18 +1301,13 @@ function BoardSurface({
   } = useBoardSurfaceLayout(spec, size, imageAssets, rounded)
   const fitWorldWidth = size.width * fitWidth
   const fitWorldHeight = size.height * fitHeight
-  const { preparedSurfaceUrl, isPreparing } = usePreparedSpriteSurfaceUrl(
+  const { preparedSurfaceUrl, stage } = usePreparedSpriteSurfaceUrl(
     imageUrl,
     crop,
     fitWorldWidth,
     fitWorldHeight,
+    intrinsicSize,
   )
-  const renderedImageUrl = preparedSurfaceUrl ?? imageUrl
-  const usesPreparedSurface = Boolean(preparedSurfaceUrl)
-  const imageScaleX = usesPreparedSurface ? 1 : 1 / crop.width
-  const imageScaleY = usesPreparedSurface ? 1 : 1 / crop.height
-  const imageTranslateX = usesPreparedSurface ? 0 : -fitWorldWidth * crop.x / crop.width
-  const imageTranslateY = usesPreparedSurface ? 0 : -fitWorldHeight * crop.y / crop.height
 
   return (
     <div
@@ -1278,18 +1328,17 @@ function BoardSurface({
           >
             <img
               className="board-sprite-image"
-              src={renderedImageUrl}
+              src={preparedSurfaceUrl}
               alt=""
               draggable={false}
               decoding="async"
               loading="eager"
               fetchPriority="high"
-              data-board-sprite-stage={usesPreparedSurface ? 'prepared' : isPreparing ? 'preparing' : 'source'}
+              data-board-sprite-stage={stage}
               style={{
                 width: '100%',
                 height: '100%',
-                transformOrigin: 'top left',
-                transform: `translate(${imageTranslateX}px, ${imageTranslateY}px) scale(${imageScaleX}, ${imageScaleY})`,
+                opacity: preparedSurfaceUrl ? 1 : 0,
               }}
             />
           </div>
@@ -1708,6 +1757,21 @@ export function BoardView({
   const pendingCameraUpdateRef = useRef<((current: CameraState) => CameraState) | null>(null)
   const cameraAnimationFrameRef = useRef<number | null>(null)
   const cameraRenderSyncTimeoutRef = useRef<number | null>(null)
+  const cameraMomentumFrameRef = useRef<number | null>(null)
+  const cameraMomentumPositionRef = useRef<Point>({ x: 0, y: 0 })
+  const cameraMomentumVelocityRef = useRef<Point>({ x: 0, y: 0 })
+  const cameraMomentumTimeRef = useRef(performance.now() / 1000)
+  const pointerPanStateRef = useRef<{
+    active: boolean
+    lastVelocity: Point
+    lastSampleTime: number
+    recentSamples: Array<{ point: Point; time: number }>
+  }>({
+    active: false,
+    lastVelocity: { x: 0, y: 0 },
+    lastSampleTime: performance.now() / 1000,
+    recentSamples: [],
+  })
   const dropDepthRef = useRef(0)
   const [viewportSize, setViewportSize] = useState<Size>({ width: 1, height: 1 })
   const [camera, setCamera] = useState(() => cameraRef.current)
@@ -1763,8 +1827,7 @@ export function BoardView({
       return
     }
 
-    const translateX = viewportSize.width / 2 - (nextCamera.centerX + BOARD_WORLD_CENTER) * nextCamera.zoom
-    const translateY = viewportSize.height / 2 - (nextCamera.centerY + BOARD_WORLD_CENTER) * nextCamera.zoom
+    const { x: translateX, y: translateY } = cameraTranslation(viewportSize, nextCamera)
     boardWorld.style.transform = `translate3d(${translateX}px, ${translateY}px, 0) scale(${nextCamera.zoom})`
     boardWorld.style.setProperty('--board-zoom', `${nextCamera.zoom}`)
   }, [viewportSize])
@@ -1779,6 +1842,93 @@ export function BoardView({
       setCamera((current) => (sameCamera(current, cameraRef.current) ? current : cameraRef.current))
     }, 90)
   }, [])
+
+  const applyCommittedCamera = useCallback((nextCamera: CameraState) => {
+    cameraRef.current = nextCamera
+    cameraMomentumPositionRef.current = cameraTranslation(viewportSize, nextCamera)
+    recorderContextRef.current.camera = nextCamera
+    applyCameraToBoardWorld(nextCamera)
+    scheduleCameraRenderSync()
+  }, [applyCameraToBoardWorld, scheduleCameraRenderSync, viewportSize])
+
+  const resetPointerPanState = useCallback(() => {
+    pointerPanStateRef.current = {
+      active: false,
+      lastVelocity: { x: 0, y: 0 },
+      lastSampleTime: performance.now() / 1000,
+      recentSamples: [],
+    }
+  }, [])
+
+  const stopCameraMomentum = useCallback(() => {
+    if (cameraMomentumFrameRef.current !== null) {
+      window.cancelAnimationFrame(cameraMomentumFrameRef.current)
+      cameraMomentumFrameRef.current = null
+    }
+
+    cameraMomentumVelocityRef.current = { x: 0, y: 0 }
+    cameraMomentumTimeRef.current = performance.now() / 1000
+  }, [])
+
+  const startCameraMomentum = useCallback((velocity: Point) => {
+    stopCameraMomentum()
+    cameraMomentumPositionRef.current = cameraTranslation(viewportSize, cameraRef.current)
+    cameraMomentumVelocityRef.current = {
+      x: velocity.x * PAN_MOMENTUM_VELOCITY_GAIN,
+      y: velocity.y * PAN_MOMENTUM_VELOCITY_GAIN,
+    }
+    cameraMomentumTimeRef.current = performance.now() / 1000
+
+    const tickMomentum = () => {
+      const currentCamera = cameraRef.current
+      const now = performance.now() / 1000
+      let dt = now - cameraMomentumTimeRef.current
+      cameraMomentumTimeRef.current = now
+      if (dt > PAN_MOMENTUM_MAX_DT_SECONDS) {
+        dt = PAN_MOMENTUM_MAX_DT_SECONDS
+      }
+      if (dt <= 0) {
+        cameraMomentumFrameRef.current = window.requestAnimationFrame(tickMomentum)
+        return
+      }
+
+      const decay = Math.exp(-PAN_MOMENTUM_DECAY * dt)
+      let nextVelocityX = cameraMomentumVelocityRef.current.x * decay
+      let nextVelocityY = cameraMomentumVelocityRef.current.y * decay
+      const unconstrainedTranslation = {
+        x: cameraMomentumPositionRef.current.x + nextVelocityX * dt,
+        y: cameraMomentumPositionRef.current.y + nextVelocityY * dt,
+      }
+      const nextCamera = cameraFromTranslation(viewportSize, unconstrainedTranslation, currentCamera.zoom)
+      const constrainedTranslation = cameraTranslation(viewportSize, nextCamera)
+
+      if (Math.abs(constrainedTranslation.x - unconstrainedTranslation.x) > PAN_MOMENTUM_CONSTRAINT_EPSILON) {
+        nextVelocityX = 0
+      }
+      if (Math.abs(constrainedTranslation.y - unconstrainedTranslation.y) > PAN_MOMENTUM_CONSTRAINT_EPSILON) {
+        nextVelocityY = 0
+      }
+
+      cameraMomentumPositionRef.current = constrainedTranslation
+      cameraMomentumVelocityRef.current = {
+        x: nextVelocityX,
+        y: nextVelocityY,
+      }
+
+      if (!sameCamera(currentCamera, nextCamera)) {
+        applyCommittedCamera(nextCamera)
+      }
+
+      const screenVelocity = Math.hypot(nextVelocityX, nextVelocityY) * nextCamera.zoom
+      if (screenVelocity >= PAN_MOMENTUM_CUTOFF_SCREEN_VELOCITY) {
+        cameraMomentumFrameRef.current = window.requestAnimationFrame(tickMomentum)
+      } else {
+        stopCameraMomentum()
+      }
+    }
+
+    cameraMomentumFrameRef.current = window.requestAnimationFrame(tickMomentum)
+  }, [applyCommittedCamera, stopCameraMomentum, viewportSize])
 
   const flushPendingCameraUpdate = useCallback(() => {
     if (cameraAnimationFrameRef.current !== null) {
@@ -1797,11 +1947,8 @@ export function BoardView({
       return
     }
 
-    cameraRef.current = clamped
-    recorderContextRef.current.camera = clamped
-    applyCameraToBoardWorld(clamped)
-    scheduleCameraRenderSync()
-  }, [applyCameraToBoardWorld, scheduleCameraRenderSync])
+    applyCommittedCamera(clamped)
+  }, [applyCommittedCamera])
 
   const updateCamera = useCallback((nextCamera: CameraState | ((current: CameraState) => CameraState)) => {
     const updater = typeof nextCamera === 'function' ? nextCamera : () => nextCamera
@@ -1827,12 +1974,9 @@ export function BoardView({
         return
       }
 
-      cameraRef.current = clamped
-      recorderContextRef.current.camera = clamped
-      applyCameraToBoardWorld(clamped)
-      scheduleCameraRenderSync()
+      applyCommittedCamera(clamped)
     })
-  }, [applyCameraToBoardWorld, scheduleCameraRenderSync])
+  }, [applyCommittedCamera])
 
   useLayoutEffect(() => {
     applyCameraToBoardWorld(cameraRef.current)
@@ -1941,6 +2085,8 @@ export function BoardView({
 
     const handleWheel = (event: WheelEvent) => {
       event.preventDefault()
+      stopCameraMomentum()
+      resetPointerPanState()
       const localPoint = clientToLocal(rootRef.current, event.clientX, event.clientY)
       if (!localPoint) {
         return
@@ -1957,7 +2103,7 @@ export function BoardView({
     return () => {
       host.removeEventListener('wheel', handleWheel)
     }
-  }, [updateCamera, viewportSize])
+  }, [resetPointerPanState, stopCameraMomentum, updateCamera, viewportSize])
 
   useEffect(() => {
     const preventWindowDropNavigation = (event: DragEvent) => {
@@ -2118,6 +2264,33 @@ export function BoardView({
       const pointerEntries = [...cameraPointers.entries()]
 
       if (pointerEntries.length === 1) {
+        const now = performance.now() / 1000
+        const nextSamples = [
+          ...pointerPanStateRef.current.recentSamples,
+          { point: localPoint, time: now },
+        ].filter((sample) => now - sample.time <= PAN_MOMENTUM_SAMPLE_WINDOW_SECONDS)
+        const firstSample = nextSamples[0]
+        const lastSample = nextSamples[nextSamples.length - 1]
+        const dt = firstSample && lastSample ? lastSample.time - firstSample.time : 0
+        if (dt > 0 && firstSample && lastSample) {
+          pointerPanStateRef.current = {
+            active: true,
+            lastVelocity: {
+              x: (lastSample.point.x - firstSample.point.x) / dt,
+              y: (lastSample.point.y - firstSample.point.y) / dt,
+            },
+            lastSampleTime: now,
+            recentSamples: nextSamples,
+          }
+        } else {
+          pointerPanStateRef.current = {
+            active: true,
+            lastVelocity: pointerPanStateRef.current.lastVelocity,
+            lastSampleTime: now,
+            recentSamples: nextSamples,
+          }
+        }
+
         updateCamera((current) => ({
           ...current,
           centerX: current.centerX - (localPoint.x - previousPoint.x) / current.zoom,
@@ -2127,6 +2300,8 @@ export function BoardView({
       }
 
       if (pointerEntries.length >= 2) {
+        stopCameraMomentum()
+        resetPointerPanState()
         const [firstEntry, secondEntry] = pointerEntries
         const [firstPointerId, firstCurrent] = firstEntry
         const [secondPointerId, secondCurrent] = secondEntry
@@ -2161,6 +2336,12 @@ export function BoardView({
 
     const handlePointerUp = (event: PointerEvent) => {
       clearPendingDeckPress()
+      const hadCameraPointer = cameraPointersRef.current.has(event.pointerId)
+      const shouldStartMomentum =
+        hadCameraPointer &&
+        cameraPointersRef.current.size === 1 &&
+        pointerPanStateRef.current.active
+      const releaseVelocity = pointerPanStateRef.current.lastVelocity
 
       const localPoint = clientToLocal(rootRef.current, event.clientX, event.clientY)
       if (!localPoint) {
@@ -2279,6 +2460,13 @@ export function BoardView({
       }
 
       cameraPointersRef.current.delete(event.pointerId)
+      if (shouldStartMomentum) {
+        flushPendingCameraUpdate()
+        if (Math.hypot(releaseVelocity.x, releaseVelocity.y) > 0) {
+          startCameraMomentum(releaseVelocity)
+        }
+      }
+      resetPointerPanState()
     }
 
     const handlePointerCancel = (event: PointerEvent) => {
@@ -2311,6 +2499,8 @@ export function BoardView({
 
       clearPendingDeckPress()
       cameraPointersRef.current.delete(event.pointerId)
+      stopCameraMomentum()
+      resetPointerPanState()
     }
 
     window.addEventListener('pointermove', handlePointerMove)
@@ -2337,12 +2527,17 @@ export function BoardView({
     onToggleGroupSelection,
     updateCamera,
     viewportSize,
+    flushPendingCameraUpdate,
+    resetPointerPanState,
+    startCameraMomentum,
+    stopCameraMomentum,
   ])
 
   useEffect(
     () => () => {
       flushPendingCameraUpdate()
       pendingCameraUpdateRef.current = null
+      stopCameraMomentum()
       if (cameraRenderSyncTimeoutRef.current !== null) {
         window.clearTimeout(cameraRenderSyncTimeoutRef.current)
         cameraRenderSyncTimeoutRef.current = null
@@ -2358,7 +2553,7 @@ export function BoardView({
         }
       }
     },
-    [clearPendingDeckPress, flushPendingCameraUpdate],
+    [clearPendingDeckPress, flushPendingCameraUpdate, stopCameraMomentum],
   )
 
   const quickActions = useMemo<QuickAction[]>(() => {
@@ -2483,6 +2678,9 @@ export function BoardView({
       return
     }
 
+    stopCameraMomentum()
+    resetPointerPanState()
+
     if (selectionMode === 'group' && lassoMode && !dragRef.current) {
       lassoRef.current = {
         pointerId: event.pointerId,
@@ -2502,7 +2700,16 @@ export function BoardView({
     }
 
     cameraPointersRef.current.set(event.pointerId, localPoint)
-  }, [lassoMode, onSelect, selectionMode])
+    if (cameraPointersRef.current.size === 1) {
+      const now = performance.now() / 1000
+      pointerPanStateRef.current = {
+        active: true,
+        lastVelocity: { x: 0, y: 0 },
+        lastSampleTime: now,
+        recentSamples: [{ point: localPoint, time: now }],
+      }
+    }
+  }, [lassoMode, onSelect, resetPointerPanState, selectionMode, stopCameraMomentum])
 
   const handleObjectPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>, objectId: Id) => {
     const object = room.objects[objectId]
@@ -2524,6 +2731,9 @@ export function BoardView({
     if (!localPoint) {
       return
     }
+
+    stopCameraMomentum()
+    resetPointerPanState()
 
     const currentTransform = currentTransformForObject(objectId)
     if (!currentTransform) {
@@ -2656,11 +2866,13 @@ export function BoardView({
     onAddToGroupSelection,
     onSelect,
     room,
+    resetPointerPanState,
     selectedId,
     selectedIds,
     selectedIdsSet,
     selectionMode,
     startDrag,
+    stopCameraMomentum,
   ])
 
   const handleRotatePointerDown = useCallback((event: ReactPointerEvent<HTMLButtonElement>, objectId: Id) => {
@@ -2675,8 +2887,10 @@ export function BoardView({
       return
     }
 
+    stopCameraMomentum()
+    resetPointerPanState()
     startDrag(objectId, event.pointerId, 'rotate', localPoint, currentTransform)
-  }, [currentTransformForObject, startDrag])
+  }, [currentTransformForObject, resetPointerPanState, startDrag, stopCameraMomentum])
 
   function resetDropTarget() {
     dropDepthRef.current = 0

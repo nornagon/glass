@@ -5,6 +5,8 @@
 - Smoothed steady-state board zooming by preparing cropped sprite-backed card and deck faces into dedicated image surfaces after load, which cuts repeated large sprite-sheet decode work out of the compositor hot path.
 - Added a board input recorder plus Playwright zoom and recorded-input replay harnesses so zoom and pan jank can be reproduced and measured against real room interactions.
 - Tightened board image preloading and DOM image layout for the HTML/CSS board renderer while preserving the card/deck/board selection and transform model.
+- Raised prepared surface sizing for large image boards so unified cached surfaces stay crisp instead of downsampling big assets too aggressively.
+- Added Google Maps-style pan momentum to the DOM board camera, then fixed the release/clamping math so background flings glide smoothly instead of snapping or dying on the first tick.
 
 ## 2026-04-16
 

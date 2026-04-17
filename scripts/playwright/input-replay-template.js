@@ -77,7 +77,7 @@ async (page) => {
       const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)))
       const waitMs = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms))
       const minExpectedObjects = Math.max(20, Math.min(40, Math.floor(hint * 0.2) || 20))
-      const minExpectedImages = 20
+      const minExpectedSurfaces = 20
       const maxWaitMs = 30000
 
       await waitMs(250)
@@ -102,32 +102,37 @@ async (page) => {
       })
 
       let stableImageCount = 0
-      let previousImageCount = -1
+      let previousSurfaceCount = -1
       let elapsed = 0
       while (elapsed < maxWaitMs && stableImageCount < 8) {
-        const images = [...document.querySelectorAll('.board-sprite-image')]
-        const imageCount = images.length
-        const preparingCount = images.filter((element) => (
+        const surfaces = [...document.querySelectorAll('[data-board-sprite-stage]')]
+        const surfaceCount = surfaces.length
+        const preparingCount = surfaces.filter((element) => (
           element instanceof HTMLElement &&
           element.dataset.boardSpriteStage === 'preparing'
         )).length
-        const incompleteCount = images.filter((element) => (
+        const incompleteCount = surfaces.filter((element) => (
           !(element instanceof HTMLImageElement) ||
+          element.dataset.boardSpriteStage !== 'ready' ||
           !element.complete ||
           element.naturalWidth <= 0 ||
           element.naturalHeight <= 0
         )).length
+        const failedCount = surfaces.filter((element) => (
+          !(element instanceof HTMLImageElement) ||
+          element.dataset.boardSpriteStage === 'failed'
+        )).length
 
         if (
-          imageCount >= minExpectedImages &&
+          surfaceCount >= minExpectedSurfaces &&
           preparingCount === 0 &&
-          incompleteCount === 0 &&
-          imageCount === previousImageCount
+          incompleteCount + failedCount === 0 &&
+          surfaceCount === previousSurfaceCount
         ) {
           stableImageCount += 1
         } else {
           stableImageCount = 0
-          previousImageCount = imageCount
+          previousSurfaceCount = surfaceCount
         }
 
         await waitMs(100)
@@ -135,10 +140,11 @@ async (page) => {
         elapsed += 100
       }
 
-      const images = [...document.querySelectorAll('.board-sprite-image')]
-      if (images.length < minExpectedImages) {
+      const images = [...document.querySelectorAll('.board-sprite-image[data-board-sprite-stage="ready"]')]
+      const surfaces = [...document.querySelectorAll('[data-board-sprite-stage]')]
+      if (surfaces.length < minExpectedSurfaces) {
         throw new Error(
-          `Expected at least ${minExpectedImages} sprite images before replay, found ${images.length}. ` +
+          `Expected at least ${minExpectedSurfaces} sprite surfaces before replay, found ${surfaces.length}. ` +
             'This usually means the room is not available in the current browser profile.',
         )
       }
@@ -172,12 +178,9 @@ async (page) => {
 
       return {
         objectCount: document.querySelectorAll('[data-board-object-id]').length,
-        imageCount: images.length,
+        imageCount: surfaces.length,
         decodedImageCount: images.filter((element) => element instanceof HTMLImageElement && element.complete).length,
-        preparedImageCount: images.filter((element) => (
-          element instanceof HTMLElement &&
-          element.dataset.boardSpriteStage === 'prepared'
-        )).length,
+        preparedImageCount: images.length,
       }
     }, { objectCountHint })
   }

@@ -9,7 +9,7 @@ async (page) => {
   const loadStats = await page.evaluate(async () => {
     const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)))
     const waitMs = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms))
-    const MIN_EXPECTED_IMAGES = 20
+    const MIN_EXPECTED_SURFACES = 20
     const MAX_IMAGE_WAIT_MS = 30000
 
     await waitMs(250)
@@ -34,23 +34,33 @@ async (page) => {
     })
 
     let stableImageCount = 0
-    let previousImageCount = -1
+    let previousSurfaceCount = -1
     let elapsed = 0
     while (elapsed < MAX_IMAGE_WAIT_MS && stableImageCount < 8) {
-      const images = [...document.querySelectorAll('.board-sprite-image')]
-      const imageCount = images.length
-      const incompleteCount = images.filter((element) => (
+      const surfaces = [...document.querySelectorAll('[data-board-sprite-stage]')]
+      const surfaceCount = surfaces.length
+      const preparingCount = surfaces.filter((element) => (
+        element instanceof HTMLElement &&
+        element.dataset.boardSpriteStage === 'preparing'
+      )).length
+      const incompleteCount = surfaces.filter((element) => (
         !(element instanceof HTMLImageElement) ||
+        element.dataset.boardSpriteStage !== 'ready' ||
         !element.complete ||
         element.naturalWidth <= 0 ||
         element.naturalHeight <= 0
       )).length
 
-      if (imageCount >= MIN_EXPECTED_IMAGES && incompleteCount === 0 && imageCount === previousImageCount) {
+      if (
+        surfaceCount >= MIN_EXPECTED_SURFACES &&
+        preparingCount === 0 &&
+        incompleteCount === 0 &&
+        surfaceCount === previousSurfaceCount
+      ) {
         stableImageCount += 1
       } else {
         stableImageCount = 0
-        previousImageCount = imageCount
+        previousSurfaceCount = surfaceCount
       }
 
       await waitMs(100)
@@ -58,9 +68,10 @@ async (page) => {
       elapsed += 100
     }
 
-    const images = [...document.querySelectorAll('.board-sprite-image')]
-    if (images.length < MIN_EXPECTED_IMAGES) {
-      throw new Error(`Expected at least ${MIN_EXPECTED_IMAGES} sprite images before measuring, found ${images.length}`)
+    const images = [...document.querySelectorAll('.board-sprite-image[data-board-sprite-stage="ready"]')]
+    const surfaces = [...document.querySelectorAll('[data-board-sprite-stage]')]
+    if (surfaces.length < MIN_EXPECTED_SURFACES) {
+      throw new Error(`Expected at least ${MIN_EXPECTED_SURFACES} sprite surfaces before measuring, found ${surfaces.length}`)
     }
 
     await Promise.all(
@@ -92,8 +103,9 @@ async (page) => {
 
     return {
       objectCount: document.querySelectorAll('[data-board-object-id]').length,
-      imageCount: images.length,
+      imageCount: surfaces.length,
       decodedImageCount: images.filter((element) => element instanceof HTMLImageElement && element.complete).length,
+      preparedImageCount: images.length,
     }
   })
 
