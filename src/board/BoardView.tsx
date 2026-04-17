@@ -1761,6 +1761,7 @@ export function BoardView({
   const cameraMomentumPositionRef = useRef<Point>({ x: 0, y: 0 })
   const cameraMomentumVelocityRef = useRef<Point>({ x: 0, y: 0 })
   const cameraMomentumTimeRef = useRef(performance.now() / 1000)
+  const hasActiveAlphaSelectionRef = useRef(false)
   const pointerPanStateRef = useRef<{
     active: boolean
     lastVelocity: Point
@@ -1775,6 +1776,7 @@ export function BoardView({
   const dropDepthRef = useRef(0)
   const [viewportSize, setViewportSize] = useState<Size>({ width: 1, height: 1 })
   const [camera, setCamera] = useState(() => cameraRef.current)
+  const [liveSelectionZoom, setLiveSelectionZoom] = useState(() => cameraRef.current.zoom)
   const [previewTransforms, setPreviewTransforms] = useState<EphemeralTransformMap>({})
   const [hoverDeckId, setHoverDeckId] = useState<Id | undefined>()
   const [lassoPath, setLassoPath] = useState<Point[]>([])
@@ -1848,6 +1850,9 @@ export function BoardView({
     cameraMomentumPositionRef.current = cameraTranslation(viewportSize, nextCamera)
     recorderContextRef.current.camera = nextCamera
     applyCameraToBoardWorld(nextCamera)
+    if (hasActiveAlphaSelectionRef.current) {
+      setLiveSelectionZoom((current) => (current === nextCamera.zoom ? current : nextCamera.zoom))
+    }
     scheduleCameraRenderSync()
   }, [applyCameraToBoardWorld, scheduleCameraRenderSync, viewportSize])
 
@@ -2630,8 +2635,17 @@ export function BoardView({
       return spec.kind === 'image-url' && (spec.bg === undefined || spec.bg === 'transparent')
     })
   }, [room, selectedId, selectedIds, selectionMode])
+  hasActiveAlphaSelectionRef.current = hasActiveAlphaSelection
 
-  const objectElementsZoomDependency = hasActiveAlphaSelection ? camera.zoom : undefined
+  useEffect(() => {
+    if (!hasActiveAlphaSelection) {
+      return
+    }
+
+    setLiveSelectionZoom(cameraRef.current.zoom)
+  }, [hasActiveAlphaSelection])
+
+  const objectElementsZoomDependency = hasActiveAlphaSelection ? liveSelectionZoom : undefined
 
   const quickActionsPosition = useMemo(() => {
     if (!selectedWorldObject || quickActions.length === 0) {
