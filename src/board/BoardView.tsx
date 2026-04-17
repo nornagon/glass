@@ -127,6 +127,8 @@ const PREPARED_SPRITE_PREWARM_MIN_IDLE_MS = 12
 const intrinsicImageSizeCache = new Map<string, Size | null>()
 const resolvedSourceImageElementCache = new Map<string, HTMLImageElement>()
 const sourceImageElementCache = new Map<string, Promise<HTMLImageElement>>()
+const resolvedSourceImageBitmapCache = new Map<string, ImageBitmap>()
+const sourceImageBitmapCache = new Map<string, Promise<ImageBitmap>>()
 const preparedSpriteSurfaceUrlCache = new Map<string, string | null>()
 const preparedSpriteSurfaceRequestCache = new Map<string, Promise<string | null>>()
 const opaqueRegionBoundsCache = new Map<string, { x: number; y: number; width: number; height: number } | null>()
@@ -566,6 +568,48 @@ function useSourceImagePreload(url: string | undefined) {
   }, [url])
 }
 
+function loadSourceImageBitmap(url: string) {
+  const resolved = resolvedSourceImageBitmapCache.get(url)
+  if (resolved) {
+    return Promise.resolve(resolved)
+  }
+
+  const cached = sourceImageBitmapCache.get(url)
+  if (cached) {
+    return cached
+  }
+
+  const request = loadSourceImageElement(url)
+    .then(async (image) => {
+      if (typeof createImageBitmap !== 'function') {
+        throw new Error('ImageBitmap is not supported')
+      }
+
+      const bitmap = await createImageBitmap(image)
+      resolvedSourceImageBitmapCache.set(url, bitmap)
+      sourceImageBitmapCache.delete(url)
+      return bitmap
+    })
+    .catch((error) => {
+      resolvedSourceImageBitmapCache.delete(url)
+      sourceImageBitmapCache.delete(url)
+      throw error
+    })
+
+  sourceImageBitmapCache.set(url, request)
+  return request
+}
+
+function canvasBlob(canvas: HTMLCanvasElement | OffscreenCanvas) {
+  if (typeof OffscreenCanvas !== 'undefined' && canvas instanceof OffscreenCanvas) {
+    return canvas.convertToBlob({ type: 'image/png' })
+  }
+
+  return new Promise<Blob | null>((resolve) => {
+    ;(canvas as HTMLCanvasElement).toBlob((nextBlob) => resolve(nextBlob), 'image/png')
+  })
+}
+
 function preparedSpriteSurfaceCacheKey(
   imageUrl: string,
   crop: ReturnType<typeof normalizeCrop>,
@@ -589,8 +633,42 @@ async function buildPreparedSpriteSurfaceUrl(
   rasterWidth: number,
   rasterHeight: number,
 ) {
-  if (typeof document === 'undefined') {
+  if (typeof document === 'undefined' && typeof OffscreenCanvas === 'undefined') {
     return null
+  }
+
+  try {
+    if (typeof createImageBitmap === 'function') {
+      const sourceBitmap = await loadSourceImageBitmap(imageUrl)
+      const sx = Math.max(0, Math.round(sourceBitmap.width * crop.x))
+      const sy = Math.max(0, Math.round(sourceBitmap.height * crop.y))
+      const sw = Math.max(1, Math.round(sourceBitmap.width * crop.width))
+      const sh = Math.max(1, Math.round(sourceBitmap.height * crop.height))
+      const preparedBitmap = await createImageBitmap(sourceBitmap, sx, sy, sw, sh, {
+        resizeWidth: rasterWidth,
+        resizeHeight: rasterHeight,
+        resizeQuality: 'high',
+      })
+
+      const canvas =
+        typeof OffscreenCanvas !== 'undefined'
+          ? new OffscreenCanvas(rasterWidth, rasterHeight)
+          : Object.assign(document.createElement('canvas'), { width: rasterWidth, height: rasterHeight })
+      const context = canvas.getContext('2d')
+      if (!context) {
+        preparedBitmap.close()
+        return null
+      }
+
+      context.clearRect(0, 0, rasterWidth, rasterHeight)
+      context.drawImage(preparedBitmap, 0, 0)
+      preparedBitmap.close()
+
+      const blob = await canvasBlob(canvas)
+      return blob ? URL.createObjectURL(blob) : null
+    }
+  } catch {
+    // Fall back to the plain HTMLImageElement canvas path below.
   }
 
   const image = await loadSourceImageElement(imageUrl)
@@ -615,9 +693,7 @@ async function buildPreparedSpriteSurfaceUrl(
     rasterHeight,
   )
 
-  const blob = await new Promise<Blob | null>((resolve) => {
-    canvas.toBlob((nextBlob) => resolve(nextBlob), 'image/png')
-  })
+  const blob = await canvasBlob(canvas)
 
   return blob ? URL.createObjectURL(blob) : null
 }
