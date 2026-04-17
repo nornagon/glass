@@ -1957,6 +1957,7 @@ export function BoardView({
   const hostRef = useRef<HTMLDivElement>(null)
   const boardWorldRef = useRef<HTMLDivElement>(null)
   const boardGridRef = useRef<HTMLDivElement>(null)
+  const quickActionsRef = useRef<HTMLDivElement>(null)
   const roomRef = useRef(room)
   const cameraRef = useRef(clampCamera(initialCamera))
   const recorderContextRef = useRef({
@@ -1991,6 +1992,8 @@ export function BoardView({
     typeof performance === 'undefined' ? 0 : performance.now() + PREPARED_SPRITE_PREWARM_INITIAL_DELAY_MS,
   )
   const hasActiveAlphaSelectionRef = useRef(false)
+  const hasQuickActionsRef = useRef(false)
+  const selectedWorldObjectRef = useRef<{ transform: Transform2D; worldSize: Size } | undefined>(undefined)
   const pointerPanStateRef = useRef<{
     active: boolean
     lastVelocity: Point
@@ -2096,6 +2099,21 @@ export function BoardView({
     )
   }, [])
 
+  const applyQuickActionsPosition = useCallback((nextCamera: CameraState) => {
+    const quickActions = quickActionsRef.current
+    const selectedObject = selectedWorldObjectRef.current
+    if (!quickActions || !selectedObject || !hasQuickActionsRef.current) {
+      return
+    }
+
+    const screenPoint = logicalToScreen(viewportSize, nextCamera, {
+      x: selectedObject.transform.x,
+      y: selectedObject.transform.y,
+    })
+    quickActions.style.left = `${screenPoint.x}px`
+    quickActions.style.top = `${screenPoint.y - selectedObject.worldSize.height * nextCamera.zoom / 2 - 24}px`
+  }, [viewportSize])
+
   const applyCameraToBoardWorld = useCallback((nextCamera: CameraState) => {
     const boardWorld = boardWorldRef.current
     const boardGrid = boardGridRef.current
@@ -2112,7 +2130,8 @@ export function BoardView({
       boardGrid.style.backgroundSize = `${gridSize}px ${gridSize}px, ${gridSize}px ${gridSize}px, 100% 100%`
       boardGrid.style.setProperty('--board-zoom', `${nextCamera.zoom}`)
     }
-  }, [viewportSize])
+    applyQuickActionsPosition(nextCamera)
+  }, [applyQuickActionsPosition, viewportSize])
 
   const markPrewarmInteraction = useCallback(() => {
     if (typeof performance === 'undefined') {
@@ -3074,6 +3093,7 @@ export function BoardView({
 
     return []
   }, [canEdit, onFlipBoard, onFlipCard, onOpenSelectionPanel, onShuffleDeck, room.objects, selectedId, selectionMode])
+  hasQuickActionsRef.current = quickActions.length > 0
 
   const root = getRootPlane(room)
   const selectedIdsSet = useMemo(() => new Set(selectedIds), [selectedIds])
@@ -3132,16 +3152,21 @@ export function BoardView({
       return undefined
     }
 
-    const screenPoint = logicalToScreen(viewportSize, camera, {
+    const screenPoint = logicalToScreen(viewportSize, cameraRef.current, {
       x: selectedWorldObject.transform.x,
       y: selectedWorldObject.transform.y,
     })
 
     return {
       left: `${screenPoint.x}px`,
-      top: `${screenPoint.y - selectedWorldObject.worldSize.height * camera.zoom / 2 - 24}px`,
+      top: `${screenPoint.y - selectedWorldObject.worldSize.height * cameraRef.current.zoom / 2 - 24}px`,
     }
-  }, [camera, quickActions.length, selectedWorldObject, viewportSize])
+  }, [quickActions.length, selectedWorldObject, viewportSize])
+  selectedWorldObjectRef.current = selectedWorldObject
+
+  useLayoutEffect(() => {
+    applyQuickActionsPosition(cameraRef.current)
+  }, [applyQuickActionsPosition, quickActions.length, selectedWorldObject])
 
   const boardWorldStyle = useMemo<CSSProperties>(() => {
     return {
@@ -3646,6 +3671,7 @@ export function BoardView({
       ) : null}
       {quickActions.length > 0 && quickActionsPosition ? (
         <div
+          ref={quickActionsRef}
           className="quick-actions"
           data-board-ui="quick-actions"
           style={quickActionsPosition}

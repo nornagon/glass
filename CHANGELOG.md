@@ -14,6 +14,7 @@
 - Suppressed native iOS Safari touch selection and loupe behavior inside the board canvas so dragging cards on mobile no longer triggers the system magnifier.
 - Reduced mobile Safari zoom-out crash pressure by removing the giant transformed world-sized grid surface, lowering Safari image prep caps, and simplifying card rendering to only keep the visible side mounted on that path.
 - Refined mobile touch gesture handoff so locked-object pinches zoom correctly and a second finger can pan during an active object drag without spuriously resetting into zoom.
+- Kept selection quick actions attached to the selected object during live pan and zoom by wiring the overlay into the same imperative camera-update path as the board transform.
 
 ## 2026-04-16
 
