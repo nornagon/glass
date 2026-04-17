@@ -492,7 +492,7 @@ textarea {
 }
 
 .board-object.is-dragging {
-  filter: drop-shadow(0 18px 26px rgba(0, 0, 0, 0.3));
+  filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.42));
 }
 
 .board-object-selection {
@@ -565,6 +565,10 @@ textarea {
   box-shadow: none;
 }
 
+.board-object-board {
+  filter: drop-shadow(0 1.5px 4px rgba(0, 0, 0, 0.58));
+}
+
 .board-sprite-frame {
   position: absolute;
   inset: 0;
@@ -609,6 +613,12 @@ textarea {
   inset: 0;
   perspective: 1200px;
   border-radius: 18px;
+}
+
+.board-object-card .board-surface {
+  box-shadow:
+    0 1.5px 4px rgba(0, 0, 0, 0.5),
+    inset 0 0 0 1px rgba(255, 247, 234, 0.06);
 }
 
 .board-object-card.has-card-outline-selection .board-card-shell {
@@ -665,11 +675,17 @@ textarea {
   border-radius: 18px;
   background: linear-gradient(180deg, rgba(121, 111, 95, 0.72), rgba(79, 60, 54, 0.92));
   border: 1px solid rgba(43, 27, 22, 0.28);
-  box-shadow: 0 10px 18px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 1.5px 4px rgba(0, 0, 0, 0.44);
 }
 
 .board-deck-top-layer {
   overflow: visible;
+}
+
+.board-object-deck .board-surface {
+  box-shadow:
+    0 1.5px 4px rgba(0, 0, 0, 0.5),
+    inset 0 0 0 1px rgba(255, 247, 234, 0.06);
 }
 
 .board-deck-count {
