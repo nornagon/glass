@@ -180,6 +180,21 @@ describe('room model', () => {
     expect(copy.type === 'deck' ? copy.childIds.length : 0).toBe(1)
   })
 
+  it('preserves object names when duplicating', () => {
+    const room = createRoomDoc()
+    const cardId = createCardOnPlane(room, room.rootId, { x: 0, y: 0, rotation: 0 }, 'Card Name')
+    const deckId = createDeckOnPlane(room, room.rootId, { x: 20, y: 20, rotation: 0 }, 'Deck Name')
+    const boardId = createBoardOnPlane(room, room.rootId, { x: 40, y: 40, rotation: 0 }, 'Board Name')
+
+    const duplicatedIds = [cardId, deckId, boardId].map((objectId) => duplicateObject(room, objectId))
+
+    expect(duplicatedIds).toHaveLength(3)
+    expect(duplicatedIds.every((objectId) => objectId)).toBe(true)
+    expect(room.objects[duplicatedIds[0]!].name).toBe('Card Name')
+    expect(room.objects[duplicatedIds[1]!].name).toBe('Deck Name')
+    expect(room.objects[duplicatedIds[2]!].name).toBe('Board Name')
+  })
+
   it('shuffles deterministically when random is injected', () => {
     const room = createRoomDoc()
     const deckId = createDeckOnPlane(room, room.rootId, { x: 30, y: 40, rotation: 0 })

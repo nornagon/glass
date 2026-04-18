@@ -21,9 +21,9 @@ describe('board sizing', () => {
   })
 
   it('preserves aspect ratio when the minimum board size applies', () => {
-    expect(boardSizeFromWidth(48, 2)).toEqual({
-      width: 96,
-      height: 48,
+    expect(boardSizeFromWidth(16, 2)).toEqual({
+      width: 32,
+      height: 16,
     })
   })
 

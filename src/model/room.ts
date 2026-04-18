@@ -573,7 +573,7 @@ function duplicateCard(card: Card): Card {
   return {
     ...card,
     id: createObjectId('card'),
-    name: `${card.name} Copy`,
+    name: card.name,
     meta: { ...card.meta },
     size: { ...card.size },
     face: { ...card.face },
@@ -587,7 +587,7 @@ function duplicateBoard(board: Board): Board {
   return {
     ...board,
     id: createObjectId('board'),
-    name: `${board.name} Copy`,
+    name: board.name,
     meta: { ...board.meta },
     size: { ...board.size },
     face: { ...board.face },
@@ -600,7 +600,7 @@ function duplicateDeck(deck: Deck): Deck {
   return {
     ...deck,
     id: createObjectId('deck'),
-    name: `${deck.name} Copy`,
+    name: deck.name,
     meta: { ...deck.meta },
     size: { ...deck.size },
     childIds: [] as Id[],

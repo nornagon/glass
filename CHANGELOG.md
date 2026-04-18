@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-04-18
+
+- Scope board width/height draft edits to the currently selected board so switching selection does not apply the draft to a different board.
+- Allow dropping multiple image files at once to create separate unlocked boards with a small placement offset for each imported image.
+- Lower the minimum board dimension to 16 pixels while preserving aspect ratio in the board sizing helpers.
+- Preserve card, deck, and board names exactly when duplicating objects instead of appending "Copy".
+- Added a symmetric alpha-trim crop helper with test coverage for centered transparent-border trimming behavior.
+
 ## 2026-04-17
 
 - Made dragging a deck onto a card move that card onto the bottom of the dragged deck, while direct card drops onto decks still land on top.

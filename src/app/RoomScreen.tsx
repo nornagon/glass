@@ -1486,12 +1486,14 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     backUrl,
     name,
     transform,
+    locked = true,
     onError,
   }: {
     faceUrl: string
     backUrl?: string
     name?: string
     transform: Transform2D
+    locked?: boolean
     onError?: (message: string) => void
   }) {
     const trimmedFaceUrl = faceUrl.trim()
@@ -1527,6 +1529,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
         return
       }
 
+      createdBoard.locked = locked
       createdBoard.size = size
       createdBoard.meta.aspectRatio = size.width / size.height
       createdBoard.face = {
@@ -1575,23 +1578,33 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     setCreationMode(undefined)
   }
 
-  async function handleDropImageFileAt(file: File, point: { x: number; y: number }) {
+  async function handleDropImageFileAt(files: File[], point: { x: number; y: number }) {
     setBoardDropError('')
 
     try {
-      const assetDoc = await buildImageAssetDoc(file)
-      const assetHandle = repo.create<ImageAssetDoc>(assetDoc)
-      const createdBoardId = await createBoardFromImageSource({
-        faceUrl: assetHandle.url,
-        name: boardNameFromImageFile(file),
-        transform: {
-          x: point.x,
-          y: point.y,
-          rotation: 0,
-        },
-        onError: setBoardDropError,
-      })
+      const createdBoardIds: string[] = []
 
+      for (const [index, file] of files.entries()) {
+        const assetDoc = await buildImageAssetDoc(file)
+        const assetHandle = repo.create<ImageAssetDoc>(assetDoc)
+        const createdBoardId = await createBoardFromImageSource({
+          faceUrl: assetHandle.url,
+          name: boardNameFromImageFile(file),
+          transform: {
+            x: point.x + index * 36,
+            y: point.y + index * 36,
+            rotation: 0,
+          },
+          locked: false,
+          onError: setBoardDropError,
+        })
+
+        if (createdBoardId) {
+          createdBoardIds.push(createdBoardId)
+        }
+      }
+
+      const createdBoardId = createdBoardIds.at(-1)
       if (!createdBoardId) {
         return
       }
@@ -1807,8 +1820,8 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
               drawFromDeck(draft, deckId)
             })
           }
-          onDropImageFileAt={(file, point) => {
-            void handleDropImageFileAt(file, point)
+          onDropImageFileAt={(files, point) => {
+            void handleDropImageFileAt(files, point)
           }}
           onShuffleDeck={(deckId) =>
             mutate((draft) => {
@@ -2181,6 +2194,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                   </div>
 
                   <BoardSizeEditor
+                    key={selectedObject.id}
                     width={selectedObject.size.width}
                     height={selectedObject.size.height}
                     disabled={!canEdit}

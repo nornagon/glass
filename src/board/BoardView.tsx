@@ -38,7 +38,7 @@ interface BoardViewProps {
   onFlipBoard: (boardId: Id) => void
   onFlipDeck: (deckId: Id) => void
   onDrawDeck: (deckId: Id) => void
-  onDropImageFileAt: (file: File, point: { x: number; y: number }) => void
+  onDropImageFileAt: (files: File[], point: { x: number; y: number }) => void
   onShuffleDeck: (deckId: Id) => void
   onOpenSelectionPanel: () => void
 }
@@ -506,7 +506,9 @@ function hasFileTransfer(dataTransfer: DataTransfer) {
   return [...dataTransfer.types].includes('Files')
 }
 
-function imageFileFromTransfer(dataTransfer: DataTransfer) {
+function imageFilesFromTransfer(dataTransfer: DataTransfer) {
+  const imageFiles: File[] = []
+
   for (const item of dataTransfer.items) {
     if (item.kind !== 'file') {
       continue
@@ -514,11 +516,15 @@ function imageFileFromTransfer(dataTransfer: DataTransfer) {
 
     const file = item.getAsFile()
     if (file?.type.startsWith('image/')) {
-      return file
+      imageFiles.push(file)
     }
   }
 
-  return [...dataTransfer.files].find((file) => file.type.startsWith('image/'))
+  if (imageFiles.length > 0) {
+    return imageFiles
+  }
+
+  return [...dataTransfer.files].filter((file) => file.type.startsWith('image/'))
 }
 
 function objectIdAtClientPoint(clientX: number, clientY: number) {
@@ -3543,9 +3549,9 @@ export function BoardView({
     }
 
     event.preventDefault()
-    const file = imageFileFromTransfer(event.dataTransfer)
+    const files = imageFilesFromTransfer(event.dataTransfer)
     resetDropTarget()
-    if (!file) {
+    if (files.length === 0) {
       return
     }
 
@@ -3554,7 +3560,7 @@ export function BoardView({
       return
     }
 
-    onDropImageFileAt(file, screenToLogical(viewportSize, cameraRef.current, localPoint))
+    onDropImageFileAt(files, screenToLogical(viewportSize, cameraRef.current, localPoint))
   }
 
   const objectElements = useMemo(

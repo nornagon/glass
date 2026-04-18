@@ -3,7 +3,7 @@ export type BoardSize = {
   height: number
 }
 
-export const MIN_BOARD_DIMENSION = 48
+export const MIN_BOARD_DIMENSION = 16
 const NUMERIC_EXPRESSION_PATTERN = /^[\d+\-*/().\s]+$/
 
 function isPositiveFiniteNumber(value: number) {
