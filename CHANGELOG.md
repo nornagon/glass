@@ -2,6 +2,7 @@
 
 ## 2026-04-17
 
+- Reworked the DOM board background so the grid is clipped to the board surface with a separate full-viewport backdrop glow, and dropped native object tooltips that were interfering with board interactions.
 - Smoothed steady-state board zooming by preparing cropped sprite-backed card and deck faces into dedicated image surfaces after load, which cuts repeated large sprite-sheet decode work out of the compositor hot path.
 - Added a board input recorder plus Playwright zoom and recorded-input replay harnesses so zoom and pan jank can be reproduced and measured against real room interactions.
 - Tightened board image preloading and DOM image layout for the HTML/CSS board renderer while preserving the card/deck/board selection and transform model.

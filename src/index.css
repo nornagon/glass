@@ -454,6 +454,7 @@ textarea {
 }
 
 .board-world,
+.board-backdrop,
 .board-grid,
 .board-objects {
   position: absolute;
@@ -470,14 +471,20 @@ textarea {
 
 .board-grid {
   pointer-events: none;
-  inset: 0;
+  overflow: hidden;
   background-color: #1f544f;
   background-image:
     linear-gradient(rgba(45, 108, 100, 0.68) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(45, 108, 100, 0.68) 1px, transparent 1px),
-    radial-gradient(circle at center, rgba(255, 235, 204, 0.05), transparent 58%);
+    linear-gradient(90deg, rgba(45, 108, 100, 0.68) 1px, transparent 1px);
   background-repeat: repeat;
-  background-size: 160px 160px, 160px 160px, 100% 100%;
+  background-size: 160px 160px, 160px 160px;
+}
+
+.board-backdrop {
+  pointer-events: none;
+  inset: 0;
+  background-image: radial-gradient(circle at center, rgba(255, 235, 204, 0.05), transparent 58%);
+  background-repeat: no-repeat;
 }
 
 .board-objects {

@@ -254,6 +254,35 @@ function logicalToScreen(viewport: Size, camera: CameraState, point: Point): Poi
   }
 }
 
+function boardGridScreenStyle(viewport: Size, camera: CameraState): CSSProperties {
+  const surfaceScreenSize = Math.max(1, BOARD_WORLD_SIZE * camera.zoom)
+  const gridSize = Math.max(1, 160 * camera.zoom)
+  const topLeft = logicalToScreen(viewport, camera, {
+    x: -BOARD_WORLD_SIZE / 2,
+    y: -BOARD_WORLD_SIZE / 2,
+  })
+  const originOffset = surfaceScreenSize / 2
+
+  return {
+    left: `${topLeft.x}px`,
+    top: `${topLeft.y}px`,
+    width: `${surfaceScreenSize}px`,
+    height: `${surfaceScreenSize}px`,
+    backgroundPosition: `${originOffset}px ${originOffset}px`,
+    backgroundSize: `${gridSize}px ${gridSize}px, ${gridSize}px ${gridSize}px`,
+  }
+}
+
+function applyBoardGridScreenStyle(boardGrid: HTMLDivElement, viewport: Size, camera: CameraState) {
+  const style = boardGridScreenStyle(viewport, camera)
+  boardGrid.style.left = String(style.left ?? '')
+  boardGrid.style.top = String(style.top ?? '')
+  boardGrid.style.width = String(style.width ?? '')
+  boardGrid.style.height = String(style.height ?? '')
+  boardGrid.style.backgroundPosition = String(style.backgroundPosition ?? '')
+  boardGrid.style.backgroundSize = String(style.backgroundSize ?? '')
+}
+
 function cameraForAnchor(
   viewport: Size,
   anchorWorld: Point,
@@ -2125,9 +2154,7 @@ export function BoardView({
     boardWorld.style.transform = `translate3d(${translateX}px, ${translateY}px, 0) scale(${nextCamera.zoom})`
     boardWorld.style.setProperty('--board-zoom', `${nextCamera.zoom}`)
     if (boardGrid) {
-      const gridSize = Math.max(1, 160 * nextCamera.zoom)
-      boardGrid.style.backgroundPosition = `${viewportSize.width / 2 - nextCamera.centerX * nextCamera.zoom}px ${viewportSize.height / 2 - nextCamera.centerY * nextCamera.zoom}px`
-      boardGrid.style.backgroundSize = `${gridSize}px ${gridSize}px, ${gridSize}px ${gridSize}px, 100% 100%`
+      applyBoardGridScreenStyle(boardGrid, viewportSize, nextCamera)
       boardGrid.style.setProperty('--board-zoom', `${nextCamera.zoom}`)
     }
     applyQuickActionsPosition(nextCamera)
@@ -3176,11 +3203,8 @@ export function BoardView({
   }, [])
 
   const boardGridStyle = useMemo<CSSProperties>(
-    () => ({
-      backgroundPosition: `${viewportSize.width / 2 - camera.centerX * camera.zoom}px ${viewportSize.height / 2 - camera.centerY * camera.zoom}px`,
-      backgroundSize: `${Math.max(1, 160 * camera.zoom)}px ${Math.max(1, 160 * camera.zoom)}px, ${Math.max(1, 160 * camera.zoom)}px ${Math.max(1, 160 * camera.zoom)}px, 100% 100%`,
-    }),
-    [camera.centerX, camera.centerY, camera.zoom, viewportSize.height, viewportSize.width],
+    () => boardGridScreenStyle(viewportSize, camera),
+    [camera, viewportSize],
   )
 
   const handleRootPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
@@ -3577,7 +3601,6 @@ export function BoardView({
                   } as CSSProperties)
                 : undefined),
             }}
-            title={object.name}
             aria-label={`${object.type}: ${object.name}`}
             onPointerDown={(event) => handleObjectPointerDown(event, objectId)}
           >
@@ -3649,6 +3672,7 @@ export function BoardView({
         ref={hostRef}
         onPointerDown={handleRootPointerDown}
       >
+        <div className="board-backdrop" />
         <div className="board-grid" ref={boardGridRef} style={boardGridStyle} />
         <div className="board-world" ref={boardWorldRef} style={boardWorldStyle}>
           <div className="board-objects">{objectElements}</div>
