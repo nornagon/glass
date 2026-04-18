@@ -31,7 +31,7 @@ interface BoardViewProps {
   onCommitTransform: (id: Id, transform: Partial<Transform2D>) => void
   onPreviewTransform: (id: Id, transform: Transform2D) => void
   onClearPreviewTransform: (id: Id, finalTransform?: Transform2D) => void
-  onDropObjectToDeck: (objectId: Id, deckId: Id) => void
+  onDropObjectOntoObject: (objectId: Id, targetId: Id) => void
   onBringObjectToFront: (objectId: Id) => void
   onLiftTopCardFromDeck: (deckId: Id) => Id | undefined
   onFlipCard: (cardId: Id) => void
@@ -385,14 +385,16 @@ function pointInObjectRect(
   return localX >= -width / 2 && localX <= width / 2 && localY >= -height / 2 && localY <= height / 2
 }
 
-function findDeckAtPoint(
+function findDropTargetAtPoint(
   room: RoomDoc,
   point: Point,
   ephemeralTransforms: EphemeralTransformMap,
   localPreviewTransforms: EphemeralTransformMap,
+  draggedObjectId: Id,
   ignoreId?: Id,
 ) {
   const root = getRootPlane(room)
+  const draggedObject = room.objects[draggedObjectId]
 
   for (let index = root.childOrder.length - 1; index >= 0; index -= 1) {
     const objectId = root.childOrder[index]
@@ -401,7 +403,15 @@ function findDeckAtPoint(
     }
 
     const object = room.objects[objectId]
-    if (isDeck(object) && pointInObjectRect(room, objectId, point, ephemeralTransforms, localPreviewTransforms)) {
+    if (!pointInObjectRect(room, objectId, point, ephemeralTransforms, localPreviewTransforms)) {
+      continue
+    }
+
+    if (isCard(draggedObject) && isDeck(object)) {
+      return objectId
+    }
+
+    if (isDeck(draggedObject) && (isDeck(object) || isCard(object))) {
       return objectId
     }
   }
@@ -1968,7 +1978,7 @@ export function BoardView({
   onCommitTransform,
   onPreviewTransform,
   onClearPreviewTransform,
-  onDropObjectToDeck,
+  onDropObjectOntoObject,
   onBringObjectToFront,
   onLiftTopCardFromDeck,
   onFlipCard,
@@ -2039,7 +2049,7 @@ export function BoardView({
   const [camera, setCamera] = useState(() => cameraRef.current)
   const [liveSelectionZoom, setLiveSelectionZoom] = useState(() => cameraRef.current.zoom)
   const [previewTransforms, setPreviewTransforms] = useState<EphemeralTransformMap>({})
-  const [hoverDeckId, setHoverDeckId] = useState<Id | undefined>()
+  const [hoverDropTargetId, setHoverDropTargetId] = useState<Id | undefined>()
   const [lassoPath, setLassoPath] = useState<Point[]>([])
   const [isImageDropTarget, setIsImageDropTarget] = useState(false)
   const constrainedEffects = useMemo(() => isLikelyMobileSafari(), [])
@@ -2108,7 +2118,7 @@ export function BoardView({
     }
 
     dragRef.current = null
-    setHoverDeckId(undefined)
+    setHoverDropTargetId(undefined)
     if (activeDrag.groupMembers && activeDrag.groupMembers.length > 0) {
       for (const member of activeDrag.groupMembers) {
         onClearPreviewTransform(member.id)
@@ -2729,7 +2739,7 @@ export function BoardView({
               }
             }
             replacePreviewTransforms(nextTransforms)
-            setHoverDeckId(undefined)
+            setHoverDropTargetId(undefined)
 
             for (const [objectId, transform] of Object.entries(nextTransforms)) {
               if (transform) {
@@ -2748,18 +2758,19 @@ export function BoardView({
             onPreviewTransform(activeDrag.id, nextTransform)
 
             const draggingObject = roomRef.current.objects[activeDrag.id]
-            const nextHoverDeckId =
+            const nextHoverDropTargetId =
               draggingObject && (draggingObject.type === 'card' || draggingObject.type === 'deck')
-                ? findDeckAtPoint(
+                ? findDropTargetAtPoint(
                     roomRef.current,
                     { x: nextTransform.x, y: nextTransform.y },
                     ephemeralTransformsRef.current,
                     previewTransformsRef.current,
                     activeDrag.id,
+                    activeDrag.id,
                   )
                 : undefined
 
-            setHoverDeckId((current) => (current === nextHoverDeckId ? current : nextHoverDeckId))
+            setHoverDropTargetId((current) => (current === nextHoverDropTargetId ? current : nextHoverDropTargetId))
           }
         } else {
           const angle =
@@ -2899,7 +2910,7 @@ export function BoardView({
       const activeDrag = dragRef.current
       if (activeDrag && activeDrag.pointerId === event.pointerId) {
         dragRef.current = null
-        setHoverDeckId(undefined)
+        setHoverDropTargetId(undefined)
 
         const nextPreviewTransforms = previewTransformsRef.current
         if (activeDrag.mode === 'move') {
@@ -2924,20 +2935,21 @@ export function BoardView({
 
           const worldPoint = screenToLogical(viewportSize, cameraRef.current, localPoint)
           const object = roomRef.current.objects[activeDrag.id]
-          const targetDeckId =
+          const targetId =
             object && (object.type === 'card' || object.type === 'deck')
-              ? findDeckAtPoint(
+              ? findDropTargetAtPoint(
                   roomRef.current,
                   worldPoint,
                   ephemeralTransformsRef.current,
                   previewTransformsRef.current,
                   activeDrag.id,
+                  activeDrag.id,
                 )
               : undefined
 
           replacePreviewTransforms({})
-          if (targetDeckId) {
-            onDropObjectToDeck(activeDrag.id, targetDeckId)
+          if (targetId) {
+            onDropObjectOntoObject(activeDrag.id, targetId)
           } else {
             onCommitTransform(activeDrag.id, finalTransform)
           }
@@ -3003,7 +3015,7 @@ export function BoardView({
       if (dragRef.current?.pointerId === event.pointerId) {
         const drag = dragRef.current
         dragRef.current = null
-        setHoverDeckId(undefined)
+        setHoverDropTargetId(undefined)
         if (drag.groupMembers && drag.groupMembers.length > 0) {
           for (const member of drag.groupMembers) {
             onClearPreviewTransform(member.id)
@@ -3048,7 +3060,7 @@ export function BoardView({
     onBringObjectToFront,
     onClearPreviewTransform,
     onCommitTransform,
-    onDropObjectToDeck,
+    onDropObjectOntoObject,
     onLiftTopCardFromDeck,
     onPreviewTransform,
     onSelect,
@@ -3552,7 +3564,7 @@ export function BoardView({
           dragRef.current?.id === objectId ||
           Boolean(dragRef.current?.groupMembers?.some((member) => member.id === objectId))
         const selectionStrokeWidth =
-          hoverDeckId === objectId
+          hoverDropTargetId === objectId
             ? 5
             : selectionMode === 'group'
               ? selectedIdsSet.has(objectId)
@@ -3564,7 +3576,7 @@ export function BoardView({
                 ? 4
                 : 0
         const selectionStrokeColor =
-          hoverDeckId === objectId
+          hoverDropTargetId === objectId
             ? '#ff8d47'
             : selectionMode === 'group' && selectedId === objectId
               ? '#ffd78a'
@@ -3646,7 +3658,7 @@ export function BoardView({
       constrainedEffects,
       handleObjectPointerDown,
       handleRotatePointerDown,
-      hoverDeckId,
+      hoverDropTargetId,
       imageAssets,
       objectElementsZoomDependency,
       room,

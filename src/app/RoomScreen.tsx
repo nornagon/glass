@@ -1757,19 +1757,24 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
               bringObjectToFront(draft, objectId)
             })
           }
-          onDropObjectToDeck={(objectId, deckId) => {
+          onDropObjectOntoObject={(objectId, targetId) => {
             const droppedObject = room.objects[objectId]
+            const targetObject = room.objects[targetId]
             mutate((draft) => {
-              if (droppedObject?.type === 'card') {
-                addCardToDeck(draft, objectId, deckId)
+              if (droppedObject?.type === 'card' && targetObject?.type === 'deck') {
+                addCardToDeck(draft, objectId, targetId)
                 return
               }
-              if (droppedObject?.type === 'deck') {
-                mergeDeckIntoDeck(draft, objectId, deckId)
+              if (droppedObject?.type === 'deck' && targetObject?.type === 'deck') {
+                mergeDeckIntoDeck(draft, objectId, targetId)
+                return
+              }
+              if (droppedObject?.type === 'deck' && targetObject?.type === 'card') {
+                addCardToDeck(draft, targetId, objectId, 0)
               }
             })
-            if (droppedObject?.type === 'deck' && selectedId === objectId) {
-              updateSelection(deckId)
+            if (droppedObject?.type === 'deck' && targetObject?.type === 'deck' && selectedId === objectId) {
+              updateSelection(targetId)
             }
           }}
           onLiftTopCardFromDeck={(deckId) => {
