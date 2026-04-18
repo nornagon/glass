@@ -1,12 +1,14 @@
 import type { AutomergeUrl } from '@automerge/react'
-import { useEffect, useMemo, useRef } from 'react'
-import { useState } from 'react'
-import { OutlineFilter } from 'pixi-filters/outline'
-import { Application, Assets, Cache, Container, FederatedPointerEvent, Graphics, PerspectiveMesh, Rectangle, Sprite, Text, Texture } from 'pixi.js'
-import { Viewport } from 'pixi-viewport'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { resolveImageSource, type ResolvedImageAsset } from '../model/assets'
 import { BOARD_WORLD_SIZE, DEFAULT_CARD_SIZE, type CameraState, type Id, type RoomDoc, type SpriteSpec, type Transform2D } from '../model/types'
 import { canSeeCardFace, getRootPlane, getTransform, isBoard, isBoardFaceUp, isCard, isDeck, isGroupSelectableObject } from '../model/room'
+import {
+  bindBoardInputRecorder,
+  recordBoardInputRecorderCamera,
+  recordBoardInputRecorderSelection,
+  recordBoardInputRecorderViewport,
+} from '../debug/inputRecorder'
 
 interface BoardViewProps {
   room: RoomDoc
@@ -41,29 +43,23 @@ interface BoardViewProps {
   onOpenSelectionPanel: () => void
 }
 
-function isMovableObjectType(room: RoomDoc, objectId: Id) {
-  const object = room.objects[objectId]
-  return Boolean(isCard(object) || isDeck(object) || isBoard(object))
+interface Point {
+  x: number
+  y: number
 }
 
-function isMultiselectObjectType(room: RoomDoc, objectId: Id) {
-  return isGroupSelectableObject(room.objects[objectId])
-}
-
-interface RenderedObject {
-  container: Container
+interface Size {
   width: number
   height: number
-  transform: Transform2D
 }
 
 interface DragState {
   id: Id
   pointerId: number
   mode: 'move' | 'rotate'
-  startPointer: { x: number; y: number }
+  startPointer: Point
   startTransform: Transform2D
-  currentGlobal: { x: number; y: number }
+  currentPoint: Point
   moved: boolean
   raisedToFront: boolean
   groupMembers?: Array<{ id: Id; startTransform: Transform2D }>
@@ -72,8 +68,7 @@ interface DragState {
 interface PendingDeckPress {
   deckId: Id
   pointerId: number
-  startGlobal: { x: number; y: number }
-  startWorld: { x: number; y: number }
+  startPoint: Point
   startTransform: Transform2D
   timeoutId: number
 }
@@ -81,33 +76,17 @@ interface PendingDeckPress {
 interface TapCandidate {
   id: Id
   pointerId: number
-  startPointer: { x: number; y: number }
+  startPoint: Point
 }
 
 interface BackgroundTapCandidate {
   pointerId: number
-  startPointer: { x: number; y: number }
-}
-
-interface CardVisualState {
-  faceUp: boolean
-  faceVisible: boolean
-}
-
-interface AuxiliaryTouchState {
-  pointers: Map<number, { x: number; y: number }>
+  startPoint: Point
 }
 
 interface LassoState {
   pointerId: number
-  points: Array<{ x: number; y: number }>
-}
-
-interface FlipAnimation {
-  startedAt: number
-  durationMs: number
-  fromFaceVisible: boolean
-  toFaceVisible: boolean
+  points: Point[]
 }
 
 interface QuickAction {
@@ -118,157 +97,347 @@ interface QuickAction {
   text?: string
 }
 
-interface CardFlipPresentation {
-  faceVisible: boolean
-  angle: number
-  offsetY: number
-}
+type EphemeralTransformMap = Partial<Record<Id, Transform2D>>
 
-interface CardTextureCacheEntry {
-  signature: string
-  texture: Texture
-}
-
-interface FittedSpriteContent {
-  sprite: Sprite
-  contentWidth: number
-  contentHeight: number
-  inset: number
-}
-
+const FULL_CROP = { x: 0, y: 0, width: 1, height: 1 } as const
 const TAP_GRACE_DISTANCE = 10
 const DECK_LONG_PRESS_MS = 360
 const MIN_ZOOM_SCALE = 0.2
 const MAX_ZOOM_SCALE = 2.5
 const PAN_CLAMP_MARGIN = 640
-const FLIP_DURATION_MS = 220
-const FLIP_DEBUG_DURATION_MS = 1800
-const BOARD_SELECTION_TEXTURE_MAX_RESOLUTION = 4
-const BOARD_SELECTION_TEXTURE_MAX_DIMENSION = 4096
+const PAN_MOMENTUM_DECAY = 6.5
+const PAN_MOMENTUM_CUTOFF_SCREEN_VELOCITY = 10
+const PAN_MOMENTUM_MAX_DT_SECONDS = 1 / 15
+const PAN_MOMENTUM_SAMPLE_WINDOW_SECONDS = 0.12
+const PAN_MOMENTUM_VELOCITY_GAIN = 1
+const PAN_MOMENTUM_CONSTRAINT_EPSILON = 1
+const ALPHA_COMPONENT_THRESHOLD = 96
+const ALPHA_COMPONENT_ANALYSIS_MAX_DIMENSION = 256
+const ALPHA_OUTLINE_RENDER_THRESHOLD = 24
+const ALPHA_OUTLINE_MAX_RASTER_DIMENSION = 1024
+const ALPHA_OUTLINE_MIN_SAMPLES = 12
+const ALPHA_OUTLINE_MAX_SAMPLES = 64
+const PREPARED_SPRITE_MAX_DIMENSION = 4096
+const PREPARED_SPRITE_MOBILE_SAFARI_MAX_DIMENSION = 2048
+const PREPARED_SPRITE_PREWARM_INITIAL_DELAY_MS = 1500
+const PREPARED_SPRITE_PREWARM_QUIET_MS = 1000
+const PREPARED_SPRITE_PREWARM_FALLBACK_DELAY_MS = 250
+const PREPARED_SPRITE_PREWARM_MIN_IDLE_MS = 12
 
-type EphemeralTransformMap = Partial<Record<Id, Transform2D>>
+const intrinsicImageSizeCache = new Map<string, Size | null>()
+const resolvedSourceImageElementCache = new Map<string, HTMLImageElement>()
+const sourceImageElementCache = new Map<string, Promise<HTMLImageElement>>()
+const resolvedSourceImageBitmapCache = new Map<string, ImageBitmap>()
+const sourceImageBitmapCache = new Map<string, Promise<ImageBitmap>>()
+const preparedSpriteSurfaceUrlCache = new Map<string, string | null>()
+const preparedSpriteSurfaceRequestCache = new Map<string, Promise<string | null>>()
+const opaqueRegionBoundsCache = new Map<string, { x: number; y: number; width: number; height: number } | null>()
+const opaqueRegionRequestCache = new Map<string, Promise<{ x: number; y: number; width: number; height: number } | null>>()
 
-interface ViewportWorldGeometry {
-  worldWidth: number
-  worldHeight: number
-}
+function computeSurfaceFit(
+  crop: ReturnType<typeof normalizeCrop>,
+  targetSize: Size,
+  sourceSize: Size,
+  fit: SpriteSpec['fit'],
+) {
+  const targetAspect = targetSize.width > 0 && targetSize.height > 0 ? targetSize.width / targetSize.height : 1
+  const sourceAspect = sourceSize.width / sourceSize.height
+  const cropAspect = sourceAspect * crop.width / crop.height
 
-interface ClampPlugin {
-  options: {
-    right: number
-    bottom: number
+  let fitWidth = 1
+  let fitHeight = 1
+  if (fit === 'contain') {
+    if (cropAspect > targetAspect) {
+      fitHeight = targetAspect / cropAspect
+    } else {
+      fitWidth = cropAspect / targetAspect
+    }
+  } else if (cropAspect > targetAspect) {
+    fitWidth = cropAspect / targetAspect
+  } else {
+    fitHeight = targetAspect / cropAspect
   }
-  update: () => void
-}
 
-function viewportWorldGeometryForScreen(screenWidth: number, screenHeight: number): ViewportWorldGeometry {
-  const minimumWorldSpan = BOARD_WORLD_SIZE + PAN_CLAMP_MARGIN * 2
   return {
-    worldWidth: Math.max(minimumWorldSpan, Math.ceil(screenWidth / MIN_ZOOM_SCALE) + PAN_CLAMP_MARGIN * 2),
-    worldHeight: Math.max(minimumWorldSpan, Math.ceil(screenHeight / MIN_ZOOM_SCALE) + PAN_CLAMP_MARGIN * 2),
+    fitWidth,
+    fitHeight,
   }
 }
 
-function viewportWorldOffset(viewport: ViewportWorldGeometry) {
+function preparedSpriteSurfaceRasterSize(
+  crop: ReturnType<typeof normalizeCrop>,
+  fitWorldWidth: number,
+  fitWorldHeight: number,
+  intrinsicSize: Size,
+) {
+  const maxDimension = isLikelyMobileSafari() ? PREPARED_SPRITE_MOBILE_SAFARI_MAX_DIMENSION : PREPARED_SPRITE_MAX_DIMENSION
+  const qualityScale =
+    typeof window === 'undefined'
+      ? MAX_ZOOM_SCALE
+      : Math.max(1, (window.devicePixelRatio || 1) * MAX_ZOOM_SCALE)
+  const cropPixelWidth = Math.max(1, Math.round(intrinsicSize.width * crop.width))
+  const cropPixelHeight = Math.max(1, Math.round(intrinsicSize.height * crop.height))
+  const targetRasterWidth = Math.max(1, Math.round(fitWorldWidth * qualityScale))
+  const targetRasterHeight = Math.max(1, Math.round(fitWorldHeight * qualityScale))
+  const uncappedRasterWidth = Math.min(targetRasterWidth, cropPixelWidth)
+  const uncappedRasterHeight = Math.min(targetRasterHeight, cropPixelHeight)
+  const scaleLimit = Math.min(
+    1,
+    maxDimension / Math.max(uncappedRasterWidth, uncappedRasterHeight, 1),
+  )
+
   return {
-    x: viewport.worldWidth / 2,
-    y: viewport.worldHeight / 2,
+    rasterWidth: Math.max(1, Math.round(uncappedRasterWidth * scaleLimit)),
+    rasterHeight: Math.max(1, Math.round(uncappedRasterHeight * scaleLimit)),
   }
 }
 
-function logicalToViewportPoint(viewport: ViewportWorldGeometry, point: { x: number; y: number }) {
-  const offset = viewportWorldOffset(viewport)
+function isLikelyMobileSafari() {
+  if (typeof navigator === 'undefined') {
+    return false
+  }
+
+  const userAgent = navigator.userAgent
+  const vendor = navigator.vendor ?? ''
+  const isAppleWebKit = vendor.includes('Apple') && userAgent.includes('WebKit')
+  const isOtherIosBrowser = /CriOS|FxiOS|EdgiOS|OPiOS|DuckDuckGo|GSA/.test(userAgent)
+  const isTouchAppleDevice = navigator.maxTouchPoints > 1 && (/iP(hone|ad|od)/.test(userAgent) || userAgent.includes('Macintosh'))
+  return isAppleWebKit && !isOtherIosBrowser && isTouchAppleDevice
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
+}
+
+function sameTransform(a: Transform2D | undefined, b: Transform2D | undefined) {
+  if (!a || !b) {
+    return a === b
+  }
+
+  return a.x === b.x && a.y === b.y && a.rotation === b.rotation
+}
+
+function sameTransformMap(a: EphemeralTransformMap, b: EphemeralTransformMap) {
+  const aKeys = Object.keys(a)
+  const bKeys = Object.keys(b)
+  if (aKeys.length !== bKeys.length) {
+    return false
+  }
+
+  return aKeys.every((key) => sameTransform(a[key], b[key]))
+}
+
+function sameCamera(a: CameraState, b: CameraState) {
+  return a.centerX === b.centerX && a.centerY === b.centerY && a.zoom === b.zoom
+}
+
+function clampCamera(camera: CameraState): CameraState {
+  const limit = BOARD_WORLD_SIZE / 2 + PAN_CLAMP_MARGIN
   return {
-    x: point.x + offset.x,
-    y: point.y + offset.y,
+    centerX: clamp(Number(camera.centerX.toFixed(1)), -limit, limit),
+    centerY: clamp(Number(camera.centerY.toFixed(1)), -limit, limit),
+    zoom: clamp(Number(camera.zoom.toFixed(3)), MIN_ZOOM_SCALE, MAX_ZOOM_SCALE),
   }
 }
 
-function viewportToLogicalPoint(viewport: ViewportWorldGeometry, point: { x: number; y: number }) {
-  const offset = viewportWorldOffset(viewport)
+function screenToLogical(viewport: Size, camera: CameraState, point: Point): Point {
   return {
-    x: point.x - offset.x,
-    y: point.y - offset.y,
+    x: camera.centerX + (point.x - viewport.width / 2) / camera.zoom,
+    y: camera.centerY + (point.y - viewport.height / 2) / camera.zoom,
   }
 }
 
-function screenPixelsToWorldUnits(viewport: Viewport, pixels: number) {
-  return pixels / Math.max(viewport.scaled, 0.001)
+function logicalToScreen(viewport: Size, camera: CameraState, point: Point): Point {
+  return {
+    x: viewport.width / 2 + (point.x - camera.centerX) * camera.zoom,
+    y: viewport.height / 2 + (point.y - camera.centerY) * camera.zoom,
+  }
 }
 
-function hasFileTransfer(dataTransfer: DataTransfer) {
-  return [...dataTransfer.types].includes('Files')
+function cameraForAnchor(
+  viewport: Size,
+  anchorWorld: Point,
+  anchorScreen: Point,
+  zoom: number,
+): CameraState {
+  return clampCamera({
+    centerX: anchorWorld.x - (anchorScreen.x - viewport.width / 2) / zoom,
+    centerY: anchorWorld.y - (anchorScreen.y - viewport.height / 2) / zoom,
+    zoom,
+  })
 }
 
-function imageFileFromTransfer(dataTransfer: DataTransfer) {
-  for (const item of dataTransfer.items) {
-    if (item.kind !== 'file') {
-      continue
+function cameraTranslation(viewport: Size, camera: CameraState) {
+  return {
+    x: viewport.width / 2 - camera.centerX * camera.zoom,
+    y: viewport.height / 2 - camera.centerY * camera.zoom,
+  }
+}
+
+function cameraFromTranslation(viewport: Size, translation: Point, zoom: number): CameraState {
+  return clampCamera({
+    centerX: (viewport.width / 2 - translation.x) / zoom,
+    centerY: (viewport.height / 2 - translation.y) / zoom,
+    zoom,
+  })
+}
+
+function clientToLocal(root: HTMLDivElement | null, clientX: number, clientY: number) {
+  if (!root) {
+    return undefined
+  }
+
+  const rect = root.getBoundingClientRect()
+  return {
+    x: clientX - rect.left,
+    y: clientY - rect.top,
+  }
+}
+
+function isMovableObjectType(room: RoomDoc, objectId: Id) {
+  const object = room.objects[objectId]
+  return Boolean(isCard(object) || isDeck(object) || isBoard(object))
+}
+
+function isMultiselectObjectType(room: RoomDoc, objectId: Id) {
+  return isGroupSelectableObject(room.objects[objectId])
+}
+
+function objectDimensions(room: RoomDoc, objectId: Id) {
+  const object = room.objects[objectId]
+  if (isCard(object) || isBoard(object)) {
+    return object.size
+  }
+  if (isDeck(object)) {
+    if (object.size?.width && object.size?.height) {
+      return object.size
     }
 
-    const file = item.getAsFile()
-    if (file?.type.startsWith('image/')) {
-      return file
+    for (let index = object.childIds.length - 1; index >= 0; index -= 1) {
+      const child = room.objects[object.childIds[index]]
+      if (isCard(child)) {
+        return child.size
+      }
     }
   }
-
-  return [...dataTransfer.files].find((file) => file.type.startsWith('image/'))
+  return DEFAULT_CARD_SIZE
 }
 
-function collectCardVisualStates(room: RoomDoc, currentPlayerId: string | undefined) {
-  const states = new Map<Id, CardVisualState>()
-
-  for (const [objectId, object] of Object.entries(room.objects)) {
-    if (!isCard(object)) {
-      continue
-    }
-
-    states.set(objectId, {
-      faceUp: object.meta.faceUp !== false,
-      faceVisible: canSeeCardFace(object, currentPlayerId),
-    })
-  }
-
-  return states
-}
-
-function cardFlipPresentation(
+function displayedTransformForObject(
+  room: RoomDoc,
   objectId: Id,
-  defaultFaceVisible: boolean,
-  flipAnimations: Map<Id, FlipAnimation>,
-  now: number,
-): CardFlipPresentation {
-  const animation = flipAnimations.get(objectId)
-  if (!animation) {
-    return {
-      faceVisible: defaultFaceVisible,
-      angle: 0,
-      offsetY: 0,
+  ephemeralTransforms: EphemeralTransformMap,
+  localPreviewTransforms: EphemeralTransformMap,
+) {
+  return localPreviewTransforms[objectId] ?? ephemeralTransforms[objectId] ?? getTransform(room, objectId)
+}
+
+function pointInObjectRect(
+  room: RoomDoc,
+  objectId: Id,
+  point: Point,
+  ephemeralTransforms: EphemeralTransformMap,
+  localPreviewTransforms: EphemeralTransformMap,
+) {
+  const transform = displayedTransformForObject(room, objectId, ephemeralTransforms, localPreviewTransforms)
+  const object = room.objects[objectId]
+  if (!transform || !object) {
+    return false
+  }
+
+  const { width, height } = objectDimensions(room, objectId)
+  const dx = point.x - transform.x
+  const dy = point.y - transform.y
+  const sin = Math.sin(-transform.rotation)
+  const cos = Math.cos(-transform.rotation)
+  const localX = dx * cos - dy * sin
+  const localY = dx * sin + dy * cos
+
+  return localX >= -width / 2 && localX <= width / 2 && localY >= -height / 2 && localY <= height / 2
+}
+
+function findDeckAtPoint(
+  room: RoomDoc,
+  point: Point,
+  ephemeralTransforms: EphemeralTransformMap,
+  localPreviewTransforms: EphemeralTransformMap,
+  ignoreId?: Id,
+) {
+  const root = getRootPlane(room)
+
+  for (let index = root.childOrder.length - 1; index >= 0; index -= 1) {
+    const objectId = root.childOrder[index]
+    if (objectId === ignoreId) {
+      continue
+    }
+
+    const object = room.objects[objectId]
+    if (isDeck(object) && pointInObjectRect(room, objectId, point, ephemeralTransforms, localPreviewTransforms)) {
+      return objectId
     }
   }
 
-  const elapsed = now - animation.startedAt
-  if (elapsed >= animation.durationMs) {
-    flipAnimations.delete(objectId)
-    return {
-      faceVisible: animation.toFaceVisible,
-      angle: 0,
-      offsetY: 0,
+  return undefined
+}
+
+function pointInPolygon(point: Point, polygon: Point[]) {
+  let inside = false
+
+  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index, index += 1) {
+    const currentPoint = polygon[index]
+    const previousPoint = polygon[previous]
+    const intersects =
+      currentPoint.y > point.y !== previousPoint.y > point.y &&
+      point.x < ((previousPoint.x - currentPoint.x) * (point.y - currentPoint.y)) / (previousPoint.y - currentPoint.y) + currentPoint.x
+
+    if (intersects) {
+      inside = !inside
     }
   }
 
-  const progress = elapsed / animation.durationMs
-  const depth = Math.sin(progress * Math.PI)
-  const turnDirection = animation.toFaceVisible ? 1 : -1
-  const halfProgress = progress < 0.5 ? progress / 0.5 : (progress - 0.5) / 0.5
-  return {
-    faceVisible: progress < 0.5 ? animation.fromFaceVisible : animation.toFaceVisible,
-    angle:
-      progress < 0.5
-        ? turnDirection * halfProgress * (Math.PI / 2)
-        : -turnDirection * (1 - halfProgress) * (Math.PI / 2),
-    offsetY: -depth * 10,
+  return inside
+}
+
+function objectIdsWithinLasso(
+  viewport: Size,
+  camera: CameraState,
+  room: RoomDoc,
+  ephemeralTransforms: EphemeralTransformMap,
+  localPreviewTransforms: EphemeralTransformMap,
+  polygon: Point[],
+) {
+  const root = getRootPlane(room)
+  const selectedIds: Id[] = []
+
+  for (const objectId of root.childOrder) {
+    if (!isMultiselectObjectType(room, objectId)) {
+      continue
+    }
+
+    const transform = displayedTransformForObject(room, objectId, ephemeralTransforms, localPreviewTransforms)
+    if (!transform) {
+      continue
+    }
+
+    if (pointInPolygon(logicalToScreen(viewport, camera, { x: transform.x, y: transform.y }), polygon)) {
+      selectedIds.push(objectId)
+    }
   }
+
+  return selectedIds
+}
+
+function normalizeCrop(crop?: { x: number; y: number; width: number; height: number }) {
+  if (!crop) {
+    return FULL_CROP
+  }
+
+  const x = clamp(crop.x, 0, 1)
+  const y = clamp(crop.y, 0, 1)
+  const width = clamp(crop.width, 0.001, 1 - x)
+  const height = clamp(crop.height, 0.001, 1 - y)
+
+  return { x, y, width, height }
 }
 
 function snapRotationAngle(angle: number) {
@@ -294,6 +463,51 @@ function snapRotationAngle(angle: number) {
   return bestAngle
 }
 
+function hasFileTransfer(dataTransfer: DataTransfer) {
+  return [...dataTransfer.types].includes('Files')
+}
+
+function imageFileFromTransfer(dataTransfer: DataTransfer) {
+  for (const item of dataTransfer.items) {
+    if (item.kind !== 'file') {
+      continue
+    }
+
+    const file = item.getAsFile()
+    if (file?.type.startsWith('image/')) {
+      return file
+    }
+  }
+
+  return [...dataTransfer.files].find((file) => file.type.startsWith('image/'))
+}
+
+function objectIdAtClientPoint(clientX: number, clientY: number) {
+  const target = document.elementFromPoint(clientX, clientY)
+  const objectElement =
+    target instanceof Element ? target.closest<HTMLElement>('[data-board-object-id]') : null
+
+  return objectElement?.dataset.boardObjectId as Id | undefined
+}
+
+function objectCursor(
+  object: RoomDoc['objects'][Id],
+  canEdit: boolean,
+  allowSelectLocked: boolean,
+  isDragging: boolean,
+) {
+  if (isDragging) {
+    return 'grabbing'
+  }
+  if (canEdit && !object.locked) {
+    return 'grab'
+  }
+  if (object.locked && allowSelectLocked) {
+    return 'pointer'
+  }
+  return 'default'
+}
+
 function FlipQuickActionIcon() {
   return (
     <svg className="flip-icon" aria-hidden="true" viewBox="0 0 24 24" fill="currentColor">
@@ -311,1451 +525,1397 @@ function MoreQuickActionIcon() {
   )
 }
 
-interface TextureAssetEntry {
-  texture?: Texture
-  status: 'loading' | 'loaded' | 'error'
-  listeners: Set<() => void>
-}
-
-const textureAssetCache = new Map<string, TextureAssetEntry>()
-const croppedTextureCache = new Map<string, Texture>()
-
-function requestTextureAsset(url: string, onReady: () => void) {
-  if (Cache.has(url)) {
-    return Cache.get<Texture>(url)
+function loadSourceImageElement(url: string) {
+  const resolved = resolvedSourceImageElementCache.get(url)
+  if (resolved) {
+    return Promise.resolve(resolved)
   }
 
-  const existing = textureAssetCache.get(url)
-  if (existing) {
-    if (existing.status === 'loaded') {
-      return existing.texture
-    }
-    if (existing.status === 'loading') {
-      existing.listeners.add(onReady)
-    }
-    return undefined
-  }
-
-  const entry: TextureAssetEntry = {
-    status: 'loading',
-    listeners: new Set([onReady]),
-  }
-
-  textureAssetCache.set(url, entry)
-  void Assets.load<Texture>({
-    alias: url,
-    src: url,
-    parser: 'texture',
-    data: {
-      crossOrigin: 'anonymous',
-    },
-  })
-    .then((texture) => {
-      entry.texture = texture
-      entry.status = 'loaded'
-      for (const listener of entry.listeners) {
-        listener()
-      }
-      entry.listeners.clear()
-    })
-    .catch(() => {
-      entry.status = 'error'
-      entry.listeners.clear()
-    })
-
-  return undefined
-}
-
-function normalizeCrop(crop?: { x: number; y: number; width: number; height: number }) {
-  if (!crop) {
-    return undefined
-  }
-
-  const x = Math.max(0, Math.min(1, crop.x))
-  const y = Math.max(0, Math.min(1, crop.y))
-  const width = Math.max(0.001, Math.min(1 - x, crop.width))
-  const height = Math.max(0.001, Math.min(1 - y, crop.height))
-
-  if (x === 0 && y === 0 && width === 1 && height === 1) {
-    return undefined
-  }
-
-  return { x, y, width, height }
-}
-
-function pixelAlignedFrame(x: number, y: number, width: number, height: number) {
-  const left = Math.round(x)
-  const top = Math.round(y)
-  const right = Math.max(left + 1, Math.round(x + width))
-  const bottom = Math.max(top + 1, Math.round(y + height))
-
-  return new Rectangle(left, top, right - left, bottom - top)
-}
-
-function textureForSpriteSpec(
-  url: string,
-  texture: Texture,
-  crop?: { x: number; y: number; width: number; height: number },
-) {
-  const normalizedCrop = normalizeCrop(crop)
-  if (!normalizedCrop) {
-    return texture
-  }
-
-  const cacheKey = `${url}|${normalizedCrop.x},${normalizedCrop.y},${normalizedCrop.width},${normalizedCrop.height}`
-  const cached = croppedTextureCache.get(cacheKey)
+  const cached = sourceImageElementCache.get(url)
   if (cached) {
     return cached
   }
 
-  const frame = texture.frame
-  const croppedTexture = new Texture({
-    source: texture.source,
-    frame: pixelAlignedFrame(
-      frame.x + frame.width * normalizedCrop.x,
-      frame.y + frame.height * normalizedCrop.y,
-      frame.width * normalizedCrop.width,
-      frame.height * normalizedCrop.height,
-    ),
+  const request = new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image()
+    image.crossOrigin = 'anonymous'
+    image.decoding = 'async'
+    image.onload = () => {
+      const finalize = () => {
+        resolvedSourceImageElementCache.set(url, image)
+        resolve(image)
+      }
+
+      if (typeof image.decode !== 'function') {
+        finalize()
+        return
+      }
+
+      void image.decode().then(finalize).catch(finalize)
+    }
+    image.onerror = () => {
+      resolvedSourceImageElementCache.delete(url)
+      sourceImageElementCache.delete(url)
+      reject(new Error('Failed to load source image element'))
+    }
+    image.src = url
   })
-  croppedTextureCache.set(cacheKey, croppedTexture)
-  return croppedTexture
+
+  sourceImageElementCache.set(url, request)
+  return request
 }
 
-function cropSignature(crop?: { x: number; y: number; width: number; height: number }) {
-  const normalizedCrop = normalizeCrop(crop)
-  if (!normalizedCrop) {
-    return 'full'
-  }
-
-  return `${normalizedCrop.x},${normalizedCrop.y},${normalizedCrop.width},${normalizedCrop.height}`
-}
-
-function textureForCoverAspect(cacheKeyBase: string, texture: Texture, targetAspect: number) {
-  if (!Number.isFinite(targetAspect) || targetAspect <= 0) {
-    return texture
-  }
-
-  const frame = texture.frame
-  const sourceAspect = frame.width / frame.height
-
-  if (!Number.isFinite(sourceAspect) || sourceAspect <= 0 || Math.abs(sourceAspect - targetAspect) < 1e-4) {
-    return texture
-  }
-
-  const cacheKey = `${cacheKeyBase}|cover:${targetAspect.toFixed(6)}`
-  const cached = croppedTextureCache.get(cacheKey)
-  if (cached) {
-    return cached
-  }
-
-  let cropX = frame.x
-  let cropY = frame.y
-  let cropWidth = frame.width
-  let cropHeight = frame.height
-
-  if (sourceAspect > targetAspect) {
-    cropWidth = frame.height * targetAspect
-    cropX += (frame.width - cropWidth) / 2
-  } else {
-    cropHeight = frame.width / targetAspect
-    cropY += (frame.height - cropHeight) / 2
-  }
-
-  const croppedTexture = new Texture({
-    source: texture.source,
-    frame: pixelAlignedFrame(cropX, cropY, cropWidth, cropHeight),
-  })
-  croppedTextureCache.set(cacheKey, croppedTexture)
-  return croppedTexture
-}
-
-function objectDimensions(room: RoomDoc, objectId: Id) {
-  const object = room.objects[objectId]
-  if (isCard(object)) {
-    return object.size
-  }
-  if (isBoard(object)) {
-    return object.size
-  }
-  if (isDeck(object)) {
-    if (object.size?.width && object.size?.height) {
-      return object.size
-    }
-
-    for (let index = object.childIds.length - 1; index >= 0; index -= 1) {
-      const child = room.objects[object.childIds[index]]
-      if (isCard(child)) {
-        return child.size
-      }
-    }
-  }
-  return DEFAULT_CARD_SIZE
-}
-
-function transformForObject(room: RoomDoc, objectId: Id, ephemeralTransforms: EphemeralTransformMap) {
-  return ephemeralTransforms[objectId] ?? getTransform(room, objectId)
-}
-
-function pointInObjectRect(
-  room: RoomDoc,
-  objectId: Id,
-  point: { x: number; y: number },
-  ephemeralTransforms: EphemeralTransformMap,
-) {
-  const transform = transformForObject(room, objectId, ephemeralTransforms)
-  const object = room.objects[objectId]
-  if (!transform || !object) {
-    return false
-  }
-
-  const { width, height } = objectDimensions(room, objectId)
-  const dx = point.x - transform.x
-  const dy = point.y - transform.y
-  const sin = Math.sin(-transform.rotation)
-  const cos = Math.cos(-transform.rotation)
-  const localX = dx * cos - dy * sin
-  const localY = dx * sin + dy * cos
-  return localX >= -width / 2 && localX <= width / 2 && localY >= -height / 2 && localY <= height / 2
-}
-
-function findDeckAtPoint(
-  room: RoomDoc,
-  point: { x: number; y: number },
-  ephemeralTransforms: EphemeralTransformMap,
-  ignoreId?: Id,
-) {
-  const root = getRootPlane(room)
-
-  for (let index = root.childOrder.length - 1; index >= 0; index -= 1) {
-    const objectId = root.childOrder[index]
-    if (objectId === ignoreId) {
-      continue
-    }
-    const object = room.objects[objectId]
-    if (isDeck(object) && pointInObjectRect(room, objectId, point, ephemeralTransforms)) {
-      return objectId
-    }
-  }
-
-  return undefined
-}
-
-function pointInPolygon(point: { x: number; y: number }, polygon: Array<{ x: number; y: number }>) {
-  let inside = false
-
-  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index, index += 1) {
-    const currentPoint = polygon[index]
-    const previousPoint = polygon[previous]
-    const intersects =
-      currentPoint.y > point.y !== previousPoint.y > point.y &&
-      point.x < ((previousPoint.x - currentPoint.x) * (point.y - currentPoint.y)) / (previousPoint.y - currentPoint.y) + currentPoint.x
-
-    if (intersects) {
-      inside = !inside
-    }
-  }
-
-  return inside
-}
-
-function objectIdsWithinLasso(
-  viewport: Viewport,
-  room: RoomDoc,
-  ephemeralTransforms: EphemeralTransformMap,
-  polygon: Array<{ x: number; y: number }>,
-) {
-  const root = getRootPlane(room)
-  const selectedIds: Id[] = []
-
-  for (const objectId of root.childOrder) {
-    if (!isMultiselectObjectType(room, objectId)) {
-      continue
-    }
-
-    const transform = transformForObject(room, objectId, ephemeralTransforms)
-    if (!transform) {
-      continue
-    }
-
-    const screenPoint = viewport.toScreen(logicalToViewportPoint(viewport, {
-      x: transform.x,
-      y: transform.y,
-    }))
-    if (pointInPolygon({ x: screenPoint.x, y: screenPoint.y }, polygon)) {
-      selectedIds.push(objectId)
-    }
-  }
-
-  return selectedIds
-}
-
-function boardBackground() {
-  const grid = new Graphics()
-  const span = BOARD_WORLD_SIZE / 2
-  const step = 160
-
-  grid
-    .rect(-span, -span, BOARD_WORLD_SIZE, BOARD_WORLD_SIZE)
-    .fill({ color: '#1f544f' })
-
-  for (let cursor = -span; cursor <= span; cursor += step) {
-    grid.moveTo(cursor, -span).lineTo(cursor, span)
-    grid.moveTo(-span, cursor).lineTo(span, cursor)
-  }
-  grid.stroke({ width: 1, color: '#2d6c64', alpha: 0.65 })
-
-  return grid
-}
-
-function addSpriteContents(
-  container: Container,
-  spec: { url?: string; crop?: { x: number; y: number; width: number; height: number }; fit?: 'cover' | 'contain' },
-  width: number,
-  height: number,
-  cornerRadius: number,
-  requestRender: () => void,
-  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
-) {
-  const fitted = createFittedSpriteContent(spec, width, height, requestRender, imageAssets)
-  if (!fitted) {
-    return
-  }
-
-  const { sprite, contentWidth, contentHeight, inset } = fitted
-  if (cornerRadius > 0) {
-    const mask = new Graphics()
-    mask
-      .roundRect(-contentWidth / 2, -contentHeight / 2, contentWidth, contentHeight, Math.max(0, cornerRadius - inset))
-      .fill({ color: '#ffffff' })
-    container.addChild(mask)
-    sprite.mask = mask
-  }
-  container.addChild(sprite)
-}
-
-function createFittedSpriteContent(
-  spec: { url?: string; crop?: { x: number; y: number; width: number; height: number }; fit?: 'cover' | 'contain' },
-  width: number,
-  height: number,
-  requestRender: () => void,
-  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
-): FittedSpriteContent | undefined {
-  const source = resolveImageSource(spec.url, imageAssets)
-  if (!source?.renderUrl) {
-    return undefined
-  }
-
-  const texture = requestTextureAsset(source.renderUrl, requestRender)
-  if (!texture) {
-    return undefined
-  }
-
-  const fit = spec.fit ?? 'cover'
-  const inset = fit === 'contain' ? 7 : 0
-  const contentWidth = width - inset * 2
-  const contentHeight = height - inset * 2
-  const targetAspect = contentWidth / contentHeight
-  const baseTexture = textureForSpriteSpec(source.renderUrl, texture, spec.crop)
-  const displayTexture =
-    fit === 'cover'
-      ? textureForCoverAspect(`${source.renderUrl}|${cropSignature(spec.crop)}`, baseTexture, targetAspect)
-      : baseTexture
-  const sprite = new Sprite(displayTexture)
-  sprite.anchor.set(0.5)
-  const sourceAspect = displayTexture.width / displayTexture.height
-
-  if (fit === 'contain') {
-    if (sourceAspect > targetAspect) {
-      sprite.width = contentWidth
-      sprite.height = sprite.width / sourceAspect
-    } else {
-      sprite.height = contentHeight
-      sprite.width = sprite.height * sourceAspect
-    }
-  } else {
-    sprite.width = contentWidth
-    sprite.height = contentHeight
-  }
-
-  return {
-    sprite,
-    contentWidth,
-    contentHeight,
-    inset,
-  }
-}
-
-function visibleBoardSpec(room: RoomDoc, objectId: Id) {
-  const object = room.objects[objectId]
-  if (!isBoard(object)) {
-    return undefined
-  }
-
-  return isBoardFaceUp(object) ? object.face : object.back
-}
-
-function addBoardSelectionOutline(
-  container: Container,
-  renderer: Application['renderer'],
-  textureCache: Map<string, CardTextureCacheEntry>,
-  room: RoomDoc,
-  objectId: Id,
-  width: number,
-  height: number,
-  thickness: number,
-  color: string,
-  alpha: number,
-  requestRender: () => void,
-  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
-) {
-  const spec = visibleBoardSpec(room, objectId)
-  if (spec?.kind !== 'image-url') {
-    return false
-  }
-
-  const texture = getBoardSelectionTexture(
-    renderer,
-    textureCache,
-    `board-selection:${objectId}`,
-    width,
-    height,
-    spec,
-    requestRender,
-    imageAssets,
-  )
-  if (!texture) {
-    return false
-  }
-
-  const sprite = new Sprite(texture)
-  sprite.anchor.set(0.5)
-  sprite.width = width
-  sprite.height = height
-  const filter = new OutlineFilter({
-    thickness,
-    color,
-    alpha,
-    quality: 0.35,
-    knockout: true,
-  })
-  filter.resolution = 'inherit'
-  filter.antialias = 'inherit'
-  sprite.filters = [filter]
-  container.addChild(sprite)
-  return true
-}
-
-function boardSelectionTextureSignature(
-  width: number,
-  height: number,
-  spec: SpriteSpec,
-  resolution: number,
-  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
-) {
-  return JSON.stringify({
-    width,
-    height,
-    resolution,
-    spec,
-    textureState: spriteSpecTextureState(spec, imageAssets),
-  })
-}
-
-function boardSelectionTextureResolution(rendererResolution: number, width: number, height: number) {
-  const maxDimensionResolution = BOARD_SELECTION_TEXTURE_MAX_DIMENSION / Math.max(width, height)
-  return Math.max(
-    1,
-    Math.min(
-      BOARD_SELECTION_TEXTURE_MAX_RESOLUTION,
-      rendererResolution * 2,
-      maxDimensionResolution,
-    ),
-  )
-}
-
-function getBoardSelectionTexture(
-  renderer: Application['renderer'],
-  textureCache: Map<string, CardTextureCacheEntry>,
-  cacheKey: string,
-  width: number,
-  height: number,
-  spec: SpriteSpec,
-  requestRender: () => void,
-  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
-) {
-  const resolution = boardSelectionTextureResolution(renderer.resolution, width, height)
-  const signature = boardSelectionTextureSignature(width, height, spec, resolution, imageAssets)
-  const cached = textureCache.get(cacheKey)
-  if (cached && cached.signature === signature) {
-    return cached.texture
-  }
-
-  const surface = new Container()
-  addSpriteContents(surface, spec, width, height, 0, requestRender, imageAssets)
-  if (surface.children.length === 0) {
-    surface.destroy({ children: true })
-    return undefined
-  }
-
-  cached?.texture.destroy(true)
-
-  const texture = renderer.generateTexture({
-    target: surface,
-    frame: new Rectangle(-width / 2, -height / 2, width, height),
-    resolution,
-    antialias: false,
-    textureSourceOptions: {
-      scaleMode: 'linear',
-    },
-  })
-  surface.destroy({ children: true })
-  textureCache.set(cacheKey, { signature, texture })
-  return texture
-}
-
-function addCardSurface(
-  container: Container,
-  width: number,
-  height: number,
-  spec: SpriteSpec,
-  fallbackLabel: string,
-  requestRender: () => void,
-  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
-) {
-  const imageSource = spec.kind === 'image-url' ? resolveImageSource(spec.url, imageAssets) : undefined
-  const card = new Graphics()
-  card
-    .roundRect(-width / 2, -height / 2, width, height, 18)
-    .fill({ color: spec.bg ?? '#f8efe1' })
-  container.addChild(card)
-
-  if (imageSource?.renderUrl) {
-    addSpriteContents(container, spec, width, height, 18, requestRender, imageAssets)
-  } else {
-    const text = new Text({
-      text: spec.label ?? fallbackLabel,
-      style: {
-        fontFamily: 'Avenir Next, Trebuchet MS, sans-serif',
-        fontSize: 18,
-        fill: spec.fg ?? '#1d2428',
-        align: 'center',
-        wordWrap: true,
-        wordWrapWidth: width - 28,
-      },
-    })
-    text.anchor.set(0.5)
-    container.addChild(text)
-  }
-
-  const border = new Graphics()
-  border
-    .roundRect(-width / 2, -height / 2, width, height, 18)
-    .stroke({ width: 2, color: '#2b1b16', alpha: 0.34 })
-  container.addChild(border)
-}
-
-function spriteSpecTextureState(spec: SpriteSpec, imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>) {
-  if (spec.kind !== 'image-url') {
-    return 'na'
-  }
-
-  const source = resolveImageSource(spec.url, imageAssets)
-  if (!source) {
-    return 'na'
-  }
-
-  if (!source.renderUrl) {
-    return source.signature
-  }
-
-  if (Cache.has(source.renderUrl) || textureAssetCache.get(source.renderUrl)?.status === 'loaded') {
-    return `ready:${source.signature}`
-  }
-
-  return `${textureAssetCache.get(source.renderUrl)?.status ?? 'pending'}:${source.signature}`
-}
-
-function cardTextureSignature(
-  width: number,
-  height: number,
-  spec: SpriteSpec,
-  fallbackLabel: string,
-  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
-) {
-  return JSON.stringify({
-    width,
-    height,
-    fallbackLabel,
-    spec,
-    textureState: spriteSpecTextureState(spec, imageAssets),
-  })
-}
-
-function getCardSurfaceTexture(
-  renderer: Application['renderer'],
-  textureCache: Map<string, CardTextureCacheEntry>,
-  cacheKey: string,
-  width: number,
-  height: number,
-  spec: SpriteSpec,
-  fallbackLabel: string,
-  requestRender: () => void,
-  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
-) {
-  const signature = cardTextureSignature(width, height, spec, fallbackLabel, imageAssets)
-  const cached = textureCache.get(cacheKey)
-  if (cached && cached.signature === signature) {
-    return cached.texture
-  }
-
-  cached?.texture.destroy(true)
-
-  const surface = new Container()
-  addCardSurface(surface, width, height, spec, fallbackLabel, requestRender, imageAssets)
-  const texture = renderer.generateTexture({
-    target: surface,
-    resolution: renderer.resolution,
-    antialias: true,
-  })
-  surface.destroy({ children: true })
-  textureCache.set(cacheKey, { signature, texture })
-  return texture
-}
-
-function projectCardCorner(x: number, y: number, angle: number, cameraDistance: number) {
-  const rotatedX = x * Math.cos(angle)
-  const depth = x * Math.sin(angle)
-  const perspective = cameraDistance / (cameraDistance - depth)
-
-  return {
-    x: rotatedX * perspective,
-    y: y * perspective,
-  }
-}
-
-function addCardContents(
-  container: Container,
-  renderer: Application['renderer'],
-  textureCache: Map<string, CardTextureCacheEntry>,
-  room: RoomDoc,
-  objectId: Id,
-  currentPlayerId: string | undefined,
-  requestRender: () => void,
-  flipAnimations: Map<Id, FlipAnimation>,
-  now: number,
-  worldRotation: number,
-  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
-) {
-  const object = room.objects[objectId]
-  if (!isCard(object)) {
-    return
-  }
-
-  const { width, height } = objectDimensions(room, objectId)
-  const defaultFaceVisible = canSeeCardFace(object, currentPlayerId)
-  const { faceVisible, angle, offsetY } = cardFlipPresentation(
-    objectId,
-    defaultFaceVisible,
-    flipAnimations,
-    now,
-  )
-  const spec = faceVisible ? object.face : object.back
-  if (!flipAnimations.has(objectId)) {
-    addCardSurface(container, width, height, spec, object.name, requestRender, imageAssets)
-    return
-  }
-
-  const liftLayer = new Container()
-  liftLayer.position.set(offsetY * Math.sin(worldRotation), offsetY * Math.cos(worldRotation))
-  container.addChild(liftLayer)
-  const texture = getCardSurfaceTexture(
-    renderer,
-    textureCache,
-    `${objectId}:${faceVisible ? 'face' : 'back'}`,
-    width,
-    height,
-    spec,
-    object.name,
-    requestRender,
-    imageAssets,
-  )
-  const halfWidth = width / 2
-  const halfHeight = height / 2
-  const cameraDistance = Math.max(width, height) * 4
-  const topLeft = projectCardCorner(-halfWidth, -halfHeight, angle, cameraDistance)
-  const topRight = projectCardCorner(halfWidth, -halfHeight, angle, cameraDistance)
-  const bottomRight = projectCardCorner(halfWidth, halfHeight, angle, cameraDistance)
-  const bottomLeft = projectCardCorner(-halfWidth, halfHeight, angle, cameraDistance)
-  const mesh = new PerspectiveMesh({
-    texture,
-    verticesX: 6,
-    verticesY: 6,
-  })
-  mesh.setCorners(
-    topLeft.x,
-    topLeft.y,
-    topRight.x,
-    topRight.y,
-    bottomRight.x,
-    bottomRight.y,
-    bottomLeft.x,
-    bottomLeft.y,
-  )
-  liftLayer.addChild(mesh)
-}
-
-function addBoardContents(
-  container: Container,
-  room: RoomDoc,
-  objectId: Id,
-  requestRender: () => void,
-  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
-) {
-  const object = room.objects[objectId]
-  if (!isBoard(object)) {
-    return
-  }
-
-  const { width, height } = object.size
-  const spec = isBoardFaceUp(object) ? object.face : object.back
-  const imageSource = spec.kind === 'image-url' ? resolveImageSource(spec.url, imageAssets) : undefined
-
-  if (imageSource?.renderUrl) {
-    addSpriteContents(container, spec, width, height, 0, requestRender, imageAssets)
-  } else {
-    const board = new Graphics()
-    board
-      .rect(-width / 2, -height / 2, width, height)
-      .fill({ color: spec.bg ?? '#d8d2c1' })
-    container.addChild(board)
-
-    const text = new Text({
-      text: spec.label ?? object.name,
-      style: {
-        fontFamily: 'Avenir Next, Trebuchet MS, sans-serif',
-        fontSize: Math.max(24, Math.min(width, height) * 0.08),
-        fill: spec.fg ?? '#1d2428',
-        align: 'center',
-        wordWrap: true,
-        wordWrapWidth: Math.max(120, width - 48),
-      },
-    })
-    text.anchor.set(0.5)
-    container.addChild(text)
-
-    const border = new Graphics()
-    border
-      .rect(-width / 2, -height / 2, width, height)
-      .stroke({ width: 2, color: '#2b1b16', alpha: 0.28 })
-    container.addChild(border)
-  }
-}
-
-function addDeckContents(
-  container: Container,
-  renderer: Application['renderer'],
-  textureCache: Map<string, CardTextureCacheEntry>,
-  room: RoomDoc,
-  objectId: Id,
-  currentPlayerId: string | undefined,
-  requestRender: () => void,
-  flipAnimations: Map<Id, FlipAnimation>,
-  now: number,
-  worldRotation: number,
-  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
-) {
-  const object = room.objects[objectId]
-  if (!isDeck(object)) {
-    return
-  }
-
-  const { width, height } = object.size
-  const visibleStackCount = Math.min(object.childIds.length, 4)
-
-  if (visibleStackCount === 0) {
-    const emptySlot = new Graphics()
-    emptySlot
-      .roundRect(-width / 2, -height / 2, width, height, 18)
-      .fill({ color: '#244c4f', alpha: 0.2 })
-      .stroke({ width: 3, color: '#e8d7ba', alpha: 0.46 })
-    container.addChild(emptySlot)
-  }
-
-  for (let index = 0; index < visibleStackCount; index += 1) {
-    const cardId = object.childIds[object.childIds.length - visibleStackCount + index]
-    const stackCard = room.objects[cardId]
-    const offsetX = index * 4
-    const offsetY = index * 3
-    const stackCardContainer = new Container()
-    stackCardContainer.position.set(offsetX, offsetY)
-
-    if (isCard(stackCard)) {
-      addCardContents(
-        stackCardContainer,
-        renderer,
-        textureCache,
-        room,
-        stackCard.id,
-        currentPlayerId,
-        requestRender,
-        flipAnimations,
-        now,
-        worldRotation,
-        imageAssets,
-      )
-    } else {
-      const fallback = new Graphics()
-      fallback
-        .roundRect(-width / 2, -height / 2, width, height, 18)
-        .fill({ color: '#f2e3ca' })
-        .stroke({ width: 2, color: '#38231a', alpha: 0.28 })
-      stackCardContainer.addChild(fallback)
-
-      const label = new Text({
-        text: object.name,
-        style: {
-          fontFamily: 'Avenir Next, Trebuchet MS, sans-serif',
-          fontSize: 17,
-          fill: '#1c2125',
-        },
-      })
-      label.anchor.set(0.5)
-      stackCardContainer.addChild(label)
-    }
-
-    container.addChild(stackCardContainer)
-  }
-
-}
-
-function clearPendingDeckPress(pendingDeckPressRef: React.MutableRefObject<PendingDeckPress | null>) {
-  const pending = pendingDeckPressRef.current
-  if (!pending) {
-    return
-  }
-  window.clearTimeout(pending.timeoutId)
-  pendingDeckPressRef.current = null
-}
-
-function pauseViewportCameraGestures(viewport: Viewport) {
-  viewport.plugins.pause('drag')
-  viewport.plugins.pause('pinch')
-}
-
-function resumeViewportCameraGestures(viewport: Viewport) {
-  viewport.plugins.resume('drag')
-  viewport.plugins.resume('pinch')
-}
-
-function reanchorDragToViewport(
-  viewport: Viewport,
-  renderedObjects: Map<Id, RenderedObject>,
-  dragRef: React.MutableRefObject<DragState | null>,
-) {
-  const drag = dragRef.current
-  if (!drag) {
-    return
-  }
-
-  const rendered = renderedObjects.get(drag.id)
-  if (!rendered) {
-    return
-  }
-
-  const world = viewportToLogicalPoint(viewport, viewport.toWorld(drag.currentGlobal))
-  if (drag.mode === 'move') {
-    const offsetX = drag.startTransform.x - drag.startPointer.x
-    const offsetY = drag.startTransform.y - drag.startPointer.y
-    const nextX = world.x + offsetX
-    const nextY = world.y + offsetY
-    rendered.container.position.set(nextX, nextY)
-    rendered.transform = { ...rendered.transform, x: nextX, y: nextY }
-  }
-
-  drag.startPointer = { x: world.x, y: world.y }
-  drag.startTransform = { ...rendered.transform }
-}
-
-function applyAuxiliaryTouchGesture(
-  viewport: Viewport,
-  event: FederatedPointerEvent,
-  auxiliaryTouchRef: React.MutableRefObject<AuxiliaryTouchState>,
-  renderedObjects: Map<Id, RenderedObject>,
-  dragRef: React.MutableRefObject<DragState | null>,
-) {
-  const pointers = auxiliaryTouchRef.current.pointers
-  const previous = pointers.get(event.pointerId) ?? { x: event.global.x, y: event.global.y }
-  pointers.set(event.pointerId, { x: event.global.x, y: event.global.y })
-
-  if (pointers.size === 1) {
-    viewport.x += event.global.x - previous.x
-    viewport.y += event.global.y - previous.y
-    reanchorDragToViewport(viewport, renderedObjects, dragRef)
-    return
-  }
-
-  const entries = [...pointers.entries()].slice(0, 2)
-  if (entries.length < 2) {
-    return
-  }
-
-  const [firstEntry, secondEntry] = entries
-  const [firstPointerId, firstCurrent] = firstEntry
-  const [secondPointerId, secondCurrent] = secondEntry
-  const firstPrevious = firstPointerId === event.pointerId ? previous : pointers.get(firstPointerId) ?? firstCurrent
-  const secondPrevious = secondPointerId === event.pointerId ? previous : pointers.get(secondPointerId) ?? secondCurrent
-
-  const previousCenter = {
-    x: (firstPrevious.x + secondPrevious.x) / 2,
-    y: (firstPrevious.y + secondPrevious.y) / 2,
-  }
-  const nextCenter = {
-    x: (firstCurrent.x + secondCurrent.x) / 2,
-    y: (firstCurrent.y + secondCurrent.y) / 2,
-  }
-  const previousDistance = Math.hypot(firstPrevious.x - secondPrevious.x, firstPrevious.y - secondPrevious.y)
-  const nextDistance = Math.hypot(firstCurrent.x - secondCurrent.x, firstCurrent.y - secondCurrent.y)
-  const anchorWorld = viewport.toWorld(previousCenter)
-
-  if (previousDistance > 0 && nextDistance > 0) {
-    const nextScale = Math.min(MAX_ZOOM_SCALE, Math.max(MIN_ZOOM_SCALE, viewport.scaled * (nextDistance / previousDistance)))
-    viewport.setZoom(nextScale, true)
-  }
-
-  const anchorScreen = viewport.toScreen(anchorWorld)
-  viewport.x += nextCenter.x - anchorScreen.x
-  viewport.y += nextCenter.y - anchorScreen.y
-  reanchorDragToViewport(viewport, renderedObjects, dragRef)
-}
-
-function populateViewportScene(
-  viewport: Viewport,
-  renderedObjects: Map<Id, RenderedObject>,
-  renderer: Application['renderer'],
-  textureCache: Map<string, CardTextureCacheEntry>,
-  room: RoomDoc,
-  ephemeralTransforms: EphemeralTransformMap,
-  currentPlayerId: string | undefined,
-  selectionMode: 'normal' | 'group',
-  selectedId: Id | undefined,
-  selectedIds: Id[],
-  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
-  lassoMode: boolean,
-  hoverDeckId: Id | undefined,
-  canEdit: boolean,
-  allowSelectLocked: boolean,
-  onSelect: (id?: Id) => void,
-  onToggleGroupSelection: (id: Id) => void,
-  onAddToGroupSelection: (ids: Id[]) => void,
-  dragRef: React.MutableRefObject<DragState | null>,
-  auxiliaryTouchRef: React.MutableRefObject<AuxiliaryTouchState>,
-  pendingDeckPressRef: React.MutableRefObject<PendingDeckPress | null>,
-  tapCandidateRef: React.MutableRefObject<TapCandidate | null>,
-  requestRender: () => void,
-  flipAnimations: Map<Id, FlipAnimation>,
-  now: number,
-) {
-  const activeDragId = dragRef.current?.id
-  const priorTransforms = new Map<Id, Transform2D>()
-  for (const [objectId, rendered] of renderedObjects) {
-    priorTransforms.set(objectId, rendered.transform)
-  }
-
-  for (const child of viewport.removeChildren()) {
-    child.destroy({ children: true })
-  }
-  renderedObjects.clear()
-  const scene = new Container()
-  const worldOffset = viewportWorldOffset(viewport)
-  scene.position.set(worldOffset.x, worldOffset.y)
-  viewport.addChild(scene)
-  scene.addChild(boardBackground())
-  const boardLayer = new Container()
-  const pieceLayer = new Container({ isRenderGroup: true })
-  scene.addChild(boardLayer)
-  scene.addChild(pieceLayer)
-
-  const root = getRootPlane(room)
-  const selectedIdsSet = new Set(selectedIds)
-
-  for (const objectId of root.childOrder) {
-    const object = room.objects[objectId]
-    const baseTransform = ephemeralTransforms[objectId] ?? root.childTransforms[objectId]
-    const transform = activeDragId === objectId ? priorTransforms.get(objectId) ?? baseTransform : baseTransform
-    if (!object || !transform) {
-      continue
-    }
-
-    const container = new Container()
-    container.position.set(transform.x, transform.y)
-    container.rotation = transform.rotation
-    container.eventMode = 'static'
-    container.cursor =
-      canEdit && !object.locked
-        ? 'grab'
-        : object.locked && allowSelectLocked
-          ? 'pointer'
-          : 'default'
-
-    let width = Number(DEFAULT_CARD_SIZE.width)
-    let height = Number(DEFAULT_CARD_SIZE.height)
-
-    if (isCard(object)) {
-      width = object.size.width
-      height = object.size.height
-      addCardContents(
-        container,
-        renderer,
-        textureCache,
-        room,
-        objectId,
-        currentPlayerId,
-        requestRender,
-        flipAnimations,
-        now,
-        transform.rotation,
-        imageAssets,
-      )
-    } else if (isBoard(object)) {
-      width = object.size.width
-      height = object.size.height
-      addBoardContents(container, room, objectId, requestRender, imageAssets)
-    } else if (isDeck(object)) {
-      const dimensions = objectDimensions(room, objectId)
-      width = dimensions.width
-      height = dimensions.height
-      addDeckContents(
-        container,
-        renderer,
-        textureCache,
-        room,
-        objectId,
-        currentPlayerId,
-        requestRender,
-        flipAnimations,
-        now,
-        transform.rotation,
-        imageAssets,
-      )
-    }
-
-    const hitArea = new Graphics()
-    const hidesSelectionChrome = isCard(object) && flipAnimations.has(objectId)
-    const selectionStrokeWidth =
-      hoverDeckId === objectId
-        ? 5
-        : selectionMode === 'group'
-          ? selectedIdsSet.has(objectId)
-            ? selectedId === objectId
-              ? 5
-              : 4
-            : 0
-          : selectedId === objectId
-            ? 4
-            : 0
-    const selectionStrokeColor =
-      hoverDeckId === objectId
-        ? '#ff8d47'
-        : selectionMode === 'group' && selectedId === objectId
-          ? '#ffd78a'
-          : '#ffcb72'
-    const selectionStrokeAlpha = hoverDeckId === objectId ? 1 : 0.95
-    const selectionGraphicsStrokeWidth = screenPixelsToWorldUnits(viewport, selectionStrokeWidth)
-    if (isBoard(object)) {
-      const addedImageOutline =
-        selectionStrokeWidth > 0 &&
-        addBoardSelectionOutline(
-          container,
-          renderer,
-          textureCache,
-          room,
-          objectId,
-          width,
-          height,
-          selectionStrokeWidth,
-          selectionStrokeColor,
-          selectionStrokeAlpha,
-          requestRender,
-          imageAssets,
-        )
-
-      if (!addedImageOutline) {
-        hitArea
-          .rect(-width / 2, -height / 2, width, height)
-          .stroke({
-            width: selectionGraphicsStrokeWidth,
-            color: selectionStrokeColor,
-            alpha: selectionStrokeAlpha,
-          })
-      }
-    } else {
-      hitArea
-        .roundRect(-width / 2, -height / 2, width, height, 18)
-        .stroke({
-          width:
-            hidesSelectionChrome
-              ? 0
-              : selectionGraphicsStrokeWidth,
-          color: selectionStrokeColor,
-          alpha: selectionStrokeAlpha,
-        })
-    }
-    container.addChild(hitArea)
-
-    const showsRotateHandle =
-      selectionMode === 'normal' && selectedId === objectId && canEdit && !object.locked && !hidesSelectionChrome
-    const buildGroupDragMembers = () =>
-      selectedIds
-        .map((memberId) => {
-          const memberTransform = transformForObject(room, memberId, ephemeralTransforms)
-          return memberTransform ? { id: memberId, startTransform: { ...memberTransform } } : undefined
-        })
-        .filter((member): member is { id: Id; startTransform: Transform2D } => Boolean(member))
-
-    container.hitArea = {
-      contains: (x: number, y: number) => {
-        const withinCardBounds = x >= -width / 2 && x <= width / 2 && y >= -height / 2 && y <= height / 2
-        if (withinCardBounds) {
-          return true
-        }
-
-        if (!showsRotateHandle) {
-          return false
-        }
-
-        return Math.hypot(x, y + height / 2 + 24) <= 13
-      },
-    }
-    container.on('pointerdown', (event) => {
-      if (selectionMode === 'group' && lassoMode) {
-        return
-      }
-
-      const activeDrag = dragRef.current
-      if (activeDrag && event.pointerType === 'touch') {
-        if (event.pointerId !== activeDrag.pointerId) {
-          auxiliaryTouchRef.current.pointers.set(event.pointerId, { x: event.global.x, y: event.global.y })
-        }
-        event.stopPropagation()
-        return
-      }
-
-      const isTouchPointer = event.pointerType === 'touch'
-      const isMiddleMouse = event.pointerType === 'mouse' && event.button === 1
-
-      if (isMiddleMouse) {
-        return
-      }
-
-      const shouldPromoteToGroupSelection =
-        event.shiftKey &&
-        selectionMode === 'normal' &&
-        selectedId !== undefined &&
-        selectedId !== objectId &&
-        isMultiselectObjectType(room, selectedId) &&
-        isMultiselectObjectType(room, objectId) &&
-        (!object.locked || allowSelectLocked)
-
-      if (shouldPromoteToGroupSelection) {
-        onAddToGroupSelection([selectedId, objectId])
-        event.stopPropagation()
-        return
-      }
-
-      if (object.locked) {
-        if (!allowSelectLocked) {
-          return
-        }
-
-        tapCandidateRef.current = {
-          id: objectId,
-          pointerId: event.pointerId,
-          startPointer: { x: event.global.x, y: event.global.y },
-        }
-        return
-      }
-
-      if (selectionMode === 'group') {
-        if (!isMultiselectObjectType(room, objectId)) {
-          return
-        }
-
-        const isSelected = selectedIdsSet.has(objectId)
-        tapCandidateRef.current = {
-          id: objectId,
-          pointerId: event.pointerId,
-          startPointer: { x: event.global.x, y: event.global.y },
-        }
-
-        if (!isSelected) {
-          return
-        }
-
-        event.stopPropagation()
-
-        if (!canEdit || !isMovableObjectType(room, objectId)) {
-          return
-        }
-
-        const world = viewportToLogicalPoint(viewport, viewport.toWorld(event.global))
-        dragRef.current = {
-          id: objectId,
-          pointerId: event.pointerId,
-          mode: 'move',
-          startPointer: { x: world.x, y: world.y },
-          startTransform: { ...transform },
-          currentGlobal: { x: event.global.x, y: event.global.y },
-          moved: false,
-          raisedToFront: false,
-          groupMembers: buildGroupDragMembers(),
-        }
-        pauseViewportCameraGestures(viewport)
-        return
-      }
-
-      if (isDeck(object) && canEdit && !object.locked && (!isTouchPointer || selectedId === objectId)) {
-        onSelect(objectId)
-        event.stopPropagation()
-
-        tapCandidateRef.current = {
-          id: objectId,
-          pointerId: event.pointerId,
-          startPointer: { x: event.global.x, y: event.global.y },
-        }
-
-        clearPendingDeckPress(pendingDeckPressRef)
-        const world = viewportToLogicalPoint(viewport, viewport.toWorld(event.global))
-        const timeoutId = window.setTimeout(() => {
-          const pending = pendingDeckPressRef.current
-          if (!pending || pending.deckId !== objectId || pending.pointerId !== event.pointerId) {
-            return
-          }
-
-          dragRef.current = {
-            id: objectId,
-            pointerId: event.pointerId,
-            mode: 'move',
-            startPointer: pending.startWorld,
-            startTransform: pending.startTransform,
-            currentGlobal: { x: event.global.x, y: event.global.y },
-            moved: false,
-            raisedToFront: false,
-          }
-          tapCandidateRef.current = null
-          pendingDeckPressRef.current = null
-          pauseViewportCameraGestures(viewport)
-        }, DECK_LONG_PRESS_MS)
-
-        pendingDeckPressRef.current = {
-          deckId: objectId,
-          pointerId: event.pointerId,
-          startGlobal: { x: event.global.x, y: event.global.y },
-          startWorld: { x: world.x, y: world.y },
-          startTransform: { ...transform },
-          timeoutId,
-        }
-        return
-      }
-
-      if (!isTouchPointer) {
-        onSelect(objectId)
-        event.stopPropagation()
-
-        if (!canEdit || object.locked || !isMovableObjectType(room, objectId)) {
-          return
-        }
-
-        const world = viewportToLogicalPoint(viewport, viewport.toWorld(event.global))
-        dragRef.current = {
-          id: objectId,
-          pointerId: event.pointerId,
-          mode: 'move',
-          startPointer: { x: world.x, y: world.y },
-          startTransform: { ...transform },
-          currentGlobal: { x: event.global.x, y: event.global.y },
-          moved: false,
-          raisedToFront: false,
-        }
-        pauseViewportCameraGestures(viewport)
-        return
-      }
-
-      tapCandidateRef.current = {
-        id: objectId,
-        pointerId: event.pointerId,
-        startPointer: { x: event.global.x, y: event.global.y },
-      }
-
-      if (selectedId !== objectId) {
-        return
-      }
-
-      event.stopPropagation()
-
-      if (!canEdit || object.locked || !isMovableObjectType(room, objectId)) {
-        return
-      }
-
-      const world = viewportToLogicalPoint(viewport, viewport.toWorld(event.global))
-      dragRef.current = {
-        id: objectId,
-        pointerId: event.pointerId,
-        mode: 'move',
-        startPointer: { x: world.x, y: world.y },
-        startTransform: { ...transform },
-        currentGlobal: { x: event.global.x, y: event.global.y },
-        moved: false,
-        raisedToFront: false,
-      }
-      pauseViewportCameraGestures(viewport)
-    })
-    container.on('pointerup', (event) => {
-      const pendingDeckPress = pendingDeckPressRef.current
-      if (pendingDeckPress?.deckId === objectId && pendingDeckPress.pointerId === event.pointerId) {
-        clearPendingDeckPress(pendingDeckPressRef)
-      }
-
-      const candidate = tapCandidateRef.current
-      if (!candidate || candidate.id !== objectId || candidate.pointerId !== event.pointerId) {
-        return
-      }
-
-      tapCandidateRef.current = null
-      const distance = Math.hypot(
-        event.global.x - candidate.startPointer.x,
-        event.global.y - candidate.startPointer.y,
-      )
-
-      if (distance <= TAP_GRACE_DISTANCE && !dragRef.current) {
-        if (selectionMode === 'group') {
-          onToggleGroupSelection(objectId)
-        } else {
-          onSelect(objectId)
-        }
-      }
-    })
-    container.on('pointerupoutside', (event) => {
-      const pendingDeckPress = pendingDeckPressRef.current
-      if (pendingDeckPress?.deckId === objectId && pendingDeckPress.pointerId === event.pointerId) {
-        clearPendingDeckPress(pendingDeckPressRef)
-      }
-      if (tapCandidateRef.current?.id === objectId) {
-        tapCandidateRef.current = null
-      }
-    })
-
-    if (showsRotateHandle) {
-      const handle = new Graphics()
-      handle
-        .circle(0, -height / 2 - 24, 13)
-        .fill({ color: '#f7c05e' })
-        .stroke({ width: 3, color: '#5a3918' })
-      handle.eventMode = 'static'
-      handle.cursor = 'grab'
-      handle.on('pointerdown', (event) => {
-        event.stopPropagation()
-        const world = viewportToLogicalPoint(viewport, viewport.toWorld(event.global))
-        dragRef.current = {
-          id: objectId,
-          pointerId: event.pointerId,
-          mode: 'rotate',
-          startPointer: { x: world.x, y: world.y },
-          startTransform: { ...transform },
-          currentGlobal: { x: event.global.x, y: event.global.y },
-          moved: false,
-          raisedToFront: false,
-        }
-        pauseViewportCameraGestures(viewport)
-      })
-      container.addChild(handle)
-    }
-
-    if (isBoard(object)) {
-      boardLayer.addChild(container)
-    } else {
-      pieceLayer.addChild(container)
-    }
-    renderedObjects.set(objectId, {
-      container,
-      width,
-      height,
-      transform: { ...transform },
-    })
-  }
-}
-
-function applyDisplayedTransforms(
-  renderedObjects: Map<Id, RenderedObject>,
-  room: RoomDoc,
-  ephemeralTransforms: EphemeralTransformMap,
-  dragRef: React.MutableRefObject<DragState | null>,
-) {
-  const activeDragIds = new Set(
-    dragRef.current?.groupMembers?.map((member) => member.id) ?? (dragRef.current?.id ? [dragRef.current.id] : []),
-  )
-
-  for (const [objectId, rendered] of renderedObjects) {
-    if (activeDragIds.has(objectId)) {
-      continue
-    }
-
-    const transform = transformForObject(room, objectId, ephemeralTransforms)
-    if (!transform) {
-      continue
-    }
-
-    rendered.container.position.set(transform.x, transform.y)
-    rendered.container.rotation = transform.rotation
-    rendered.transform = { ...transform }
-  }
-}
-
-function syncActiveDragRendering(
-  viewport: Viewport,
-  renderedObjects: Map<Id, RenderedObject>,
-  dragRef: React.MutableRefObject<DragState | null>,
-) {
-  const drag = dragRef.current
-  if (!drag) {
-    return
-  }
-
-  const rendered = renderedObjects.get(drag.id)
-  if (!rendered) {
-    return
-  }
-
-  const world = viewportToLogicalPoint(viewport, viewport.toWorld(drag.currentGlobal))
-  if (drag.mode === 'move') {
-    const deltaX = world.x - drag.startPointer.x
-    const deltaY = world.y - drag.startPointer.y
-
-    if (drag.groupMembers && drag.groupMembers.length > 0) {
-      for (const member of drag.groupMembers) {
-        const memberRendered = renderedObjects.get(member.id)
-        if (!memberRendered) {
-          continue
-        }
-
-        const nextX = member.startTransform.x + deltaX
-        const nextY = member.startTransform.y + deltaY
-        memberRendered.container.position.set(nextX, nextY)
-        memberRendered.transform = { ...member.startTransform, x: nextX, y: nextY }
-      }
+function useSourceImagePreload(url: string | undefined) {
+  useEffect(() => {
+    if (!url) {
       return
     }
 
-    const nextX = drag.startTransform.x + deltaX
-    const nextY = drag.startTransform.y + deltaY
-    rendered.container.position.set(nextX, nextY)
-    rendered.transform = { ...drag.startTransform, x: nextX, y: nextY }
-    return
+    void loadSourceImageElement(url).catch(() => {})
+  }, [url])
+}
+
+function loadSourceImageBitmap(url: string) {
+  const resolved = resolvedSourceImageBitmapCache.get(url)
+  if (resolved) {
+    return Promise.resolve(resolved)
   }
 
-  const angle = Math.atan2(world.y - drag.startTransform.y, world.x - drag.startTransform.x) + Math.PI / 2
-  rendered.container.rotation = angle
-  rendered.transform = { ...drag.startTransform, rotation: angle }
+  const cached = sourceImageBitmapCache.get(url)
+  if (cached) {
+    return cached
+  }
+
+  const request = loadSourceImageElement(url)
+    .then(async (image) => {
+      if (typeof createImageBitmap !== 'function') {
+        throw new Error('ImageBitmap is not supported')
+      }
+
+      const bitmap = await createImageBitmap(image)
+      resolvedSourceImageBitmapCache.set(url, bitmap)
+      sourceImageBitmapCache.delete(url)
+      return bitmap
+    })
+    .catch((error) => {
+      resolvedSourceImageBitmapCache.delete(url)
+      sourceImageBitmapCache.delete(url)
+      throw error
+    })
+
+  sourceImageBitmapCache.set(url, request)
+  return request
+}
+
+function canvasBlob(canvas: HTMLCanvasElement | OffscreenCanvas) {
+  if (typeof OffscreenCanvas !== 'undefined' && canvas instanceof OffscreenCanvas) {
+    return canvas.convertToBlob({ type: 'image/png' })
+  }
+
+  return new Promise<Blob | null>((resolve) => {
+    ;(canvas as HTMLCanvasElement).toBlob((nextBlob) => resolve(nextBlob), 'image/png')
+  })
+}
+
+function preparedSpriteSurfaceCacheKey(
+  imageUrl: string,
+  crop: ReturnType<typeof normalizeCrop>,
+  rasterWidth: number,
+  rasterHeight: number,
+) {
+  return [
+    imageUrl,
+    crop.x.toFixed(4),
+    crop.y.toFixed(4),
+    crop.width.toFixed(4),
+    crop.height.toFixed(4),
+    rasterWidth,
+    rasterHeight,
+  ].join('|')
+}
+
+async function buildPreparedSpriteSurfaceUrl(
+  imageUrl: string,
+  crop: ReturnType<typeof normalizeCrop>,
+  rasterWidth: number,
+  rasterHeight: number,
+) {
+  if (typeof document === 'undefined' && typeof OffscreenCanvas === 'undefined') {
+    return null
+  }
+
+  try {
+    if (typeof createImageBitmap === 'function') {
+      const sourceBitmap = await loadSourceImageBitmap(imageUrl)
+      const sx = Math.max(0, Math.round(sourceBitmap.width * crop.x))
+      const sy = Math.max(0, Math.round(sourceBitmap.height * crop.y))
+      const sw = Math.max(1, Math.round(sourceBitmap.width * crop.width))
+      const sh = Math.max(1, Math.round(sourceBitmap.height * crop.height))
+      const preparedBitmap = await createImageBitmap(sourceBitmap, sx, sy, sw, sh, {
+        resizeWidth: rasterWidth,
+        resizeHeight: rasterHeight,
+        resizeQuality: 'high',
+      })
+
+      const canvas =
+        typeof OffscreenCanvas !== 'undefined'
+          ? new OffscreenCanvas(rasterWidth, rasterHeight)
+          : Object.assign(document.createElement('canvas'), { width: rasterWidth, height: rasterHeight })
+      const context = canvas.getContext('2d')
+      if (!context) {
+        preparedBitmap.close()
+        return null
+      }
+
+      context.clearRect(0, 0, rasterWidth, rasterHeight)
+      context.drawImage(preparedBitmap, 0, 0)
+      preparedBitmap.close()
+
+      const blob = await canvasBlob(canvas)
+      return blob ? URL.createObjectURL(blob) : null
+    }
+  } catch {
+    // Fall back to the plain HTMLImageElement canvas path below.
+  }
+
+  const image = await loadSourceImageElement(imageUrl)
+  const canvas = document.createElement('canvas')
+  canvas.width = rasterWidth
+  canvas.height = rasterHeight
+  const context = canvas.getContext('2d')
+  if (!context) {
+    return null
+  }
+
+  context.clearRect(0, 0, rasterWidth, rasterHeight)
+  context.drawImage(
+    image,
+    image.naturalWidth * crop.x,
+    image.naturalHeight * crop.y,
+    image.naturalWidth * crop.width,
+    image.naturalHeight * crop.height,
+    0,
+    0,
+    rasterWidth,
+    rasterHeight,
+  )
+
+  const blob = await canvasBlob(canvas)
+
+  return blob ? URL.createObjectURL(blob) : null
+}
+
+function usePreparedSpriteSurfaceUrl(
+  imageUrl: string | undefined,
+  crop: ReturnType<typeof normalizeCrop>,
+  fitWorldWidth: number,
+  fitWorldHeight: number,
+  intrinsicSize?: Size,
+) {
+  const hasRenderableImage = Boolean(imageUrl)
+  const { rasterWidth, rasterHeight } = intrinsicSize
+    ? preparedSpriteSurfaceRasterSize(crop, fitWorldWidth, fitWorldHeight, intrinsicSize)
+    : {
+      rasterWidth: Math.max(1, Math.round(fitWorldWidth)),
+      rasterHeight: Math.max(1, Math.round(fitWorldHeight)),
+    }
+  const cacheKey = imageUrl && hasRenderableImage
+    ? preparedSpriteSurfaceCacheKey(imageUrl, crop, rasterWidth, rasterHeight)
+    : undefined
+  const cachedPreparedSurfaceUrl = cacheKey ? preparedSpriteSurfaceUrlCache.get(cacheKey) : undefined
+  const [loadedPreparedSurface, setLoadedPreparedSurface] = useState<{ key: string; url: string | null } | undefined>(
+    () => {
+      if (!cacheKey || cachedPreparedSurfaceUrl === undefined) {
+        return undefined
+      }
+
+      return {
+        key: cacheKey,
+        url: cachedPreparedSurfaceUrl,
+      }
+    },
+  )
+
+  useEffect(() => {
+    if (!imageUrl || !cacheKey) {
+      return
+    }
+
+    const cached = preparedSpriteSurfaceUrlCache.get(cacheKey)
+    if (cached !== undefined) {
+      return
+    }
+
+    let cancelled = false
+    const request =
+      preparedSpriteSurfaceRequestCache.get(cacheKey) ??
+      buildPreparedSpriteSurfaceUrl(imageUrl, crop, rasterWidth, rasterHeight)
+        .then((url) => {
+          preparedSpriteSurfaceUrlCache.set(cacheKey, url)
+          preparedSpriteSurfaceRequestCache.delete(cacheKey)
+          return url
+        })
+        .catch(() => {
+          preparedSpriteSurfaceUrlCache.set(cacheKey, null)
+          preparedSpriteSurfaceRequestCache.delete(cacheKey)
+          return null
+        })
+
+    preparedSpriteSurfaceRequestCache.set(cacheKey, request)
+    void request.then((url) => {
+      if (!cancelled) {
+        setLoadedPreparedSurface({
+          key: cacheKey,
+          url,
+        })
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [cacheKey, crop, imageUrl, rasterHeight, rasterWidth])
+
+  const loadedPreparedSurfaceUrl = loadedPreparedSurface?.key === cacheKey
+    ? loadedPreparedSurface?.url
+    : undefined
+
+  const preparedSurfaceUrl =
+    typeof loadedPreparedSurfaceUrl === 'string'
+      ? loadedPreparedSurfaceUrl
+      : typeof cachedPreparedSurfaceUrl === 'string'
+        ? cachedPreparedSurfaceUrl
+        : undefined
+
+  let stage: 'preparing' | 'ready' | 'failed' | undefined
+  if (!imageUrl || !cacheKey) {
+    stage = undefined
+  } else if (preparedSurfaceUrl) {
+    stage = 'ready'
+  } else if (loadedPreparedSurface?.key === cacheKey && loadedPreparedSurface?.url === null) {
+    stage = 'failed'
+  } else if (cachedPreparedSurfaceUrl === null) {
+    stage = 'failed'
+  } else {
+    stage = 'preparing'
+  }
+
+  return {
+    preparedSurfaceUrl,
+    stage,
+  }
+}
+
+function requestPreparedSpriteSurface(
+  imageUrl: string,
+  crop: ReturnType<typeof normalizeCrop>,
+  fitWorldWidth: number,
+  fitWorldHeight: number,
+  intrinsicSize: Size,
+) {
+  const { rasterWidth, rasterHeight } = preparedSpriteSurfaceRasterSize(crop, fitWorldWidth, fitWorldHeight, intrinsicSize)
+  const cacheKey = preparedSpriteSurfaceCacheKey(imageUrl, crop, rasterWidth, rasterHeight)
+  const cached = preparedSpriteSurfaceUrlCache.get(cacheKey)
+  if (cached !== undefined) {
+    return Promise.resolve(cached)
+  }
+
+  const existingRequest = preparedSpriteSurfaceRequestCache.get(cacheKey)
+  if (existingRequest) {
+    return existingRequest
+  }
+
+  const request = buildPreparedSpriteSurfaceUrl(imageUrl, crop, rasterWidth, rasterHeight)
+    .then((url) => {
+      preparedSpriteSurfaceUrlCache.set(cacheKey, url)
+      preparedSpriteSurfaceRequestCache.delete(cacheKey)
+      return url
+    })
+    .catch(() => {
+      preparedSpriteSurfaceUrlCache.set(cacheKey, null)
+      preparedSpriteSurfaceRequestCache.delete(cacheKey)
+      return null
+    })
+
+  preparedSpriteSurfaceRequestCache.set(cacheKey, request)
+  return request
+}
+
+function composeCrop(
+  parent: ReturnType<typeof normalizeCrop>,
+  child: { x: number; y: number; width: number; height: number },
+) {
+  return normalizeCrop({
+    x: parent.x + parent.width * child.x,
+    y: parent.y + parent.height * child.y,
+    width: parent.width * child.width,
+    height: parent.height * child.height,
+  })
+}
+
+async function analyzeLargestOpaqueRegion(
+  imageUrl: string,
+  crop: ReturnType<typeof normalizeCrop>,
+) {
+  if (typeof document === 'undefined') {
+    return null
+  }
+
+  const image = await loadSourceImageElement(imageUrl)
+  const cropPixelWidth = Math.max(1, Math.round(image.naturalWidth * crop.width))
+  const cropPixelHeight = Math.max(1, Math.round(image.naturalHeight * crop.height))
+  const analysisScale = Math.min(
+    1,
+    ALPHA_COMPONENT_ANALYSIS_MAX_DIMENSION / Math.max(cropPixelWidth, cropPixelHeight, 1),
+  )
+  const rasterWidth = Math.max(1, Math.round(cropPixelWidth * analysisScale))
+  const rasterHeight = Math.max(1, Math.round(cropPixelHeight * analysisScale))
+  const canvas = document.createElement('canvas')
+  canvas.width = rasterWidth
+  canvas.height = rasterHeight
+  const context = canvas.getContext('2d', { willReadFrequently: true })
+  if (!context) {
+    return null
+  }
+
+  context.clearRect(0, 0, rasterWidth, rasterHeight)
+  context.drawImage(
+    image,
+    image.naturalWidth * crop.x,
+    image.naturalHeight * crop.y,
+    image.naturalWidth * crop.width,
+    image.naturalHeight * crop.height,
+    0,
+    0,
+    rasterWidth,
+    rasterHeight,
+  )
+
+  const { data } = context.getImageData(0, 0, rasterWidth, rasterHeight)
+  const alphaFilled = new Uint8Array(rasterWidth * rasterHeight)
+  let alphaMinX = rasterWidth
+  let alphaMinY = rasterHeight
+  let alphaMaxX = -1
+  let alphaMaxY = -1
+  let alphaCount = 0
+  for (let index = 0; index < alphaFilled.length; index += 1) {
+    const alpha = data[index * 4 + 3]
+    if (alpha < ALPHA_COMPONENT_THRESHOLD) {
+      continue
+    }
+
+    alphaFilled[index] = 1
+    alphaCount += 1
+    const x = index % rasterWidth
+    const y = Math.floor(index / rasterWidth)
+    alphaMinX = Math.min(alphaMinX, x)
+    alphaMinY = Math.min(alphaMinY, y)
+    alphaMaxX = Math.max(alphaMaxX, x)
+    alphaMaxY = Math.max(alphaMaxY, y)
+  }
+
+  let filled = alphaFilled
+  const alphaOccupiesWholeRaster =
+    alphaCount > 0 &&
+    alphaMinX === 0 &&
+    alphaMinY === 0 &&
+    alphaMaxX === rasterWidth - 1 &&
+    alphaMaxY === rasterHeight - 1
+
+  if (!alphaOccupiesWholeRaster) {
+    return FULL_CROP
+  }
+
+  if (alphaOccupiesWholeRaster) {
+    const cornerSamples: Array<{ r: number; g: number; b: number; count: number }> = []
+    const cornerOrigins = [
+      { x: 0, y: 0 },
+      { x: Math.max(0, rasterWidth - 3), y: 0 },
+      { x: 0, y: Math.max(0, rasterHeight - 3) },
+      { x: Math.max(0, rasterWidth - 3), y: Math.max(0, rasterHeight - 3) },
+    ]
+
+    for (const origin of cornerOrigins) {
+      let r = 0
+      let g = 0
+      let b = 0
+      let count = 0
+      for (let sampleY = origin.y; sampleY < Math.min(rasterHeight, origin.y + 3); sampleY += 1) {
+        for (let sampleX = origin.x; sampleX < Math.min(rasterWidth, origin.x + 3); sampleX += 1) {
+          const pixelIndex = (sampleY * rasterWidth + sampleX) * 4
+          if (data[pixelIndex + 3] < ALPHA_COMPONENT_THRESHOLD) {
+            continue
+          }
+          r += data[pixelIndex]
+          g += data[pixelIndex + 1]
+          b += data[pixelIndex + 2]
+          count += 1
+        }
+      }
+      if (count > 0) {
+        cornerSamples.push({ r, g, b, count })
+      }
+    }
+
+    if (cornerSamples.length > 0) {
+      const total = cornerSamples.reduce(
+        (current, sample) => ({
+          r: current.r + sample.r,
+          g: current.g + sample.g,
+          b: current.b + sample.b,
+          count: current.count + sample.count,
+        }),
+        { r: 0, g: 0, b: 0, count: 0 },
+      )
+      const target = {
+        r: total.r / total.count,
+        g: total.g / total.count,
+        b: total.b / total.count,
+      }
+      const backgroundMask = new Uint8Array(rasterWidth * rasterHeight)
+      const queueX = new Int32Array(rasterWidth * rasterHeight)
+      const queueY = new Int32Array(rasterWidth * rasterHeight)
+      let head = 0
+      let tail = 0
+      const channelThreshold = 26
+      const colorDistanceThreshold = 44 * 44
+
+      const enqueueIfBackground = (x: number, y: number) => {
+        const index = y * rasterWidth + x
+        if (backgroundMask[index] || !alphaFilled[index]) {
+          return
+        }
+        const pixelIndex = index * 4
+        const dr = data[pixelIndex] - target.r
+        const dg = data[pixelIndex + 1] - target.g
+        const db = data[pixelIndex + 2] - target.b
+        if (
+          Math.abs(dr) > channelThreshold ||
+          Math.abs(dg) > channelThreshold ||
+          Math.abs(db) > channelThreshold ||
+          dr * dr + dg * dg + db * db > colorDistanceThreshold
+        ) {
+          return
+        }
+
+        backgroundMask[index] = 1
+        queueX[tail] = x
+        queueY[tail] = y
+        tail += 1
+      }
+
+      for (let x = 0; x < rasterWidth; x += 1) {
+        enqueueIfBackground(x, 0)
+        enqueueIfBackground(x, rasterHeight - 1)
+      }
+      for (let y = 1; y < rasterHeight - 1; y += 1) {
+        enqueueIfBackground(0, y)
+        enqueueIfBackground(rasterWidth - 1, y)
+      }
+
+      while (head < tail) {
+        const x = queueX[head]
+        const y = queueY[head]
+        head += 1
+
+        for (let deltaY = -1; deltaY <= 1; deltaY += 1) {
+          for (let deltaX = -1; deltaX <= 1; deltaX += 1) {
+            if (deltaX === 0 && deltaY === 0) {
+              continue
+            }
+
+            const nextX = x + deltaX
+            const nextY = y + deltaY
+            if (nextX < 0 || nextY < 0 || nextX >= rasterWidth || nextY >= rasterHeight) {
+              continue
+            }
+
+            enqueueIfBackground(nextX, nextY)
+          }
+        }
+      }
+
+      const trimmedFilled = new Uint8Array(rasterWidth * rasterHeight)
+      let trimmedCount = 0
+      for (let index = 0; index < trimmedFilled.length; index += 1) {
+        if (alphaFilled[index] && !backgroundMask[index]) {
+          trimmedFilled[index] = 1
+          trimmedCount += 1
+        }
+      }
+
+      if (trimmedCount > 0 && trimmedCount < alphaCount) {
+        filled = trimmedFilled
+      }
+    }
+  }
+
+  const coreFilled = new Uint8Array(rasterWidth * rasterHeight)
+  for (let y = 1; y < rasterHeight - 1; y += 1) {
+    for (let x = 1; x < rasterWidth - 1; x += 1) {
+      let isCorePixel = 1
+      for (let deltaY = -1; deltaY <= 1 && isCorePixel; deltaY += 1) {
+        for (let deltaX = -1; deltaX <= 1; deltaX += 1) {
+          if (!filled[(y + deltaY) * rasterWidth + (x + deltaX)]) {
+            isCorePixel = 0
+            break
+          }
+        }
+      }
+      coreFilled[y * rasterWidth + x] = isCorePixel
+    }
+  }
+
+  const analysisMask = coreFilled.some((value) => value === 1) ? coreFilled : filled
+  const visited = new Uint8Array(rasterWidth * rasterHeight)
+  let bestArea = 0
+  let bestBounds:
+    | {
+        minX: number
+        minY: number
+        maxX: number
+        maxY: number
+      }
+    | undefined
+
+  const queueX = new Int32Array(rasterWidth * rasterHeight)
+  const queueY = new Int32Array(rasterWidth * rasterHeight)
+
+  for (let startY = 0; startY < rasterHeight; startY += 1) {
+    for (let startX = 0; startX < rasterWidth; startX += 1) {
+      const startIndex = startY * rasterWidth + startX
+      if (visited[startIndex]) {
+        continue
+      }
+
+      visited[startIndex] = 1
+      if (!analysisMask[startIndex]) {
+        continue
+      }
+
+      let head = 0
+      let tail = 0
+      queueX[tail] = startX
+      queueY[tail] = startY
+      tail += 1
+
+      let area = 0
+      let minX = startX
+      let minY = startY
+      let maxX = startX
+      let maxY = startY
+
+      while (head < tail) {
+        const x = queueX[head]
+        const y = queueY[head]
+        head += 1
+        area += 1
+        minX = Math.min(minX, x)
+        minY = Math.min(minY, y)
+        maxX = Math.max(maxX, x)
+        maxY = Math.max(maxY, y)
+
+        for (let deltaY = -1; deltaY <= 1; deltaY += 1) {
+          for (let deltaX = -1; deltaX <= 1; deltaX += 1) {
+            if (deltaX === 0 && deltaY === 0) {
+              continue
+            }
+
+            const nextX = x + deltaX
+            const nextY = y + deltaY
+            if (nextX < 0 || nextY < 0 || nextX >= rasterWidth || nextY >= rasterHeight) {
+              continue
+            }
+
+            const nextIndex = nextY * rasterWidth + nextX
+            if (visited[nextIndex]) {
+              continue
+            }
+
+            visited[nextIndex] = 1
+            if (!analysisMask[nextIndex]) {
+              continue
+            }
+
+            queueX[tail] = nextX
+            queueY[tail] = nextY
+            tail += 1
+          }
+        }
+      }
+
+      if (area > bestArea) {
+        bestArea = area
+        bestBounds = { minX, minY, maxX, maxY }
+      }
+    }
+  }
+
+  if (!bestBounds || bestArea < 4) {
+    return FULL_CROP
+  }
+
+  const padding = 1
+  const minX = Math.max(0, bestBounds.minX - padding)
+  const minY = Math.max(0, bestBounds.minY - padding)
+  const maxX = Math.min(rasterWidth - 1, bestBounds.maxX + padding)
+  const maxY = Math.min(rasterHeight - 1, bestBounds.maxY + padding)
+
+  return normalizeCrop({
+    x: minX / rasterWidth,
+    y: minY / rasterHeight,
+    width: (maxX - minX + 1) / rasterWidth,
+    height: (maxY - minY + 1) / rasterHeight,
+  })
+}
+
+function useLargestOpaqueRegion(
+  imageUrl: string | undefined,
+  crop: ReturnType<typeof normalizeCrop>,
+) {
+  const cacheKey = imageUrl
+    ? [
+        imageUrl,
+        crop.x.toFixed(4),
+        crop.y.toFixed(4),
+        crop.width.toFixed(4),
+        crop.height.toFixed(4),
+      ].join('|')
+    : undefined
+  const cachedRegion = cacheKey ? opaqueRegionBoundsCache.get(cacheKey) : undefined
+  const [loadedRegion, setLoadedRegion] = useState<
+    | {
+        key: string
+        region: { x: number; y: number; width: number; height: number } | null
+      }
+    | undefined
+  >(() => (
+    cacheKey && cachedRegion !== undefined
+      ? {
+          key: cacheKey,
+          region: cachedRegion,
+        }
+      : undefined
+  ))
+
+  useEffect(() => {
+    if (!cacheKey || !imageUrl || cachedRegion !== undefined) {
+      return
+    }
+
+    let cancelled = false
+    const request =
+      opaqueRegionRequestCache.get(cacheKey) ??
+      analyzeLargestOpaqueRegion(imageUrl, crop)
+        .then((result) => {
+          opaqueRegionBoundsCache.set(cacheKey, result)
+          opaqueRegionRequestCache.delete(cacheKey)
+          return result
+        })
+        .catch(() => {
+          opaqueRegionBoundsCache.set(cacheKey, FULL_CROP)
+          opaqueRegionRequestCache.delete(cacheKey)
+          return FULL_CROP
+        })
+
+    opaqueRegionRequestCache.set(cacheKey, request)
+    void request.then((result) => {
+      if (!cancelled) {
+        setLoadedRegion({
+          key: cacheKey,
+          region: result,
+        })
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [cacheKey, cachedRegion, crop, imageUrl])
+
+  if (cachedRegion !== undefined) {
+    return cachedRegion ?? undefined
+  }
+
+  return loadedRegion && loadedRegion.key === cacheKey ? loadedRegion.region ?? undefined : undefined
+}
+
+function outlineSampleCount(radius: number) {
+  const circumference = Math.PI * 2 * Math.max(radius, 1)
+
+  return clamp(
+    Math.ceil(circumference * 1.35),
+    ALPHA_OUTLINE_MIN_SAMPLES,
+    ALPHA_OUTLINE_MAX_SAMPLES,
+  )
+}
+
+function renderAlphaOutlineCanvas(
+  image: HTMLImageElement,
+  regionCrop: ReturnType<typeof normalizeCrop>,
+  metrics: {
+    contentWidth: number
+    contentHeight: number
+    padX: number
+    padY: number
+    outlineRadius: number
+  },
+  selectionStrokeColor: string,
+) {
+  const { contentWidth, contentHeight, padX, padY, outlineRadius } = metrics
+  const canvasWidth = contentWidth + padX * 2
+  const canvasHeight = contentHeight + padY * 2
+  const maskCanvas = document.createElement('canvas')
+  maskCanvas.width = contentWidth
+  maskCanvas.height = contentHeight
+  const maskContext = maskCanvas.getContext('2d', { willReadFrequently: true })
+  if (!maskContext) {
+    return null
+  }
+
+  maskContext.clearRect(0, 0, contentWidth, contentHeight)
+  maskContext.drawImage(
+    image,
+    image.naturalWidth * regionCrop.x,
+    image.naturalHeight * regionCrop.y,
+    image.naturalWidth * regionCrop.width,
+    image.naturalHeight * regionCrop.height,
+    0,
+    0,
+    contentWidth,
+    contentHeight,
+  )
+
+  const maskImageData = maskContext.getImageData(0, 0, contentWidth, contentHeight)
+  const { data } = maskImageData
+  for (let index = 0; index < data.length; index += 4) {
+    const alpha = data[index + 3]
+    data[index] = 255
+    data[index + 1] = 255
+    data[index + 2] = 255
+    data[index + 3] = alpha >= ALPHA_OUTLINE_RENDER_THRESHOLD ? alpha : 0
+  }
+  maskContext.putImageData(maskImageData, 0, 0)
+
+  const outlineCanvas = document.createElement('canvas')
+  outlineCanvas.width = canvasWidth
+  outlineCanvas.height = canvasHeight
+  const outlineContext = outlineCanvas.getContext('2d')
+  if (!outlineContext) {
+    return null
+  }
+
+  outlineContext.clearRect(0, 0, canvasWidth, canvasHeight)
+  outlineContext.globalCompositeOperation = 'source-over'
+
+  const samples = outlineSampleCount(outlineRadius)
+  for (let sampleIndex = 0; sampleIndex < samples; sampleIndex += 1) {
+    const angle = (sampleIndex / samples) * Math.PI * 2
+    const offsetX = Math.cos(angle) * outlineRadius
+    const offsetY = Math.sin(angle) * outlineRadius
+    outlineContext.drawImage(maskCanvas, padX + offsetX, padY + offsetY)
+  }
+
+  outlineContext.globalCompositeOperation = 'destination-out'
+  outlineContext.drawImage(maskCanvas, padX, padY)
+  outlineContext.globalCompositeOperation = 'source-in'
+  outlineContext.fillStyle = selectionStrokeColor
+  outlineContext.fillRect(0, 0, canvasWidth, canvasHeight)
+  outlineContext.globalCompositeOperation = 'source-over'
+
+  return outlineCanvas
+}
+
+function useIntrinsicImageSize(url: string | undefined, initialSize?: Size) {
+  const [loadedImage, setLoadedImage] = useState<{ url: string; size: Size } | undefined>(
+    url && initialSize ? { url, size: initialSize } : undefined,
+  )
+  const cachedSize = url ? intrinsicImageSizeCache.get(url) : undefined
+
+  useEffect(() => {
+    if (initialSize?.width && initialSize.height) {
+      return
+    }
+
+    if (!url || cachedSize !== undefined) {
+      return
+    }
+
+    let cancelled = false
+    void loadSourceImageElement(url)
+      .then((image) => {
+        if (cancelled || image.naturalWidth <= 0 || image.naturalHeight <= 0) {
+          return
+        }
+
+        const nextSize = {
+          width: image.naturalWidth,
+          height: image.naturalHeight,
+        }
+        intrinsicImageSizeCache.set(url, nextSize)
+        setLoadedImage({ url, size: nextSize })
+      })
+      .catch(() => {
+        intrinsicImageSizeCache.set(url, null)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [cachedSize, initialSize, url])
+
+  return initialSize ?? (loadedImage?.url === url ? loadedImage?.size : cachedSize ?? undefined)
+}
+
+interface BoardSurfaceProps {
+  spec: SpriteSpec
+  fallbackLabel: string
+  size: Size
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>
+  rounded: boolean
+  className?: string
+}
+
+interface BoardSurfaceLayout {
+  imageUrl?: string
+  intrinsicSize?: Size
+  crop: ReturnType<typeof normalizeCrop>
+  fitWidth: number
+  fitHeight: number
+  labelFontSize: number
+  surfaceBackground: string
+}
+
+function useBoardSurfaceLayout(
+  spec: SpriteSpec,
+  size: Size,
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
+  rounded: boolean,
+): BoardSurfaceLayout {
+  const imageSource = spec.kind === 'image-url' ? resolveImageSource(spec.url, imageAssets) : undefined
+  const imageUrl = imageSource?.renderUrl
+  useSourceImagePreload(imageUrl)
+  const originalIntrinsicSize = useIntrinsicImageSize(
+    imageUrl,
+    imageSource?.asset?.width && imageSource.asset.height
+      ? {
+        width: imageSource.asset.width,
+          height: imageSource.asset.height,
+        }
+      : undefined,
+  )
+
+  const crop = normalizeCrop(spec.crop)
+  const intrinsicSize = originalIntrinsicSize
+  const targetAspect = size.width > 0 && size.height > 0 ? size.width / size.height : 1
+  const sourceAspect = intrinsicSize
+    ? intrinsicSize.width / intrinsicSize.height
+    : targetAspect * (crop.height / crop.width)
+  const cropAspect = sourceAspect * crop.width / crop.height
+  const fit = spec.fit ?? 'cover'
+  const surfaceBackground =
+    spec.bg ?? (imageUrl && !rounded ? 'transparent' : rounded ? '#f8efe1' : '#d8d2c1')
+
+  let fitWidth = 1
+  let fitHeight = 1
+  if (fit === 'contain') {
+    if (cropAspect > targetAspect) {
+      fitHeight = targetAspect / cropAspect
+    } else {
+      fitWidth = cropAspect / targetAspect
+    }
+  } else if (cropAspect > targetAspect) {
+    fitWidth = cropAspect / targetAspect
+  } else {
+    fitHeight = targetAspect / cropAspect
+  }
+
+  const labelFontSize = Math.max(12, Math.min(size.width, size.height) * (rounded ? 0.14 : 0.08))
+
+  return {
+    imageUrl,
+    intrinsicSize,
+    crop,
+    fitWidth,
+    fitHeight,
+    labelFontSize,
+    surfaceBackground,
+  }
+}
+
+function BoardSurface({
+  spec,
+  fallbackLabel,
+  size,
+  imageAssets,
+  rounded,
+  className,
+}: BoardSurfaceProps) {
+  const {
+    imageUrl,
+    intrinsicSize,
+    crop,
+    fitWidth,
+    fitHeight,
+    labelFontSize,
+    surfaceBackground,
+  } = useBoardSurfaceLayout(spec, size, imageAssets, rounded)
+  const fitWorldWidth = size.width * fitWidth
+  const fitWorldHeight = size.height * fitHeight
+  const { preparedSurfaceUrl, stage } = usePreparedSpriteSurfaceUrl(
+    imageUrl,
+    crop,
+    fitWorldWidth,
+    fitWorldHeight,
+    intrinsicSize,
+  )
+
+  return (
+    <div
+      className={`board-surface ${rounded ? 'is-rounded' : 'is-square'}${className ? ` ${className}` : ''}`}
+      style={{
+        background: surfaceBackground,
+        color: spec.fg ?? '#1d2428',
+      }}
+    >
+      {imageUrl ? (
+        <div className="board-sprite-frame">
+          <div
+            className="board-sprite-fit-frame"
+            style={{
+              width: `${fitWidth * 100}%`,
+              height: `${fitHeight * 100}%`,
+            }}
+          >
+            <img
+              className="board-sprite-image"
+              src={preparedSurfaceUrl}
+              alt=""
+              draggable={false}
+              decoding="async"
+              loading="eager"
+              fetchPriority="high"
+              data-board-sprite-stage={stage}
+              style={{
+                width: '100%',
+                height: '100%',
+                opacity: preparedSurfaceUrl ? 1 : 0,
+              }}
+            />
+          </div>
+        </div>
+      ) : (
+        <div className="board-surface-label" style={{ fontSize: `${labelFontSize}px` }}>
+          {spec.label ?? fallbackLabel}
+        </div>
+      )}
+    </div>
+  )
+}
+
+interface CardObjectProps {
+  cardId: Id
+  room: RoomDoc
+  currentPlayerId: string | undefined
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>
+  size: Size
+  constrainedEffects: boolean
+}
+
+function CardObject({ cardId, room, currentPlayerId, imageAssets, size, constrainedEffects }: CardObjectProps) {
+  const card = room.objects[cardId]
+  if (!isCard(card)) {
+    return null
+  }
+
+  const faceVisible = canSeeCardFace(card, currentPlayerId)
+  const visibleSpec = faceVisible ? card.face : card.back
+  const visibleFallbackLabel = faceVisible ? card.name : 'Back'
+
+  if (constrainedEffects) {
+    return (
+      <div className="board-card-shell is-constrained">
+        <BoardSurface
+          spec={visibleSpec}
+          fallbackLabel={visibleFallbackLabel}
+          size={size}
+          imageAssets={imageAssets}
+          rounded
+        />
+      </div>
+    )
+  }
+
+  return (
+    <div className="board-card-shell">
+      <div className={`board-card-flip ${faceVisible ? 'is-face-visible' : 'is-back-visible'}`}>
+        <div className="board-card-face board-card-front">
+          <BoardSurface
+            spec={card.face}
+            fallbackLabel={card.name}
+            size={size}
+            imageAssets={imageAssets}
+            rounded
+          />
+        </div>
+        <div className="board-card-face board-card-back">
+          <BoardSurface
+            spec={card.back}
+            fallbackLabel="Back"
+            size={size}
+            imageAssets={imageAssets}
+            rounded
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+interface DeckObjectProps {
+  deckId: Id
+  room: RoomDoc
+  currentPlayerId: string | undefined
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>
+  size: Size
+}
+
+function DeckObject({ deckId, room, currentPlayerId, imageAssets, size }: DeckObjectProps) {
+  const deck = room.objects[deckId]
+  const deckChildIds = isDeck(deck) ? deck.childIds : []
+  const stackCount = Math.min(deckChildIds.length, 4)
+  const stackDepth = Math.max(0, stackCount - 1)
+  const topCardId = deckChildIds[deckChildIds.length - 1]
+  const topCard = topCardId ? room.objects[topCardId] : undefined
+  const topCardSpec =
+    isCard(topCard) && canSeeCardFace(topCard, currentPlayerId) ? topCard.face : isCard(topCard) ? topCard.back : undefined
+
+  if (!isDeck(deck)) {
+    return null
+  }
+
+  return (
+    <div className={`board-deck-shell ${stackCount === 0 ? 'is-empty' : ''}`}>
+      {stackCount === 0 ? (
+        <div className="board-deck-empty" />
+      ) : (
+        <>
+          {Array.from({ length: Math.max(0, stackCount - 1) }).map((_, index) => (
+            <div
+              key={`shadow-${index}`}
+              className="board-deck-layer board-deck-shadow-layer"
+              style={{
+                transform: `translate(${(index - stackDepth) * 4}px, ${(index - stackDepth) * 3}px)`,
+              }}
+            />
+          ))}
+          <div className="board-deck-layer board-deck-top-layer">
+            {topCardSpec ? (
+              <BoardSurface
+                spec={topCardSpec}
+                fallbackLabel={isCard(topCard) ? topCard.name : deck.name}
+                size={size}
+                imageAssets={imageAssets}
+                rounded
+              />
+            ) : (
+              <BoardSurface
+                spec={{ kind: 'label', label: deck.name, bg: '#f2e3ca', fg: '#1c2125' }}
+                fallbackLabel={deck.name}
+                size={size}
+                imageAssets={imageAssets}
+                rounded
+              />
+            )}
+          </div>
+          <div className="board-deck-count">{deck.childIds.length}</div>
+        </>
+      )}
+    </div>
+  )
+}
+
+interface BoardObjectContentProps {
+  objectId: Id
+  room: RoomDoc
+  currentPlayerId: string | undefined
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>
+  size: Size
+  constrainedEffects: boolean
+}
+
+function BoardObjectContent({
+  objectId,
+  room,
+  currentPlayerId,
+  imageAssets,
+  size,
+  constrainedEffects,
+}: BoardObjectContentProps) {
+  const object = room.objects[objectId]
+  if (isCard(object)) {
+    return (
+      <CardObject
+        cardId={objectId}
+        room={room}
+        currentPlayerId={currentPlayerId}
+        imageAssets={imageAssets}
+        size={size}
+        constrainedEffects={constrainedEffects}
+      />
+    )
+  }
+
+  if (isDeck(object)) {
+    return (
+      <DeckObject
+        deckId={objectId}
+        room={room}
+        currentPlayerId={currentPlayerId}
+        imageAssets={imageAssets}
+        size={size}
+      />
+    )
+  }
+
+  if (isBoard(object)) {
+    return (
+      <BoardSurface
+        spec={isBoardFaceUp(object) ? object.face : object.back}
+        fallbackLabel={object.name}
+        size={size}
+        imageAssets={imageAssets}
+        rounded={false}
+      />
+    )
+  }
+
+  return null
+}
+
+const MemoBoardObjectContent = memo(BoardObjectContent, (prevProps, nextProps) => {
+  if (prevProps.objectId !== nextProps.objectId) {
+    return false
+  }
+  if (prevProps.currentPlayerId !== nextProps.currentPlayerId) {
+    return false
+  }
+  if (prevProps.imageAssets !== nextProps.imageAssets) {
+    return false
+  }
+  if (prevProps.constrainedEffects !== nextProps.constrainedEffects) {
+    return false
+  }
+  if (
+    prevProps.size.width !== nextProps.size.width ||
+    prevProps.size.height !== nextProps.size.height
+  ) {
+    return false
+  }
+
+  const prevObject = prevProps.room.objects[prevProps.objectId]
+  const nextObject = nextProps.room.objects[nextProps.objectId]
+  if (prevObject !== nextObject) {
+    return false
+  }
+
+  if (isDeck(prevObject) && isDeck(nextObject)) {
+    const prevTopCardId = prevObject.childIds[prevObject.childIds.length - 1]
+    const nextTopCardId = nextObject.childIds[nextObject.childIds.length - 1]
+    if (prevTopCardId !== nextTopCardId) {
+      return false
+    }
+    if (
+      prevTopCardId &&
+      nextTopCardId &&
+      prevProps.room.objects[prevTopCardId] !== nextProps.room.objects[nextTopCardId]
+    ) {
+      return false
+    }
+  }
+
+  return true
+})
+
+interface BoardSelectionOverlayProps {
+  spec: SpriteSpec
+  size: Size
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>
+  cameraZoom: number
+  selectionStrokeWidth: number
+  selectionStrokeColor: string
+}
+
+function BoardSelectionOverlay({
+  spec,
+  size,
+  imageAssets,
+  cameraZoom,
+  selectionStrokeWidth,
+  selectionStrokeColor,
+}: BoardSelectionOverlayProps) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const outlineRenderVersionRef = useRef(0)
+  const { imageUrl, crop, fitWidth, fitHeight, surfaceBackground } = useBoardSurfaceLayout(spec, size, imageAssets, false)
+  const dominantRegion = useLargestOpaqueRegion(imageUrl, crop)
+  const isAlphaSelection = Boolean(imageUrl && surfaceBackground === 'transparent')
+
+  const region = dominantRegion ?? FULL_CROP
+  const regionCrop = composeCrop(crop, region)
+  const regionCropX = regionCrop.x
+  const regionCropY = regionCrop.y
+  const regionCropWidth = regionCrop.width
+  const regionCropHeight = regionCrop.height
+
+  const fitWorldWidth = Math.max(1, size.width * fitWidth * region.width)
+  const fitWorldHeight = Math.max(1, size.height * fitHeight * region.height)
+  const fitScreenWidth = fitWorldWidth * cameraZoom
+  const fitScreenHeight = fitWorldHeight * cameraZoom
+  const outlineScreenRadius = selectionStrokeWidth
+  const safeZoom = Math.max(cameraZoom, 0.001)
+  const padScreenX = Math.max(2, Math.ceil(outlineScreenRadius + 2))
+  const padScreenY = Math.max(2, Math.ceil(outlineScreenRadius + 2))
+  const padWorldX = padScreenX / safeZoom
+  const padWorldY = padScreenY / safeZoom
+  const padPercentX = Number(((padWorldX / fitWorldWidth) * 100).toFixed(3))
+  const padPercentY = Number(((padWorldY / fitWorldHeight) * 100).toFixed(3))
+
+  const rasterMetrics = useMemo(() => {
+    const devicePixelRatio = typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1
+    const desiredWidth = Math.max(1, (fitScreenWidth + padScreenX * 2) * devicePixelRatio)
+    const desiredHeight = Math.max(1, (fitScreenHeight + padScreenY * 2) * devicePixelRatio)
+    const rasterScale = Math.min(
+      1,
+      ALPHA_OUTLINE_MAX_RASTER_DIMENSION / Math.max(desiredWidth, desiredHeight),
+    )
+
+    return {
+      contentWidth: Math.max(1, Math.round(fitScreenWidth * devicePixelRatio * rasterScale)),
+      contentHeight: Math.max(1, Math.round(fitScreenHeight * devicePixelRatio * rasterScale)),
+      padX: Math.max(1, Math.round(padScreenX * devicePixelRatio * rasterScale)),
+      padY: Math.max(1, Math.round(padScreenY * devicePixelRatio * rasterScale)),
+      outlineRadius: Math.max(0.75, outlineScreenRadius * devicePixelRatio * rasterScale),
+    }
+  }, [fitScreenHeight, fitScreenWidth, outlineScreenRadius, padScreenX, padScreenY])
+
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas || !imageUrl || !isAlphaSelection) {
+      return
+    }
+
+    const renderVersion = outlineRenderVersionRef.current + 1
+    outlineRenderVersionRef.current = renderVersion
+    let cancelled = false
+
+    const commitRenderedOutline = (renderedCanvas: HTMLCanvasElement | null) => {
+      if (
+        cancelled ||
+        outlineRenderVersionRef.current !== renderVersion ||
+        !renderedCanvas
+      ) {
+        return
+      }
+
+      const liveCanvas = canvasRef.current
+      if (!liveCanvas) {
+        return
+      }
+
+      if (liveCanvas.width !== renderedCanvas.width) {
+        liveCanvas.width = renderedCanvas.width
+      }
+      if (liveCanvas.height !== renderedCanvas.height) {
+        liveCanvas.height = renderedCanvas.height
+      }
+
+      const context = liveCanvas.getContext('2d')
+      if (!context) {
+        return
+      }
+
+      context.clearRect(0, 0, liveCanvas.width, liveCanvas.height)
+      context.drawImage(renderedCanvas, 0, 0)
+    }
+
+    const renderOutline = (image: HTMLImageElement) => {
+      const renderedCanvas = renderAlphaOutlineCanvas(
+        image,
+        {
+          x: regionCropX,
+          y: regionCropY,
+          width: regionCropWidth,
+          height: regionCropHeight,
+        },
+        rasterMetrics,
+        selectionStrokeColor,
+      )
+      commitRenderedOutline(renderedCanvas)
+    }
+
+    const resolvedImage = resolvedSourceImageElementCache.get(imageUrl)
+    if (resolvedImage) {
+      renderOutline(resolvedImage)
+    } else {
+      void loadSourceImageElement(imageUrl).then((image) => {
+        if (!cancelled) {
+          renderOutline(image)
+        }
+      })
+    }
+
+    return () => {
+      cancelled = true
+    }
+  }, [imageUrl, isAlphaSelection, rasterMetrics, regionCropHeight, regionCropWidth, regionCropX, regionCropY, selectionStrokeColor])
+
+  if (!isAlphaSelection) {
+    return null
+  }
+
+  return (
+    <div
+      className="board-object-selection is-alpha"
+      style={
+        {
+          '--board-selection-width': `${selectionStrokeWidth}px`,
+          '--board-selection-color': selectionStrokeColor,
+        } as CSSProperties
+      }
+    >
+      <div className="board-sprite-frame">
+        <div
+          className="board-sprite-fit-frame"
+          style={{
+            width: `${fitWidth * 100}%`,
+            height: `${fitHeight * 100}%`,
+          }}
+        >
+          <div
+            className="board-selection-alpha-region"
+            style={{
+              left: `${region.x * 100}%`,
+              top: `${region.y * 100}%`,
+              width: `${region.width * 100}%`,
+              height: `${region.height * 100}%`,
+            }}
+          >
+            <canvas
+              ref={canvasRef}
+              className="board-selection-alpha-canvas"
+              aria-hidden="true"
+              style={{
+                left: `${-padPercentX}%`,
+                top: `${-padPercentY}%`,
+                width: `${100 + padPercentX * 2}%`,
+                height: `${100 + padPercentY * 2}%`,
+              }}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 export function BoardView({
@@ -1784,138 +1944,1127 @@ export function BoardView({
   onLiftTopCardFromDeck,
   onFlipCard,
   onFlipBoard,
-  onFlipDeck,
-  onDrawDeck,
+  onFlipDeck: _onFlipDeck,
+  onDrawDeck: _onDrawDeck,
   onDropImageFileAt,
   onShuffleDeck,
   onOpenSelectionPanel,
 }: BoardViewProps) {
+  void _onFlipDeck
+  void _onDrawDeck
+
   const rootRef = useRef<HTMLDivElement>(null)
   const hostRef = useRef<HTMLDivElement>(null)
-  const appRef = useRef<Application | null>(null)
-  const viewportRef = useRef<Viewport | null>(null)
-  const renderedRef = useRef<Map<Id, RenderedObject>>(new Map())
+  const boardWorldRef = useRef<HTMLDivElement>(null)
+  const boardGridRef = useRef<HTMLDivElement>(null)
+  const quickActionsRef = useRef<HTMLDivElement>(null)
+  const roomRef = useRef(room)
+  const cameraRef = useRef(clampCamera(initialCamera))
+  const recorderContextRef = useRef({
+    roomUrl,
+    href: typeof window === 'undefined' ? '' : window.location.href,
+    hash: typeof window === 'undefined' ? '' : window.location.hash,
+    camera: clampCamera(initialCamera),
+    viewport: { width: 1, height: 1 },
+    selectedId,
+    selectedIds,
+    canEdit,
+    objectCount: Object.keys(room.objects).length,
+  })
+  const ephemeralTransformsRef = useRef(ephemeralTransforms)
+  const onClearPreviewTransformRef = useRef(onClearPreviewTransform)
+  const selectionModeRef = useRef(selectionMode)
+  const previewTransformsRef = useRef<EphemeralTransformMap>({})
   const dragRef = useRef<DragState | null>(null)
   const pendingDeckPressRef = useRef<PendingDeckPress | null>(null)
   const tapCandidateRef = useRef<TapCandidate | null>(null)
   const backgroundTapCandidateRef = useRef<BackgroundTapCandidate | null>(null)
-  const auxiliaryTouchRef = useRef<AuxiliaryTouchState>({ pointers: new Map() })
-  const roomRef = useRef(room)
-  const imageAssetsRef = useRef(imageAssets)
-  const ephemeralTransformsRef = useRef(ephemeralTransforms)
-  const selectionModeRef = useRef(selectionMode)
-  const selectedIdRef = useRef(selectedId)
-  const selectedIdsRef = useRef(selectedIds)
-  const lassoModeRef = useRef(lassoMode)
-  const initialCameraRef = useRef(initialCamera)
-  const currentPlayerIdRef = useRef(currentPlayerId)
-  const canEditRef = useRef(canEdit)
-  const allowSelectLockedRef = useRef(allowSelectLocked)
-  const shiftPressedRef = useRef(false)
-  const cardVisualStatesRef = useRef<Map<Id, CardVisualState>>(new Map())
-  const flipAnimationsRef = useRef<Map<Id, FlipAnimation>>(new Map())
-  const cardTextureCacheRef = useRef<Map<string, CardTextureCacheEntry>>(new Map())
-  const redrawSceneRef = useRef(() => {})
-  const [hoverDeckId, setHoverDeckId] = useState<Id | undefined>()
-  const hoverDeckIdRef = useRef<Id | undefined>(hoverDeckId)
-  const quickActionsRef = useRef<HTMLDivElement | null>(null)
   const lassoRef = useRef<LassoState | null>(null)
-  const [lassoPath, setLassoPath] = useState<Array<{ x: number; y: number }>>([])
-  const callbacksRef = useRef({
-    onCameraChange,
-    onCommitTransform,
-    onPreviewTransform,
-    onClearPreviewTransform,
-    onBringObjectToFront,
-    onDrawDeck,
-    onFlipDeck,
-    onLiftTopCardFromDeck,
-    onDropObjectToDeck,
-    onFlipCard,
-    onFlipBoard,
-    onSelect,
-    onToggleGroupSelection,
-    onAddToGroupSelection,
-    onDropImageFileAt,
-    onShuffleDeck,
+  const cameraPointersRef = useRef<Map<number, Point>>(new Map())
+  const pendingCameraUpdateRef = useRef<((current: CameraState) => CameraState) | null>(null)
+  const cameraAnimationFrameRef = useRef<number | null>(null)
+  const cameraRenderSyncTimeoutRef = useRef<number | null>(null)
+  const cameraMomentumFrameRef = useRef<number | null>(null)
+  const cameraMomentumPositionRef = useRef<Point>({ x: 0, y: 0 })
+  const cameraMomentumVelocityRef = useRef<Point>({ x: 0, y: 0 })
+  const cameraMomentumTimeRef = useRef(performance.now() / 1000)
+  const prewarmPauseUntilRef = useRef(
+    typeof performance === 'undefined' ? 0 : performance.now() + PREPARED_SPRITE_PREWARM_INITIAL_DELAY_MS,
+  )
+  const hasActiveAlphaSelectionRef = useRef(false)
+  const hasQuickActionsRef = useRef(false)
+  const selectedWorldObjectRef = useRef<{ transform: Transform2D; worldSize: Size } | undefined>(undefined)
+  const pointerPanStateRef = useRef<{
+    active: boolean
+    lastVelocity: Point
+    lastSampleTime: number
+    recentSamples: Array<{ point: Point; time: number }>
+  }>({
+    active: false,
+    lastVelocity: { x: 0, y: 0 },
+    lastSampleTime: performance.now() / 1000,
+    recentSamples: [],
   })
-  const cameraSnapshot = useRef<string>('')
-  const requestRenderRef = useRef(() => {
-    redrawSceneRef.current()
-  })
+  const dropDepthRef = useRef(0)
+  const [viewportSize, setViewportSize] = useState<Size>({ width: 1, height: 1 })
+  const [camera, setCamera] = useState(() => cameraRef.current)
+  const [liveSelectionZoom, setLiveSelectionZoom] = useState(() => cameraRef.current.zoom)
+  const [previewTransforms, setPreviewTransforms] = useState<EphemeralTransformMap>({})
+  const [hoverDeckId, setHoverDeckId] = useState<Id | undefined>()
+  const [lassoPath, setLassoPath] = useState<Point[]>([])
   const [isImageDropTarget, setIsImageDropTarget] = useState(false)
+  const constrainedEffects = useMemo(() => isLikelyMobileSafari(), [])
 
   roomRef.current = room
-  imageAssetsRef.current = imageAssets
-  ephemeralTransformsRef.current = ephemeralTransforms
-  selectionModeRef.current = selectionMode
-  selectedIdRef.current = selectedId
-  selectedIdsRef.current = selectedIds
-  lassoModeRef.current = lassoMode
-  initialCameraRef.current = initialCamera
-  currentPlayerIdRef.current = currentPlayerId
-  canEditRef.current = canEdit
-  allowSelectLockedRef.current = allowSelectLocked
-  hoverDeckIdRef.current = hoverDeckId
-  callbacksRef.current = {
-    onCameraChange,
-    onCommitTransform,
-    onPreviewTransform,
-    onClearPreviewTransform,
-    onBringObjectToFront,
-    onDrawDeck,
-    onFlipDeck,
-    onLiftTopCardFromDeck,
-    onDropObjectToDeck,
-    onFlipCard,
-    onFlipBoard,
-    onSelect,
-    onToggleGroupSelection,
-    onAddToGroupSelection,
-    onDropImageFileAt,
-    onShuffleDeck,
+  recorderContextRef.current = {
+    roomUrl,
+    href: typeof window === 'undefined' ? '' : window.location.href,
+    hash: typeof window === 'undefined' ? '' : window.location.hash,
+    camera: cameraRef.current,
+    viewport: viewportSize,
+    selectedId,
+    selectedIds,
+    canEdit,
+    objectCount: Object.keys(room.objects).length,
   }
-  redrawSceneRef.current = () => {
-    const viewport = viewportRef.current
-    const app = appRef.current
-    if (!viewport || !app) {
+  ephemeralTransformsRef.current = ephemeralTransforms
+  onClearPreviewTransformRef.current = onClearPreviewTransform
+  selectionModeRef.current = selectionMode
+  previewTransformsRef.current = previewTransforms
+
+  const replacePreviewTransforms = useCallback((nextTransforms: EphemeralTransformMap) => {
+    previewTransformsRef.current = nextTransforms
+    setPreviewTransforms((current) => (sameTransformMap(current, nextTransforms) ? current : nextTransforms))
+  }, [])
+
+  const clearPendingDeckPress = useCallback(() => {
+    const pendingDeckPress = pendingDeckPressRef.current
+    if (!pendingDeckPress) {
       return
     }
 
-    populateViewportScene(
-      viewport,
-      renderedRef.current,
-      app.renderer,
-      cardTextureCacheRef.current,
+    window.clearTimeout(pendingDeckPress.timeoutId)
+    pendingDeckPressRef.current = null
+  }, [])
+
+  const beginCameraPointer = useCallback((pointerId: number, localPoint: Point) => {
+    cameraPointersRef.current.set(pointerId, localPoint)
+    if (cameraPointersRef.current.size === 1) {
+      const now = performance.now() / 1000
+      pointerPanStateRef.current = {
+        active: true,
+        lastVelocity: { x: 0, y: 0 },
+        lastSampleTime: now,
+        recentSamples: [{ point: localPoint, time: now }],
+      }
+    }
+  }, [])
+
+  const cancelTouchObjectInteraction = useCallback((handoffPointer?: { pointerId: number; localPoint: Point }) => {
+    clearPendingDeckPress()
+    tapCandidateRef.current = null
+    backgroundTapCandidateRef.current = null
+
+    const activeDrag = dragRef.current
+    if (!activeDrag) {
+      if (handoffPointer) {
+        cameraPointersRef.current.set(handoffPointer.pointerId, handoffPointer.localPoint)
+      }
+      return
+    }
+
+    if (handoffPointer) {
+      cameraPointersRef.current.set(activeDrag.pointerId, activeDrag.currentPoint)
+      cameraPointersRef.current.set(handoffPointer.pointerId, handoffPointer.localPoint)
+    }
+
+    dragRef.current = null
+    setHoverDeckId(undefined)
+    if (activeDrag.groupMembers && activeDrag.groupMembers.length > 0) {
+      for (const member of activeDrag.groupMembers) {
+        onClearPreviewTransform(member.id)
+      }
+    } else {
+      onClearPreviewTransform(activeDrag.id)
+    }
+    replacePreviewTransforms({})
+  }, [clearPendingDeckPress, onClearPreviewTransform, replacePreviewTransforms])
+
+  const currentTransformForObject = useCallback((objectId: Id) => {
+    return displayedTransformForObject(
       roomRef.current,
+      objectId,
       ephemeralTransformsRef.current,
-      currentPlayerIdRef.current,
-      selectionModeRef.current,
-      selectedIdRef.current,
-      selectedIdsRef.current,
-      imageAssetsRef.current,
-      lassoModeRef.current,
-      hoverDeckIdRef.current,
-      canEditRef.current,
-      allowSelectLockedRef.current,
-      callbacksRef.current.onSelect,
-      callbacksRef.current.onToggleGroupSelection,
-      callbacksRef.current.onAddToGroupSelection,
-      dragRef,
-      auxiliaryTouchRef,
-      pendingDeckPressRef,
-      tapCandidateRef,
-      requestRenderRef.current,
-      flipAnimationsRef.current,
-      performance.now(),
+      previewTransformsRef.current,
     )
-    syncActiveDragRendering(viewport, renderedRef.current, dragRef)
-  }
+  }, [])
+
+  const applyQuickActionsPosition = useCallback((nextCamera: CameraState) => {
+    const quickActions = quickActionsRef.current
+    const selectedObject = selectedWorldObjectRef.current
+    if (!quickActions || !selectedObject || !hasQuickActionsRef.current) {
+      return
+    }
+
+    const screenPoint = logicalToScreen(viewportSize, nextCamera, {
+      x: selectedObject.transform.x,
+      y: selectedObject.transform.y,
+    })
+    quickActions.style.left = `${screenPoint.x}px`
+    quickActions.style.top = `${screenPoint.y - selectedObject.worldSize.height * nextCamera.zoom / 2 - 24}px`
+  }, [viewportSize])
+
+  const applyCameraToBoardWorld = useCallback((nextCamera: CameraState) => {
+    const boardWorld = boardWorldRef.current
+    const boardGrid = boardGridRef.current
+    if (!boardWorld) {
+      return
+    }
+
+    const { x: translateX, y: translateY } = cameraTranslation(viewportSize, nextCamera)
+    boardWorld.style.transform = `translate3d(${translateX}px, ${translateY}px, 0) scale(${nextCamera.zoom})`
+    boardWorld.style.setProperty('--board-zoom', `${nextCamera.zoom}`)
+    if (boardGrid) {
+      const gridSize = Math.max(1, 160 * nextCamera.zoom)
+      boardGrid.style.backgroundPosition = `${viewportSize.width / 2 - nextCamera.centerX * nextCamera.zoom}px ${viewportSize.height / 2 - nextCamera.centerY * nextCamera.zoom}px`
+      boardGrid.style.backgroundSize = `${gridSize}px ${gridSize}px, ${gridSize}px ${gridSize}px, 100% 100%`
+      boardGrid.style.setProperty('--board-zoom', `${nextCamera.zoom}`)
+    }
+    applyQuickActionsPosition(nextCamera)
+  }, [applyQuickActionsPosition, viewportSize])
+
+  const markPrewarmInteraction = useCallback(() => {
+    if (typeof performance === 'undefined') {
+      return
+    }
+
+    prewarmPauseUntilRef.current = performance.now() + PREPARED_SPRITE_PREWARM_QUIET_MS
+  }, [])
+
+  const scheduleCameraRenderSync = useCallback(() => {
+    if (cameraRenderSyncTimeoutRef.current !== null) {
+      window.clearTimeout(cameraRenderSyncTimeoutRef.current)
+    }
+
+    cameraRenderSyncTimeoutRef.current = window.setTimeout(() => {
+      cameraRenderSyncTimeoutRef.current = null
+      setCamera((current) => (sameCamera(current, cameraRef.current) ? current : cameraRef.current))
+    }, 90)
+  }, [])
+
+  const applyCommittedCamera = useCallback((nextCamera: CameraState) => {
+    cameraRef.current = nextCamera
+    cameraMomentumPositionRef.current = cameraTranslation(viewportSize, nextCamera)
+    recorderContextRef.current.camera = nextCamera
+    applyCameraToBoardWorld(nextCamera)
+    if (hasActiveAlphaSelectionRef.current) {
+      setLiveSelectionZoom((current) => (current === nextCamera.zoom ? current : nextCamera.zoom))
+    }
+    scheduleCameraRenderSync()
+  }, [applyCameraToBoardWorld, scheduleCameraRenderSync, viewportSize])
+
+  const resetPointerPanState = useCallback(() => {
+    pointerPanStateRef.current = {
+      active: false,
+      lastVelocity: { x: 0, y: 0 },
+      lastSampleTime: performance.now() / 1000,
+      recentSamples: [],
+    }
+  }, [])
+
+  const stopCameraMomentum = useCallback(() => {
+    if (cameraMomentumFrameRef.current !== null) {
+      window.cancelAnimationFrame(cameraMomentumFrameRef.current)
+      cameraMomentumFrameRef.current = null
+    }
+
+    cameraMomentumVelocityRef.current = { x: 0, y: 0 }
+    cameraMomentumTimeRef.current = performance.now() / 1000
+  }, [])
+
+  const startCameraMomentum = useCallback((velocity: Point) => {
+    stopCameraMomentum()
+    cameraMomentumPositionRef.current = cameraTranslation(viewportSize, cameraRef.current)
+    cameraMomentumVelocityRef.current = {
+      x: velocity.x * PAN_MOMENTUM_VELOCITY_GAIN,
+      y: velocity.y * PAN_MOMENTUM_VELOCITY_GAIN,
+    }
+    cameraMomentumTimeRef.current = performance.now() / 1000
+
+    const tickMomentum = () => {
+      const currentCamera = cameraRef.current
+      const now = performance.now() / 1000
+      let dt = now - cameraMomentumTimeRef.current
+      cameraMomentumTimeRef.current = now
+      if (dt > PAN_MOMENTUM_MAX_DT_SECONDS) {
+        dt = PAN_MOMENTUM_MAX_DT_SECONDS
+      }
+      if (dt <= 0) {
+        cameraMomentumFrameRef.current = window.requestAnimationFrame(tickMomentum)
+        return
+      }
+
+      const decay = Math.exp(-PAN_MOMENTUM_DECAY * dt)
+      let nextVelocityX = cameraMomentumVelocityRef.current.x * decay
+      let nextVelocityY = cameraMomentumVelocityRef.current.y * decay
+      const unconstrainedTranslation = {
+        x: cameraMomentumPositionRef.current.x + nextVelocityX * dt,
+        y: cameraMomentumPositionRef.current.y + nextVelocityY * dt,
+      }
+      const nextCamera = cameraFromTranslation(viewportSize, unconstrainedTranslation, currentCamera.zoom)
+      const constrainedTranslation = cameraTranslation(viewportSize, nextCamera)
+
+      if (Math.abs(constrainedTranslation.x - unconstrainedTranslation.x) > PAN_MOMENTUM_CONSTRAINT_EPSILON) {
+        nextVelocityX = 0
+      }
+      if (Math.abs(constrainedTranslation.y - unconstrainedTranslation.y) > PAN_MOMENTUM_CONSTRAINT_EPSILON) {
+        nextVelocityY = 0
+      }
+
+      cameraMomentumPositionRef.current = constrainedTranslation
+      cameraMomentumVelocityRef.current = {
+        x: nextVelocityX,
+        y: nextVelocityY,
+      }
+
+      if (!sameCamera(currentCamera, nextCamera)) {
+        applyCommittedCamera(nextCamera)
+        markPrewarmInteraction()
+      }
+
+      const screenVelocity = Math.hypot(nextVelocityX, nextVelocityY) * nextCamera.zoom
+      if (screenVelocity >= PAN_MOMENTUM_CUTOFF_SCREEN_VELOCITY) {
+        cameraMomentumFrameRef.current = window.requestAnimationFrame(tickMomentum)
+      } else {
+        stopCameraMomentum()
+      }
+    }
+
+    cameraMomentumFrameRef.current = window.requestAnimationFrame(tickMomentum)
+  }, [applyCommittedCamera, markPrewarmInteraction, stopCameraMomentum, viewportSize])
+
+  const flushPendingCameraUpdate = useCallback(() => {
+    if (cameraAnimationFrameRef.current !== null) {
+      window.cancelAnimationFrame(cameraAnimationFrameRef.current)
+      cameraAnimationFrameRef.current = null
+    }
+
+    const pendingUpdate = pendingCameraUpdateRef.current
+    if (!pendingUpdate) {
+      return
+    }
+
+    pendingCameraUpdateRef.current = null
+    const clamped = clampCamera(pendingUpdate(cameraRef.current))
+    if (sameCamera(cameraRef.current, clamped)) {
+      return
+    }
+
+    applyCommittedCamera(clamped)
+  }, [applyCommittedCamera])
+
+  const updateCamera = useCallback((nextCamera: CameraState | ((current: CameraState) => CameraState)) => {
+    const updater = typeof nextCamera === 'function' ? nextCamera : () => nextCamera
+    const pendingUpdate = pendingCameraUpdateRef.current
+    pendingCameraUpdateRef.current = pendingUpdate
+      ? (current) => updater(pendingUpdate(current))
+      : updater
+
+    if (cameraAnimationFrameRef.current !== null) {
+      return
+    }
+
+    cameraAnimationFrameRef.current = window.requestAnimationFrame(() => {
+      cameraAnimationFrameRef.current = null
+      const scheduledUpdate = pendingCameraUpdateRef.current
+      if (!scheduledUpdate) {
+        return
+      }
+
+      pendingCameraUpdateRef.current = null
+      const clamped = clampCamera(scheduledUpdate(cameraRef.current))
+      if (sameCamera(cameraRef.current, clamped)) {
+        return
+      }
+
+      applyCommittedCamera(clamped)
+    })
+  }, [applyCommittedCamera])
+
+  useLayoutEffect(() => {
+    applyCameraToBoardWorld(cameraRef.current)
+  }, [applyCameraToBoardWorld])
+
+  const startDrag = useCallback((
+    id: Id,
+    pointerId: number,
+    mode: DragState['mode'],
+    startPoint: Point,
+    startTransform: Transform2D,
+    groupMembers?: DragState['groupMembers'],
+  ) => {
+    tapCandidateRef.current = null
+    cameraPointersRef.current.delete(pointerId)
+    dragRef.current = {
+      id,
+      pointerId,
+      mode,
+      startPointer: screenToLogical(viewportSize, cameraRef.current, startPoint),
+      startTransform: { ...startTransform },
+      currentPoint: startPoint,
+      moved: false,
+      raisedToFront: false,
+      groupMembers,
+    }
+  }, [viewportSize])
+
+  useEffect(() => {
+    onCameraChange(camera)
+  }, [camera, onCameraChange])
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) {
+      return
+    }
+
+    const host = hostRef.current
+    const root = rootRef.current
+    if (!host || !root) {
+      return
+    }
+
+    return bindBoardInputRecorder({
+      host,
+      root,
+      getContext: () => recorderContextRef.current,
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) {
+      return
+    }
+
+    recordBoardInputRecorderCamera(camera)
+  }, [camera])
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) {
+      return
+    }
+
+    recordBoardInputRecorderSelection(selectedId, selectedIds)
+  }, [selectedId, selectedIds])
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) {
+      return
+    }
+
+    recordBoardInputRecorderViewport(viewportSize)
+  }, [viewportSize])
+
+  useEffect(() => {
+    const host = hostRef.current
+    if (!host) {
+      return
+    }
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0]
+      if (!entry) {
+        return
+      }
+
+      const nextViewport = {
+        width: Math.max(1, Math.round(entry.contentRect.width)),
+        height: Math.max(1, Math.round(entry.contentRect.height)),
+      }
+      setViewportSize((current) =>
+        current.width === nextViewport.width && current.height === nextViewport.height ? current : nextViewport,
+      )
+    })
+
+    observer.observe(host)
+    return () => {
+      observer.disconnect()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    const tasks = Object.values(room.objects).flatMap((object) => {
+      if (isCard(object)) {
+        const visibleSpec = canSeeCardFace(object, currentPlayerId) ? object.face : object.back
+        if (constrainedEffects) {
+          return [{ spec: visibleSpec, size: object.size }]
+        }
+
+        return [
+          { spec: object.face, size: object.size },
+          { spec: object.back, size: object.size },
+        ]
+      }
+
+      if (isBoard(object)) {
+        const visibleSpec = isBoardFaceUp(object) ? object.face : object.back
+        if (constrainedEffects) {
+          return [{ spec: visibleSpec, size: object.size }]
+        }
+
+        return [
+          { spec: object.face, size: object.size },
+          { spec: object.back, size: object.size },
+        ]
+      }
+
+      return []
+    })
+
+    const seenTaskKeys = new Set<string>()
+    const queue = tasks.filter(({ spec, size }) => {
+      if (spec.kind !== 'image-url' || !spec.url) {
+        return false
+      }
+
+      const crop = normalizeCrop(spec.crop)
+      const taskKey = [
+        spec.url,
+        size.width,
+        size.height,
+        spec.fit ?? 'cover',
+        crop.x.toFixed(4),
+        crop.y.toFixed(4),
+        crop.width.toFixed(4),
+        crop.height.toFixed(4),
+      ].join('|')
+      if (seenTaskKeys.has(taskKey)) {
+        return false
+      }
+
+      seenTaskKeys.add(taskKey)
+      return true
+    })
+
+    let cancelled = false
+    let idleCallbackId: number | undefined
+    let timeoutId: ReturnType<typeof globalThis.setTimeout> | undefined
+    let nextTaskIndex = 0
+
+    const runNextTask = async () => {
+      const task = queue[nextTaskIndex]
+      nextTaskIndex += 1
+      if (!task || task.spec.kind !== 'image-url' || !task.spec.url) {
+        return
+      }
+
+      const source = resolveImageSource(task.spec.url, imageAssets)
+      const imageUrl = source?.renderUrl
+      if (!imageUrl) {
+        return
+      }
+
+      const image = await loadSourceImageElement(imageUrl).catch(() => undefined)
+      if (!image || cancelled) {
+        return
+      }
+
+      const intrinsicSize =
+        source?.asset?.width && source.asset.height
+          ? {
+            width: source.asset.width,
+            height: source.asset.height,
+          }
+          : {
+            width: image.naturalWidth,
+            height: image.naturalHeight,
+          }
+      const crop = normalizeCrop(task.spec.crop)
+      const { fitWidth, fitHeight } = computeSurfaceFit(crop, task.size, intrinsicSize, task.spec.fit ?? 'cover')
+      await requestPreparedSpriteSurface(
+        imageUrl,
+        crop,
+        task.size.width * fitWidth,
+        task.size.height * fitHeight,
+        intrinsicSize,
+      )
+    }
+
+    const scheduleNextTask = (delayMs = 0) => {
+      if (cancelled || nextTaskIndex >= queue.length) {
+        return
+      }
+
+      if (delayMs > 0) {
+        timeoutId = globalThis.setTimeout(() => {
+          timeoutId = undefined
+          scheduleNextTask()
+        }, delayMs)
+        return
+      }
+
+      const quietDelayMs = Math.max(0, prewarmPauseUntilRef.current - performance.now())
+      if (quietDelayMs > 0) {
+        timeoutId = globalThis.setTimeout(() => {
+          timeoutId = undefined
+          scheduleNextTask()
+        }, quietDelayMs)
+        return
+      }
+
+      if ('requestIdleCallback' in window) {
+        idleCallbackId = window.requestIdleCallback(async (deadline) => {
+          idleCallbackId = undefined
+          if (
+            prewarmPauseUntilRef.current > performance.now() ||
+            deadline.timeRemaining() < PREPARED_SPRITE_PREWARM_MIN_IDLE_MS
+          ) {
+            scheduleNextTask(PREPARED_SPRITE_PREWARM_FALLBACK_DELAY_MS)
+            return
+          }
+
+          await runNextTask()
+          scheduleNextTask()
+        })
+        return
+      }
+
+      timeoutId = globalThis.setTimeout(async () => {
+        timeoutId = undefined
+        if (prewarmPauseUntilRef.current > performance.now()) {
+          scheduleNextTask()
+          return
+        }
+        await runNextTask()
+        scheduleNextTask()
+      }, PREPARED_SPRITE_PREWARM_FALLBACK_DELAY_MS)
+    }
+
+    scheduleNextTask()
+
+    return () => {
+      cancelled = true
+      if (idleCallbackId !== undefined && 'cancelIdleCallback' in window) {
+        window.cancelIdleCallback(idleCallbackId)
+      }
+      if (timeoutId !== undefined) {
+        globalThis.clearTimeout(timeoutId)
+      }
+    }
+  }, [constrainedEffects, currentPlayerId, imageAssets, room.objects])
+
+  useEffect(() => {
+    const host = hostRef.current
+    if (!host) {
+      return
+    }
+
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault()
+      markPrewarmInteraction()
+      stopCameraMomentum()
+      resetPointerPanState()
+      const localPoint = clientToLocal(rootRef.current, event.clientX, event.clientY)
+      if (!localPoint) {
+        return
+      }
+
+      updateCamera((current) => {
+        const anchorWorld = screenToLogical(viewportSize, current, localPoint)
+        const nextZoom = clamp(current.zoom * Math.exp(-event.deltaY * 0.0012), MIN_ZOOM_SCALE, MAX_ZOOM_SCALE)
+        return cameraForAnchor(viewportSize, anchorWorld, localPoint, nextZoom)
+      })
+    }
+
+    host.addEventListener('wheel', handleWheel, { passive: false })
+    return () => {
+      host.removeEventListener('wheel', handleWheel)
+    }
+  }, [markPrewarmInteraction, resetPointerPanState, stopCameraMomentum, updateCamera, viewportSize])
+
+  useEffect(() => {
+    const host = hostRef.current
+    if (!host) {
+      return
+    }
+
+    const preventNativeTouchBehavior = (event: TouchEvent) => {
+      event.preventDefault()
+    }
+
+    host.addEventListener('touchstart', preventNativeTouchBehavior, { passive: false })
+    host.addEventListener('touchmove', preventNativeTouchBehavior, { passive: false })
+
+    return () => {
+      host.removeEventListener('touchstart', preventNativeTouchBehavior)
+      host.removeEventListener('touchmove', preventNativeTouchBehavior)
+    }
+  }, [])
+
+  useEffect(() => {
+    const preventWindowDropNavigation = (event: DragEvent) => {
+      if (!event.dataTransfer || !hasFileTransfer(event.dataTransfer)) {
+        return
+      }
+
+      event.preventDefault()
+    }
+
+    window.addEventListener('dragover', preventWindowDropNavigation)
+    window.addEventListener('drop', preventWindowDropNavigation)
+    return () => {
+      window.removeEventListener('dragover', preventWindowDropNavigation)
+      window.removeEventListener('drop', preventWindowDropNavigation)
+    }
+  }, [])
+
+  useEffect(() => {
+    const handlePointerMove = (event: PointerEvent) => {
+      const localPoint = clientToLocal(rootRef.current, event.clientX, event.clientY)
+      if (!localPoint) {
+        return
+      }
+
+      const activeLasso = lassoRef.current
+      if (activeLasso && activeLasso.pointerId === event.pointerId) {
+        const lastPoint = activeLasso.points[activeLasso.points.length - 1]
+        if (!lastPoint || Math.hypot(localPoint.x - lastPoint.x, localPoint.y - lastPoint.y) >= 6) {
+          const nextPoints = [...activeLasso.points, localPoint]
+          activeLasso.points = nextPoints
+          setLassoPath(nextPoints)
+        }
+        return
+      }
+
+      const pendingDeckPress = pendingDeckPressRef.current
+      if (!dragRef.current && pendingDeckPress && pendingDeckPress.pointerId === event.pointerId) {
+        const pointerDistance = Math.hypot(
+          localPoint.x - pendingDeckPress.startPoint.x,
+          localPoint.y - pendingDeckPress.startPoint.y,
+        )
+
+        if (pointerDistance > TAP_GRACE_DISTANCE) {
+          clearPendingDeckPress()
+
+          const liftedCardId = onLiftTopCardFromDeck(pendingDeckPress.deckId)
+          const dragId = liftedCardId ?? pendingDeckPress.deckId
+          if (liftedCardId) {
+            onBringObjectToFront(liftedCardId)
+            onSelect(liftedCardId)
+          }
+
+          startDrag(
+            dragId,
+            event.pointerId,
+            'move',
+            pendingDeckPress.startPoint,
+            pendingDeckPress.startTransform,
+          )
+        }
+      }
+
+      const activeDrag = dragRef.current
+      if (activeDrag && activeDrag.pointerId === event.pointerId) {
+        activeDrag.currentPoint = localPoint
+
+        const worldPoint = screenToLogical(viewportSize, cameraRef.current, localPoint)
+        const distance = Math.hypot(
+          worldPoint.x - activeDrag.startPointer.x,
+          worldPoint.y - activeDrag.startPointer.y,
+        )
+        activeDrag.moved ||= distance > 8
+
+        if (
+          activeDrag.mode === 'move' &&
+          activeDrag.moved &&
+          !activeDrag.raisedToFront &&
+          (!activeDrag.groupMembers || activeDrag.groupMembers.length === 0) &&
+          isMovableObjectType(roomRef.current, activeDrag.id)
+        ) {
+          onBringObjectToFront(activeDrag.id)
+          activeDrag.raisedToFront = true
+        }
+
+        if (activeDrag.mode === 'move') {
+          const deltaX = worldPoint.x - activeDrag.startPointer.x
+          const deltaY = worldPoint.y - activeDrag.startPointer.y
+
+          if (activeDrag.groupMembers && activeDrag.groupMembers.length > 0) {
+            const nextTransforms: EphemeralTransformMap = {}
+            for (const member of activeDrag.groupMembers) {
+              nextTransforms[member.id] = {
+                ...member.startTransform,
+                x: member.startTransform.x + deltaX,
+                y: member.startTransform.y + deltaY,
+              }
+            }
+            replacePreviewTransforms(nextTransforms)
+            setHoverDeckId(undefined)
+
+            for (const [objectId, transform] of Object.entries(nextTransforms)) {
+              if (transform) {
+                onPreviewTransform(objectId, transform)
+              }
+            }
+          } else {
+            const nextTransform = {
+              ...activeDrag.startTransform,
+              x: activeDrag.startTransform.x + deltaX,
+              y: activeDrag.startTransform.y + deltaY,
+            }
+            replacePreviewTransforms({
+              [activeDrag.id]: nextTransform,
+            })
+            onPreviewTransform(activeDrag.id, nextTransform)
+
+            const draggingObject = roomRef.current.objects[activeDrag.id]
+            const nextHoverDeckId =
+              draggingObject && (draggingObject.type === 'card' || draggingObject.type === 'deck')
+                ? findDeckAtPoint(
+                    roomRef.current,
+                    { x: nextTransform.x, y: nextTransform.y },
+                    ephemeralTransformsRef.current,
+                    previewTransformsRef.current,
+                    activeDrag.id,
+                  )
+                : undefined
+
+            setHoverDeckId((current) => (current === nextHoverDeckId ? current : nextHoverDeckId))
+          }
+        } else {
+          const angle =
+            Math.atan2(
+              worldPoint.y - activeDrag.startTransform.y,
+              worldPoint.x - activeDrag.startTransform.x,
+            ) + Math.PI / 2
+
+          const nextTransform = {
+            ...activeDrag.startTransform,
+            rotation: angle,
+          }
+          replacePreviewTransforms({
+            [activeDrag.id]: nextTransform,
+          })
+          onPreviewTransform(activeDrag.id, nextTransform)
+        }
+        return
+      }
+
+      const cameraPointers = cameraPointersRef.current
+      const previousPoint = cameraPointers.get(event.pointerId)
+      if (!previousPoint) {
+        return
+      }
+
+      markPrewarmInteraction()
+
+      cameraPointers.set(event.pointerId, localPoint)
+      const pointerEntries = [...cameraPointers.entries()]
+
+      if (pointerEntries.length === 1) {
+        const now = performance.now() / 1000
+        const nextSamples = [
+          ...pointerPanStateRef.current.recentSamples,
+          { point: localPoint, time: now },
+        ].filter((sample) => now - sample.time <= PAN_MOMENTUM_SAMPLE_WINDOW_SECONDS)
+        const firstSample = nextSamples[0]
+        const lastSample = nextSamples[nextSamples.length - 1]
+        const dt = firstSample && lastSample ? lastSample.time - firstSample.time : 0
+        if (dt > 0 && firstSample && lastSample) {
+          pointerPanStateRef.current = {
+            active: true,
+            lastVelocity: {
+              x: (lastSample.point.x - firstSample.point.x) / dt,
+              y: (lastSample.point.y - firstSample.point.y) / dt,
+            },
+            lastSampleTime: now,
+            recentSamples: nextSamples,
+          }
+        } else {
+          pointerPanStateRef.current = {
+            active: true,
+            lastVelocity: pointerPanStateRef.current.lastVelocity,
+            lastSampleTime: now,
+            recentSamples: nextSamples,
+          }
+        }
+
+        updateCamera((current) => ({
+          ...current,
+          centerX: current.centerX - (localPoint.x - previousPoint.x) / current.zoom,
+          centerY: current.centerY - (localPoint.y - previousPoint.y) / current.zoom,
+        }))
+        return
+      }
+
+      if (pointerEntries.length >= 2) {
+        stopCameraMomentum()
+        resetPointerPanState()
+        const [firstEntry, secondEntry] = pointerEntries
+        const [firstPointerId, firstCurrent] = firstEntry
+        const [secondPointerId, secondCurrent] = secondEntry
+        const firstPrevious = firstPointerId === event.pointerId ? previousPoint : firstCurrent
+        const secondPrevious = secondPointerId === event.pointerId ? previousPoint : secondCurrent
+        const previousCenter = {
+          x: (firstPrevious.x + secondPrevious.x) / 2,
+          y: (firstPrevious.y + secondPrevious.y) / 2,
+        }
+        const nextCenter = {
+          x: (firstCurrent.x + secondCurrent.x) / 2,
+          y: (firstCurrent.y + secondCurrent.y) / 2,
+        }
+        const previousDistance = Math.hypot(
+          firstPrevious.x - secondPrevious.x,
+          firstPrevious.y - secondPrevious.y,
+        )
+        const nextDistance = Math.hypot(
+          firstCurrent.x - secondCurrent.x,
+          firstCurrent.y - secondCurrent.y,
+        )
+
+        if (previousDistance > 0 && nextDistance > 0) {
+          updateCamera((current) => {
+            const anchorWorld = screenToLogical(viewportSize, current, previousCenter)
+            const zoom = clamp(current.zoom * (nextDistance / previousDistance), MIN_ZOOM_SCALE, MAX_ZOOM_SCALE)
+            return cameraForAnchor(viewportSize, anchorWorld, nextCenter, zoom)
+          })
+        }
+      }
+    }
+
+    const handlePointerUp = (event: PointerEvent) => {
+      markPrewarmInteraction()
+      clearPendingDeckPress()
+      const hadCameraPointer = cameraPointersRef.current.has(event.pointerId)
+      const shouldStartMomentum =
+        hadCameraPointer &&
+        cameraPointersRef.current.size === 1 &&
+        pointerPanStateRef.current.active
+      const releaseVelocity = pointerPanStateRef.current.lastVelocity
+
+      const localPoint = clientToLocal(rootRef.current, event.clientX, event.clientY)
+      if (!localPoint) {
+        return
+      }
+
+      const activeLasso = lassoRef.current
+      if (activeLasso && activeLasso.pointerId === event.pointerId) {
+        lassoRef.current = null
+        setLassoPath([])
+        if (activeLasso.points.length >= 3) {
+          onAddToGroupSelection(
+            objectIdsWithinLasso(
+              viewportSize,
+              cameraRef.current,
+              roomRef.current,
+              ephemeralTransformsRef.current,
+              previewTransformsRef.current,
+              activeLasso.points,
+            ),
+          )
+        }
+        return
+      }
+
+      const activeDrag = dragRef.current
+      if (activeDrag && activeDrag.pointerId === event.pointerId) {
+        dragRef.current = null
+        setHoverDeckId(undefined)
+
+        const nextPreviewTransforms = previewTransformsRef.current
+        if (activeDrag.mode === 'move') {
+          if (activeDrag.groupMembers && activeDrag.groupMembers.length > 0) {
+            for (const member of activeDrag.groupMembers) {
+              const finalTransform = nextPreviewTransforms[member.id]
+              onClearPreviewTransform(member.id, finalTransform)
+              if (finalTransform) {
+                onCommitTransform(member.id, {
+                  x: finalTransform.x,
+                  y: finalTransform.y,
+                  rotation: member.startTransform.rotation,
+                })
+              }
+            }
+            replacePreviewTransforms({})
+            return
+          }
+
+          const finalTransform = nextPreviewTransforms[activeDrag.id] ?? activeDrag.startTransform
+          onClearPreviewTransform(activeDrag.id, finalTransform)
+
+          const worldPoint = screenToLogical(viewportSize, cameraRef.current, localPoint)
+          const object = roomRef.current.objects[activeDrag.id]
+          const targetDeckId =
+            object && (object.type === 'card' || object.type === 'deck')
+              ? findDeckAtPoint(
+                  roomRef.current,
+                  worldPoint,
+                  ephemeralTransformsRef.current,
+                  previewTransformsRef.current,
+                  activeDrag.id,
+                )
+              : undefined
+
+          replacePreviewTransforms({})
+          if (targetDeckId) {
+            onDropObjectToDeck(activeDrag.id, targetDeckId)
+          } else {
+            onCommitTransform(activeDrag.id, finalTransform)
+          }
+          return
+        }
+
+        const finalTransform = nextPreviewTransforms[activeDrag.id] ?? activeDrag.startTransform
+        const snappedRotation = snapRotationAngle(finalTransform.rotation)
+        const snappedTransform = {
+          ...finalTransform,
+          rotation: snappedRotation,
+        }
+        onClearPreviewTransform(activeDrag.id, snappedTransform)
+        replacePreviewTransforms({})
+        onCommitTransform(activeDrag.id, {
+          rotation: snappedRotation,
+        })
+        return
+      }
+
+      const tapCandidate = tapCandidateRef.current
+      if (tapCandidate && tapCandidate.pointerId === event.pointerId) {
+        tapCandidateRef.current = null
+        const releasedObjectId = objectIdAtClientPoint(event.clientX, event.clientY)
+        const distance = Math.hypot(
+          localPoint.x - tapCandidate.startPoint.x,
+          localPoint.y - tapCandidate.startPoint.y,
+        )
+        if (releasedObjectId === tapCandidate.id && distance <= TAP_GRACE_DISTANCE) {
+          if (selectionModeRef.current === 'group') {
+            onToggleGroupSelection(tapCandidate.id)
+          } else {
+            onSelect(tapCandidate.id)
+          }
+        }
+      }
+
+      const backgroundTapCandidate = backgroundTapCandidateRef.current
+      if (backgroundTapCandidate && backgroundTapCandidate.pointerId === event.pointerId) {
+        backgroundTapCandidateRef.current = null
+        const distance = Math.hypot(
+          localPoint.x - backgroundTapCandidate.startPoint.x,
+          localPoint.y - backgroundTapCandidate.startPoint.y,
+        )
+        const releasedObjectId = objectIdAtClientPoint(event.clientX, event.clientY)
+        if (!releasedObjectId && distance <= TAP_GRACE_DISTANCE && selectionModeRef.current === 'normal') {
+          onSelect(undefined)
+        }
+      }
+
+      cameraPointersRef.current.delete(event.pointerId)
+      if (shouldStartMomentum) {
+        flushPendingCameraUpdate()
+        if (Math.hypot(releaseVelocity.x, releaseVelocity.y) > 0) {
+          startCameraMomentum(releaseVelocity)
+        }
+      }
+      resetPointerPanState()
+    }
+
+    const handlePointerCancel = (event: PointerEvent) => {
+      markPrewarmInteraction()
+      if (dragRef.current?.pointerId === event.pointerId) {
+        const drag = dragRef.current
+        dragRef.current = null
+        setHoverDeckId(undefined)
+        if (drag.groupMembers && drag.groupMembers.length > 0) {
+          for (const member of drag.groupMembers) {
+            onClearPreviewTransform(member.id)
+          }
+        } else if (drag) {
+          onClearPreviewTransform(drag.id)
+        }
+        replacePreviewTransforms({})
+      }
+
+      if (lassoRef.current?.pointerId === event.pointerId) {
+        lassoRef.current = null
+        setLassoPath([])
+      }
+
+      if (tapCandidateRef.current?.pointerId === event.pointerId) {
+        tapCandidateRef.current = null
+      }
+
+      if (backgroundTapCandidateRef.current?.pointerId === event.pointerId) {
+        backgroundTapCandidateRef.current = null
+      }
+
+      clearPendingDeckPress()
+      cameraPointersRef.current.delete(event.pointerId)
+      stopCameraMomentum()
+      resetPointerPanState()
+    }
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', handlePointerUp)
+    window.addEventListener('pointercancel', handlePointerCancel)
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+      window.removeEventListener('pointercancel', handlePointerCancel)
+    }
+  }, [
+    clearPendingDeckPress,
+    onAddToGroupSelection,
+    onBringObjectToFront,
+    onClearPreviewTransform,
+    onCommitTransform,
+    onDropObjectToDeck,
+    onLiftTopCardFromDeck,
+    onPreviewTransform,
+    onSelect,
+    replacePreviewTransforms,
+    startDrag,
+    onToggleGroupSelection,
+    updateCamera,
+    viewportSize,
+    flushPendingCameraUpdate,
+    resetPointerPanState,
+    startCameraMomentum,
+    stopCameraMomentum,
+    markPrewarmInteraction,
+  ])
+
+  useEffect(
+    () => () => {
+      flushPendingCameraUpdate()
+      pendingCameraUpdateRef.current = null
+      stopCameraMomentum()
+      if (cameraRenderSyncTimeoutRef.current !== null) {
+        window.clearTimeout(cameraRenderSyncTimeoutRef.current)
+        cameraRenderSyncTimeoutRef.current = null
+      }
+      clearPendingDeckPress()
+      if (dragRef.current) {
+        if (dragRef.current.groupMembers && dragRef.current.groupMembers.length > 0) {
+          for (const member of dragRef.current.groupMembers) {
+            onClearPreviewTransformRef.current(member.id)
+          }
+        } else {
+          onClearPreviewTransformRef.current(dragRef.current.id)
+        }
+      }
+    },
+    [clearPendingDeckPress, flushPendingCameraUpdate, stopCameraMomentum],
+  )
 
   const quickActions = useMemo<QuickAction[]>(() => {
     if (selectionMode !== 'normal' || !selectedId) {
       return []
     }
+
     const object = room.objects[selectedId]
     if (!object || !canEdit) {
       return []
@@ -1930,7 +3079,7 @@ export function BoardView({
 
     if (object.type === 'deck') {
       return [
-        { id: 'shuffle', label: 'Shuffle', onClick: () => onShuffleDeck(object.id) },
+        { id: 'shuffle', label: 'Shuffle', text: 'Shuffle', onClick: () => onShuffleDeck(object.id) },
         { id: 'more', label: 'More actions', icon: 'more', onClick: onOpenSelectionPanel },
       ]
     }
@@ -1944,706 +3093,567 @@ export function BoardView({
 
     return []
   }, [canEdit, onFlipBoard, onFlipCard, onOpenSelectionPanel, onShuffleDeck, room.objects, selectedId, selectionMode])
+  hasQuickActionsRef.current = quickActions.length > 0
+
+  const root = getRootPlane(room)
+  const selectedIdsSet = useMemo(() => new Set(selectedIds), [selectedIds])
+  const worldObjects = useMemo(
+    () =>
+      root.childOrder.flatMap((objectId, index) => {
+        const object = room.objects[objectId]
+        const transform = displayedTransformForObject(room, objectId, ephemeralTransforms, previewTransforms)
+        if (!object || !transform) {
+          return []
+        }
+
+        const worldSize = objectDimensions(room, objectId)
+
+        return [{
+          index,
+          objectId,
+          object,
+          transform,
+          worldSize,
+        }]
+      }),
+    [ephemeralTransforms, previewTransforms, room, root.childOrder],
+  )
+
+  const selectedWorldObject = useMemo(
+    () => (selectedId ? worldObjects.find((object) => object.objectId === selectedId) : undefined),
+    [selectedId, worldObjects],
+  )
+
+  const hasActiveAlphaSelection = useMemo(() => {
+    const candidateIds = selectionMode === 'group' ? selectedIds : selectedId ? [selectedId] : []
+    return candidateIds.some((objectId) => {
+      const object = room.objects[objectId]
+      if (!isBoard(object)) {
+        return false
+      }
+      const spec = isBoardFaceUp(object) ? object.face : object.back
+      return spec.kind === 'image-url' && (spec.bg === undefined || spec.bg === 'transparent')
+    })
+  }, [room, selectedId, selectedIds, selectionMode])
+  hasActiveAlphaSelectionRef.current = hasActiveAlphaSelection
 
   useEffect(() => {
-    const updateShiftState = (event: KeyboardEvent) => {
-      shiftPressedRef.current = event.shiftKey
+    if (!hasActiveAlphaSelection) {
+      return
     }
 
-    const clearShiftState = () => {
-      shiftPressedRef.current = false
+    setLiveSelectionZoom(cameraRef.current.zoom)
+  }, [hasActiveAlphaSelection])
+
+  const objectElementsZoomDependency = hasActiveAlphaSelection ? liveSelectionZoom : undefined
+
+  const quickActionsPosition = useMemo(() => {
+    if (!selectedWorldObject || quickActions.length === 0) {
+      return undefined
     }
 
-    window.addEventListener('keydown', updateShiftState)
-    window.addEventListener('keyup', updateShiftState)
-    window.addEventListener('blur', clearShiftState)
+    const screenPoint = logicalToScreen(viewportSize, cameraRef.current, {
+      x: selectedWorldObject.transform.x,
+      y: selectedWorldObject.transform.y,
+    })
 
-    return () => {
-      window.removeEventListener('keydown', updateShiftState)
-      window.removeEventListener('keyup', updateShiftState)
-      window.removeEventListener('blur', clearShiftState)
+    return {
+      left: `${screenPoint.x}px`,
+      top: `${screenPoint.y - selectedWorldObject.worldSize.height * cameraRef.current.zoom / 2 - 24}px`,
+    }
+  }, [quickActions.length, selectedWorldObject, viewportSize])
+  selectedWorldObjectRef.current = selectedWorldObject
+
+  useLayoutEffect(() => {
+    applyQuickActionsPosition(cameraRef.current)
+  }, [applyQuickActionsPosition, quickActions.length, selectedWorldObject])
+
+  const boardWorldStyle = useMemo<CSSProperties>(() => {
+    return {
+      width: '0px',
+      height: '0px',
     }
   }, [])
 
-  useEffect(() => {
-    let cancelled = false
-    const hostElement = hostRef.current
-    const rootElement = rootRef.current
-    if (!hostElement || !rootElement) {
+  const boardGridStyle = useMemo<CSSProperties>(
+    () => ({
+      backgroundPosition: `${viewportSize.width / 2 - camera.centerX * camera.zoom}px ${viewportSize.height / 2 - camera.centerY * camera.zoom}px`,
+      backgroundSize: `${Math.max(1, 160 * camera.zoom)}px ${Math.max(1, 160 * camera.zoom)}px, ${Math.max(1, 160 * camera.zoom)}px ${Math.max(1, 160 * camera.zoom)}px, 100% 100%`,
+    }),
+    [camera.centerX, camera.centerY, camera.zoom, viewportSize.height, viewportSize.width],
+  )
+
+  const handleRootPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if ((event.target as HTMLElement | null)?.closest('[data-board-ui]')) {
       return
     }
-    const host: HTMLDivElement = hostElement
-    const root: HTMLDivElement = rootElement
-    const renderedObjects = renderedRef.current
-    const cardTextureCache = cardTextureCacheRef.current
-    let dropDepth = 0
 
-    const suppressNativeTouch = (event: Event) => {
+    if (event.button === 2) {
+      return
+    }
+
+    const localPoint = clientToLocal(rootRef.current, event.clientX, event.clientY)
+    if (!localPoint) {
+      return
+    }
+
+    if (event.pointerType === 'touch') {
       event.preventDefault()
-    }
-
-    const resetDropTarget = () => {
-      dropDepth = 0
-      setIsImageDropTarget(false)
-    }
-
-    const preventWindowDropNavigation = (event: globalThis.DragEvent) => {
-      if (!event.dataTransfer || !hasFileTransfer(event.dataTransfer)) {
-        return
-      }
-
-      event.preventDefault()
-    }
-
-    const handleRootDragEnter = (event: globalThis.DragEvent) => {
-      if (!canEditRef.current || !event.dataTransfer || !hasFileTransfer(event.dataTransfer)) {
-        return
-      }
-
-      event.preventDefault()
-      dropDepth += 1
-      setIsImageDropTarget(true)
-    }
-
-    const handleRootDragOver = (event: globalThis.DragEvent) => {
-      if (!canEditRef.current || !event.dataTransfer || !hasFileTransfer(event.dataTransfer)) {
-        return
-      }
-
-      event.preventDefault()
-      event.dataTransfer.dropEffect = 'copy'
-      setIsImageDropTarget(true)
-    }
-
-    const handleRootDragLeave = (event: globalThis.DragEvent) => {
-      if (!event.dataTransfer || !hasFileTransfer(event.dataTransfer)) {
-        return
-      }
-
-      event.preventDefault()
-      dropDepth = Math.max(0, dropDepth - 1)
-      if (dropDepth === 0) {
-        setIsImageDropTarget(false)
-      }
-    }
-
-    const handleRootDrop = (event: globalThis.DragEvent) => {
-      if (!canEditRef.current || !event.dataTransfer || !hasFileTransfer(event.dataTransfer)) {
-        return
-      }
-
-      event.preventDefault()
-      const file = imageFileFromTransfer(event.dataTransfer)
-      resetDropTarget()
-      if (!file) {
-        return
-      }
-
-      const viewport = viewportRef.current
-      if (!viewport) {
-        return
-      }
-
-      const hostRect = host.getBoundingClientRect()
-      const screenPoint = {
-        x: event.clientX - hostRect.left,
-        y: event.clientY - hostRect.top,
-      }
-      const point = viewportToLogicalPoint(viewport, viewport.toWorld(screenPoint))
-      callbacksRef.current.onDropImageFileAt(file, point)
-    }
-
-    host.addEventListener('touchstart', suppressNativeTouch, { passive: false })
-    host.addEventListener('touchmove', suppressNativeTouch, { passive: false })
-    host.addEventListener('contextmenu', suppressNativeTouch)
-    host.addEventListener('selectstart', suppressNativeTouch)
-    host.addEventListener('dragstart', suppressNativeTouch)
-    root.addEventListener('dragenter', handleRootDragEnter)
-    root.addEventListener('dragover', handleRootDragOver)
-    root.addEventListener('dragleave', handleRootDragLeave)
-    root.addEventListener('drop', handleRootDrop)
-    window.addEventListener('dragover', preventWindowDropNavigation)
-    window.addEventListener('drop', preventWindowDropNavigation)
-
-    async function init() {
-      const app = new Application()
-      await app.init({
-        antialias: true,
-        autoDensity: true,
-        backgroundAlpha: 0,
-        preference: 'webgl',
-        resizeTo: host,
-        resolution: Math.min(window.devicePixelRatio || 1, 2),
-      })
-
-      if (cancelled) {
-        app.destroy(true)
-        return
-      }
-
-      host.appendChild(app.canvas)
-
-      const initialWorldGeometry = viewportWorldGeometryForScreen(host.clientWidth, host.clientHeight)
-      const viewport = new Viewport({
-        events: app.renderer.events,
-        ticker: app.ticker,
-        screenWidth: host.clientWidth,
-        screenHeight: host.clientHeight,
-        worldWidth: initialWorldGeometry.worldWidth,
-        worldHeight: initialWorldGeometry.worldHeight,
-        passiveWheel: false,
-        stopPropagation: true,
-      })
-
-      viewport
-        .drag({ pressDrag: true })
-        .pinch()
-        .wheel({ smooth: 6, trackpadPinch: true })
-        .decelerate({ friction: 0.92 })
-        .clampZoom({ minScale: MIN_ZOOM_SCALE, maxScale: MAX_ZOOM_SCALE })
-        .clamp({
-          left: 0,
-          top: 0,
-          right: initialWorldGeometry.worldWidth,
-          bottom: initialWorldGeometry.worldHeight,
-          underflow: 'center',
-        })
-
-      viewport.eventMode = 'static'
-      viewport.on('pointerdown', (event) => {
-        if (selectionModeRef.current === 'group' && lassoModeRef.current && !dragRef.current) {
-          lassoRef.current = {
+      const activeDrag = dragRef.current
+      if (activeDrag && activeDrag.pointerId !== event.pointerId) {
+        if (activeDrag.moved) {
+          beginCameraPointer(event.pointerId, localPoint)
+        } else {
+          cancelTouchObjectInteraction({
             pointerId: event.pointerId,
-            points: [{ x: event.global.x, y: event.global.y }],
-          }
-          setLassoPath([{ x: event.global.x, y: event.global.y }])
-          pauseViewportCameraGestures(viewport)
-          return
-        }
-
-        if (dragRef.current) {
-          if (event.pointerType === 'touch' && event.pointerId !== dragRef.current.pointerId) {
-            auxiliaryTouchRef.current.pointers.set(event.pointerId, { x: event.global.x, y: event.global.y })
-          }
-          return
-        }
-
-        if (event.pointerType === 'touch') {
-          if (tapCandidateRef.current?.pointerId === event.pointerId) {
-            return
-          }
-          backgroundTapCandidateRef.current = {
-            pointerId: event.pointerId,
-            startPointer: { x: event.global.x, y: event.global.y },
-          }
-          return
-        }
-
-        if (!dragRef.current && selectionModeRef.current === 'normal') {
-          callbacksRef.current.onSelect(undefined)
-        }
-      })
-
-      viewport.moveCenter(
-        logicalToViewportPoint(viewport, {
-          x: initialCameraRef.current.centerX,
-          y: initialCameraRef.current.centerY,
-        }),
-      )
-      viewport.setZoom(initialCameraRef.current.zoom, true)
-
-      app.stage.addChild(viewport)
-
-      app.stage.eventMode = 'static'
-      app.stage.hitArea = new Rectangle(0, 0, host.clientWidth, host.clientHeight)
-      let renderedSelectionScale = viewport.scaled
-
-      const emitCamera = () => {
-        const worldOffset = viewportWorldOffset(viewport)
-        const snapshot = JSON.stringify({
-          centerX: Number((viewport.center.x - worldOffset.x).toFixed(1)),
-          centerY: Number((viewport.center.y - worldOffset.y).toFixed(1)),
-          zoom: Number(viewport.scaled.toFixed(3)),
-        })
-        if (snapshot !== cameraSnapshot.current) {
-          cameraSnapshot.current = snapshot
-          callbacksRef.current.onCameraChange(JSON.parse(snapshot) as CameraState)
-        }
-      }
-
-      const updateOverlayPosition = () => {
-        const overlay = quickActionsRef.current
-        if (!overlay) {
-          return
-        }
-        const activeSelectedId = selectedIdRef.current
-        if (!activeSelectedId) {
-          overlay.style.opacity = '0'
-          return
-        }
-        const rendered = renderedRef.current.get(activeSelectedId)
-        if (!rendered) {
-          overlay.style.opacity = '0'
-          return
-        }
-        const screen = viewport.toScreen(
-          logicalToViewportPoint(viewport, {
-            x: rendered.container.position.x,
-            y: rendered.container.position.y - rendered.height / 2 - 24,
-          }),
-        )
-        overlay.style.left = `${screen.x}px`
-        overlay.style.top = `${screen.y}px`
-        overlay.style.opacity = '1'
-      }
-
-      const onPointerMove = (event: FederatedPointerEvent) => {
-        const activeLasso = lassoRef.current
-        if (activeLasso) {
-          if (event.pointerId !== activeLasso.pointerId) {
-            return
-          }
-
-          const lastPoint = activeLasso.points[activeLasso.points.length - 1]
-          if (!lastPoint || Math.hypot(event.global.x - lastPoint.x, event.global.y - lastPoint.y) >= 6) {
-            const nextPoints = [...activeLasso.points, { x: event.global.x, y: event.global.y }]
-            activeLasso.points = nextPoints
-            setLassoPath(nextPoints)
-          }
-          return
-        }
-
-        const pendingDeckPress = pendingDeckPressRef.current
-        if (!dragRef.current && pendingDeckPress && pendingDeckPress.pointerId === event.pointerId) {
-          const pointerDistance = Math.hypot(
-            event.global.x - pendingDeckPress.startGlobal.x,
-            event.global.y - pendingDeckPress.startGlobal.y,
-          )
-
-          if (pointerDistance > TAP_GRACE_DISTANCE) {
-            tapCandidateRef.current = null
-          }
-
-          if (pointerDistance > TAP_GRACE_DISTANCE) {
-            clearPendingDeckPress(pendingDeckPressRef)
-
-            const liftedCardId = callbacksRef.current.onLiftTopCardFromDeck(pendingDeckPress.deckId)
-            const dragId = liftedCardId ?? pendingDeckPress.deckId
-            if (liftedCardId) {
-              callbacksRef.current.onBringObjectToFront(liftedCardId)
-              callbacksRef.current.onSelect(liftedCardId)
-            }
-
-            dragRef.current = {
-              id: dragId,
-              pointerId: event.pointerId,
-              mode: 'move',
-              startPointer: pendingDeckPress.startWorld,
-              startTransform: pendingDeckPress.startTransform,
-              currentGlobal: { x: event.global.x, y: event.global.y },
-              moved: false,
-              raisedToFront: Boolean(liftedCardId),
-            }
-            pauseViewportCameraGestures(viewport)
-          }
-        }
-
-        const drag = dragRef.current
-        if (!drag) {
-          return
-        }
-
-        if (event.pointerType === 'touch' && event.pointerId !== drag.pointerId) {
-          applyAuxiliaryTouchGesture(viewport, event, auxiliaryTouchRef, renderedRef.current, dragRef)
-          return
-        }
-
-        if (event.pointerId !== drag.pointerId) {
-          return
-        }
-
-        const rendered = renderedRef.current.get(drag.id)
-        if (!rendered) {
-          return
-        }
-
-        drag.currentGlobal = { x: event.global.x, y: event.global.y }
-        const world = viewportToLogicalPoint(viewport, viewport.toWorld(event.global))
-        const distance = Math.hypot(world.x - drag.startPointer.x, world.y - drag.startPointer.y)
-        drag.moved ||= distance > 8
-
-        if (
-          drag.mode === 'move' &&
-          drag.moved &&
-          !drag.raisedToFront &&
-          (!drag.groupMembers || drag.groupMembers.length === 0) &&
-          isMovableObjectType(roomRef.current, drag.id)
-        ) {
-          callbacksRef.current.onBringObjectToFront(drag.id)
-          drag.raisedToFront = true
-        }
-
-        if (drag.mode === 'move') {
-          const deltaX = world.x - drag.startPointer.x
-          const deltaY = world.y - drag.startPointer.y
-
-          if (drag.groupMembers && drag.groupMembers.length > 0) {
-            for (const member of drag.groupMembers) {
-              const memberRendered = renderedRef.current.get(member.id)
-              if (!memberRendered) {
-                continue
-              }
-
-              const nextX = member.startTransform.x + deltaX
-              const nextY = member.startTransform.y + deltaY
-              memberRendered.container.position.set(nextX, nextY)
-              memberRendered.transform = { ...member.startTransform, x: nextX, y: nextY }
-            }
-            setHoverDeckId(undefined)
-          } else {
-            const nextX = drag.startTransform.x + deltaX
-            const nextY = drag.startTransform.y + deltaY
-            rendered.container.position.set(nextX, nextY)
-            rendered.transform = { ...drag.startTransform, x: nextX, y: nextY }
-
-            const liveRoom = roomRef.current
-            const draggingObject = liveRoom.objects[drag.id]
-            const nextHoverDeckId =
-              draggingObject && (draggingObject.type === 'card' || draggingObject.type === 'deck')
-                ? findDeckAtPoint(liveRoom, { x: nextX, y: nextY }, ephemeralTransformsRef.current, drag.id)
-                : undefined
-            setHoverDeckId((current) => (current === nextHoverDeckId ? current : nextHoverDeckId))
-          }
-        } else {
-          const originX = drag.startTransform.x
-          const originY = drag.startTransform.y
-          const angle = Math.atan2(world.y - originY, world.x - originX) + Math.PI / 2
-          rendered.container.rotation = angle
-          rendered.transform = { ...drag.startTransform, rotation: angle }
-        }
-
-        if (drag.groupMembers && drag.groupMembers.length > 0) {
-          for (const member of drag.groupMembers) {
-            const memberRendered = renderedRef.current.get(member.id)
-            if (memberRendered) {
-              callbacksRef.current.onPreviewTransform(member.id, memberRendered.transform)
-            }
-          }
-        } else {
-          callbacksRef.current.onPreviewTransform(drag.id, rendered.transform)
-        }
-        updateOverlayPosition()
-      }
-
-      const finishDrag = (event: FederatedPointerEvent) => {
-        const activeLasso = lassoRef.current
-        if (activeLasso) {
-          if (event.pointerId !== activeLasso.pointerId) {
-            return
-          }
-
-          lassoRef.current = null
-          resumeViewportCameraGestures(viewport)
-          const completedPoints =
-            Math.hypot(
-              event.global.x - activeLasso.points[activeLasso.points.length - 1].x,
-              event.global.y - activeLasso.points[activeLasso.points.length - 1].y,
-            ) >= 4
-              ? [...activeLasso.points, { x: event.global.x, y: event.global.y }]
-              : activeLasso.points
-          setLassoPath([])
-
-          if (completedPoints.length >= 3) {
-            callbacksRef.current.onAddToGroupSelection(
-              objectIdsWithinLasso(viewport, roomRef.current, ephemeralTransformsRef.current, completedPoints),
-            )
-          }
-          return
-        }
-
-        const drag = dragRef.current
-        if (!drag) {
-          const backgroundTapCandidate = backgroundTapCandidateRef.current
-          if (
-            event.pointerType === 'touch' &&
-            backgroundTapCandidate &&
-            backgroundTapCandidate.pointerId === event.pointerId
-          ) {
-            backgroundTapCandidateRef.current = null
-            const distance = Math.hypot(
-              event.global.x - backgroundTapCandidate.startPointer.x,
-              event.global.y - backgroundTapCandidate.startPointer.y,
-            )
-            if (distance <= TAP_GRACE_DISTANCE && selectionModeRef.current === 'normal') {
-              callbacksRef.current.onSelect(undefined)
-            }
-          }
-          return
-        }
-
-        if (event.pointerType === 'touch' && event.pointerId !== drag.pointerId) {
-          auxiliaryTouchRef.current.pointers.delete(event.pointerId)
-          return
-        }
-
-        if (event.pointerId !== drag.pointerId) {
-          return
-        }
-
-        auxiliaryTouchRef.current.pointers.clear()
-        resumeViewportCameraGestures(viewport)
-        const rendered = renderedRef.current.get(drag.id)
-
-        if (!rendered) {
-          dragRef.current = null
-          if (drag.groupMembers && drag.groupMembers.length > 0) {
-            for (const member of drag.groupMembers) {
-              callbacksRef.current.onClearPreviewTransform(member.id)
-            }
-          } else {
-            callbacksRef.current.onClearPreviewTransform(drag.id)
-          }
-          return
-        }
-
-        const world = viewportToLogicalPoint(viewport, viewport.toWorld(event.global))
-        if (drag.mode === 'move') {
-          dragRef.current = null
-          if (drag.groupMembers && drag.groupMembers.length > 0) {
-            for (const member of drag.groupMembers) {
-              const memberRendered = renderedRef.current.get(member.id)
-              callbacksRef.current.onClearPreviewTransform(member.id, memberRendered?.transform)
-              if (!memberRendered) {
-                continue
-              }
-              callbacksRef.current.onCommitTransform(member.id, {
-                x: memberRendered.container.position.x,
-                y: memberRendered.container.position.y,
-                rotation: member.startTransform.rotation,
-              })
-            }
-          } else {
-            const liveRoom = roomRef.current
-            const nextTransform = {
-              x: rendered.container.position.x,
-              y: rendered.container.position.y,
-              rotation: drag.startTransform.rotation,
-            }
-            callbacksRef.current.onClearPreviewTransform(drag.id, nextTransform)
-            const object = liveRoom.objects[drag.id]
-            const targetDeckId =
-              object && (object.type === 'card' || object.type === 'deck')
-                ? findDeckAtPoint(liveRoom, world, ephemeralTransformsRef.current, drag.id)
-                : undefined
-
-            if (targetDeckId) {
-              callbacksRef.current.onDropObjectToDeck(drag.id, targetDeckId)
-            } else {
-              callbacksRef.current.onCommitTransform(drag.id, nextTransform)
-            }
-          }
-        } else {
-          const snappedRotation = snapRotationAngle(rendered.container.rotation)
-          rendered.container.rotation = snappedRotation
-          rendered.transform = {
-            ...rendered.transform,
-            rotation: snappedRotation,
-          }
-          dragRef.current = null
-          callbacksRef.current.onClearPreviewTransform(drag.id, rendered.transform)
-          callbacksRef.current.onCommitTransform(drag.id, {
-            rotation: snappedRotation,
+            localPoint,
           })
         }
-        setHoverDeckId(undefined)
-        updateOverlayPosition()
+        return
       }
-
-      app.stage.on('pointermove', onPointerMove)
-      app.stage.on('pointerup', finishDrag)
-      app.stage.on('pointerupoutside', (event) => {
-        backgroundTapCandidateRef.current = null
-        finishDrag(event)
-      })
-
-      app.ticker.add(() => {
-        const now = performance.now()
-        let needsAnimationFrame = false
-        const hasSelectionChrome =
-          Boolean(selectedIdRef.current) ||
-          selectedIdsRef.current.length > 0 ||
-          Boolean(hoverDeckIdRef.current)
-        if (hasSelectionChrome && Math.abs(viewport.scaled - renderedSelectionScale) > 0.001) {
-          renderedSelectionScale = viewport.scaled
-          needsAnimationFrame = true
-        }
-
-        for (const [objectId, animation] of flipAnimationsRef.current) {
-          if (now - animation.startedAt >= animation.durationMs) {
-            flipAnimationsRef.current.delete(objectId)
-            needsAnimationFrame = true
-            continue
-          }
-
-          if (roomRef.current.objects[objectId]) {
-            needsAnimationFrame = true
-          }
-        }
-
-        if (needsAnimationFrame) {
-          redrawSceneRef.current()
-        }
-        emitCamera()
-        updateOverlayPosition()
-      })
-
-      const observer = new ResizeObserver(() => {
-        const logicalCenter = viewportToLogicalPoint(viewport, viewport.center)
-        const worldGeometry = viewportWorldGeometryForScreen(host.clientWidth, host.clientHeight)
-        const clamp = viewport.plugins.get('clamp') as ClampPlugin | null
-        if (clamp) {
-          clamp.options.right = worldGeometry.worldWidth
-          clamp.options.bottom = worldGeometry.worldHeight
-        }
-        viewport.resize(host.clientWidth, host.clientHeight, worldGeometry.worldWidth, worldGeometry.worldHeight)
-        viewport.moveCenter(logicalToViewportPoint(viewport, logicalCenter))
-        clamp?.update()
-        app.stage.hitArea = new Rectangle(0, 0, host.clientWidth, host.clientHeight)
-        redrawSceneRef.current()
-      })
-      observer.observe(host)
-
-      appRef.current = app
-      viewportRef.current = viewport
-      populateViewportScene(
-        viewport,
-        renderedRef.current,
-        app.renderer,
-        cardTextureCacheRef.current,
-        roomRef.current,
-        ephemeralTransformsRef.current,
-        currentPlayerIdRef.current,
-        selectionModeRef.current,
-        selectedIdRef.current,
-        selectedIdsRef.current,
-        imageAssetsRef.current,
-        lassoModeRef.current,
-        hoverDeckIdRef.current,
-        canEditRef.current,
-        allowSelectLockedRef.current,
-        callbacksRef.current.onSelect,
-        callbacksRef.current.onToggleGroupSelection,
-        callbacksRef.current.onAddToGroupSelection,
-        dragRef,
-        auxiliaryTouchRef,
-        pendingDeckPressRef,
-        tapCandidateRef,
-        requestRenderRef.current,
-        flipAnimationsRef.current,
-        performance.now(),
-      )
-
-      return () => {
-        observer.disconnect()
+      if (cameraPointersRef.current.size > 0) {
+        cancelTouchObjectInteraction({
+          pointerId: event.pointerId,
+          localPoint,
+        })
+        return
       }
     }
 
-    let cleanup: (() => void) | undefined
-    void init().then((dispose) => {
-      cleanup = dispose
-    })
+    markPrewarmInteraction()
+    stopCameraMomentum()
+    resetPointerPanState()
 
-    return () => {
-      cancelled = true
-      cleanup?.()
-      clearPendingDeckPress(pendingDeckPressRef)
-      lassoRef.current = null
-      setLassoPath([])
-      host.removeEventListener('touchstart', suppressNativeTouch)
-      host.removeEventListener('touchmove', suppressNativeTouch)
-      host.removeEventListener('contextmenu', suppressNativeTouch)
-      host.removeEventListener('selectstart', suppressNativeTouch)
-      host.removeEventListener('dragstart', suppressNativeTouch)
-      root.removeEventListener('dragenter', handleRootDragEnter)
-      root.removeEventListener('dragover', handleRootDragOver)
-      root.removeEventListener('dragleave', handleRootDragLeave)
-      root.removeEventListener('drop', handleRootDrop)
-      window.removeEventListener('dragover', preventWindowDropNavigation)
-      window.removeEventListener('drop', preventWindowDropNavigation)
-      resetDropTarget()
-      viewportRef.current?.destroy({ children: true })
-      appRef.current?.destroy(true, { children: true })
-      for (const entry of cardTextureCache.values()) {
-        entry.texture.destroy(true)
+    if (selectionMode === 'group' && lassoMode && !dragRef.current) {
+      lassoRef.current = {
+        pointerId: event.pointerId,
+        points: [localPoint],
       }
-      cardTextureCache.clear()
-      renderedObjects.clear()
-      viewportRef.current = null
-      appRef.current = null
-      host.textContent = ''
+      setLassoPath([localPoint])
+      return
     }
-  }, [roomUrl])
 
-  useEffect(() => {
-    const nextCardVisualStates = collectCardVisualStates(room, currentPlayerId)
-    const previousCardVisualStates = cardVisualStatesRef.current
-    const now = performance.now()
+    if (event.pointerType === 'touch') {
+      backgroundTapCandidateRef.current = {
+        pointerId: event.pointerId,
+        startPoint: localPoint,
+      }
+    } else if (selectionMode === 'normal') {
+      onSelect(undefined)
+    }
 
-    for (const [objectId, nextState] of nextCardVisualStates) {
-      const previousState = previousCardVisualStates.get(objectId)
-      if (!previousState || previousState.faceUp === nextState.faceUp) {
-        continue
+    beginCameraPointer(event.pointerId, localPoint)
+  }, [beginCameraPointer, cancelTouchObjectInteraction, lassoMode, markPrewarmInteraction, onSelect, resetPointerPanState, selectionMode, stopCameraMomentum])
+
+  const handleObjectPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>, objectId: Id) => {
+    const object = room.objects[objectId]
+    if (!object) {
+      return
+    }
+
+    if (selectionMode === 'group' && lassoMode) {
+      return
+    }
+
+    const isTouchPointer = event.pointerType === 'touch'
+    const isMiddleMouse = event.pointerType === 'mouse' && event.button === 1
+    if (isMiddleMouse) {
+      return
+    }
+
+    const localPoint = clientToLocal(rootRef.current, event.clientX, event.clientY)
+    if (!localPoint) {
+      return
+    }
+
+    if (isTouchPointer) {
+      event.preventDefault()
+      const activeDrag = dragRef.current
+      if (activeDrag && activeDrag.pointerId !== event.pointerId) {
+        event.stopPropagation()
+        if (activeDrag.moved) {
+          beginCameraPointer(event.pointerId, localPoint)
+        } else {
+          cancelTouchObjectInteraction({
+            pointerId: event.pointerId,
+            localPoint,
+          })
+        }
+        return
+      }
+      if (cameraPointersRef.current.size > 0) {
+        event.stopPropagation()
+        cancelTouchObjectInteraction({
+          pointerId: event.pointerId,
+          localPoint,
+        })
+        return
+      }
+    }
+
+    markPrewarmInteraction()
+    stopCameraMomentum()
+    resetPointerPanState()
+
+    if (isTouchPointer) {
+      beginCameraPointer(event.pointerId, localPoint)
+    }
+
+    const currentTransform = currentTransformForObject(objectId)
+    if (!currentTransform) {
+      return
+    }
+
+    const shouldPromoteToGroupSelection =
+      event.shiftKey &&
+      selectionMode === 'normal' &&
+      selectedId !== undefined &&
+      selectedId !== objectId &&
+      isMultiselectObjectType(room, selectedId) &&
+      isMultiselectObjectType(room, objectId) &&
+      (!object.locked || allowSelectLocked)
+
+    if (shouldPromoteToGroupSelection) {
+      event.stopPropagation()
+      onAddToGroupSelection([selectedId, objectId])
+      return
+    }
+
+    if (object.locked) {
+      if (!allowSelectLocked) {
+        return
       }
 
-      const currentPresentation = cardFlipPresentation(
+      event.stopPropagation()
+      tapCandidateRef.current = {
+        id: objectId,
+        pointerId: event.pointerId,
+        startPoint: localPoint,
+      }
+      return
+    }
+
+    if (selectionMode === 'group') {
+      if (!isMultiselectObjectType(room, objectId)) {
+        return
+      }
+
+      event.stopPropagation()
+      const isSelected = selectedIdsSet.has(objectId)
+      tapCandidateRef.current = {
+        id: objectId,
+        pointerId: event.pointerId,
+        startPoint: localPoint,
+      }
+
+      if (!isSelected) {
+        return
+      }
+
+      if (!canEdit || !isMovableObjectType(room, objectId)) {
+        return
+      }
+
+      startDrag(
         objectId,
-        previousState.faceVisible,
-        flipAnimationsRef.current,
-        now,
+        event.pointerId,
+        'move',
+        localPoint,
+        currentTransform,
+        selectedIds
+          .map((memberId) => {
+            const memberTransform = currentTransformForObject(memberId)
+            return memberTransform ? { id: memberId, startTransform: { ...memberTransform } } : undefined
+          })
+          .filter((member): member is { id: Id; startTransform: Transform2D } => Boolean(member)),
       )
-      if (currentPresentation.faceVisible === nextState.faceVisible) {
-        continue
-      }
-
-      flipAnimationsRef.current.set(objectId, {
-        startedAt: now,
-        durationMs: shiftPressedRef.current ? FLIP_DEBUG_DURATION_MS : FLIP_DURATION_MS,
-        fromFaceVisible: currentPresentation.faceVisible,
-        toFaceVisible: nextState.faceVisible,
-      })
+      return
     }
 
-    for (const objectId of [...flipAnimationsRef.current.keys()]) {
-      if (!nextCardVisualStates.has(objectId)) {
-        flipAnimationsRef.current.delete(objectId)
-      }
-    }
-
-    for (const [cacheKey, entry] of cardTextureCacheRef.current) {
-      const [cardId] = cacheKey.split(':')
-      if (nextCardVisualStates.has(cardId)) {
-        continue
+    if (isDeck(object) && canEdit && (!isTouchPointer || selectedId === objectId)) {
+      event.stopPropagation()
+      onSelect(objectId)
+      tapCandidateRef.current = {
+        id: objectId,
+        pointerId: event.pointerId,
+        startPoint: localPoint,
       }
 
-      entry.texture.destroy(true)
-      cardTextureCacheRef.current.delete(cacheKey)
+      clearPendingDeckPress()
+      pendingDeckPressRef.current = {
+        deckId: objectId,
+        pointerId: event.pointerId,
+        startPoint: localPoint,
+        startTransform: { ...currentTransform },
+        timeoutId: window.setTimeout(() => {
+          const pendingDeckPress = pendingDeckPressRef.current
+          if (!pendingDeckPress || pendingDeckPress.deckId !== objectId || pendingDeckPress.pointerId !== event.pointerId) {
+            return
+          }
+
+          pendingDeckPressRef.current = null
+          startDrag(objectId, event.pointerId, 'move', localPoint, pendingDeckPress.startTransform)
+        }, DECK_LONG_PRESS_MS),
+      }
+      return
     }
 
-    cardVisualStatesRef.current = nextCardVisualStates
-    redrawSceneRef.current()
-  }, [currentPlayerId, room])
+    if (!isTouchPointer) {
+      event.stopPropagation()
+      onSelect(objectId)
+      if (!canEdit || !isMovableObjectType(room, objectId)) {
+        return
+      }
 
-  useEffect(() => {
-    redrawSceneRef.current()
-  }, [allowSelectLocked, canEdit, hoverDeckId, lassoMode, onSelect, selectedId, selectedIds, selectionMode])
+      startDrag(objectId, event.pointerId, 'move', localPoint, currentTransform)
+      return
+    }
 
-  useEffect(() => {
-    applyDisplayedTransforms(renderedRef.current, room, ephemeralTransforms, dragRef)
-  }, [ephemeralTransforms, room])
+    event.stopPropagation()
+    tapCandidateRef.current = {
+      id: objectId,
+      pointerId: event.pointerId,
+      startPoint: localPoint,
+    }
+
+    if (selectedId !== objectId || !canEdit || !isMovableObjectType(room, objectId)) {
+      return
+    }
+
+    startDrag(objectId, event.pointerId, 'move', localPoint, currentTransform)
+  }, [
+    allowSelectLocked,
+    canEdit,
+    clearPendingDeckPress,
+    currentTransformForObject,
+    lassoMode,
+    onAddToGroupSelection,
+    onSelect,
+    room,
+    resetPointerPanState,
+    selectedId,
+    selectedIds,
+    selectedIdsSet,
+    selectionMode,
+    startDrag,
+    stopCameraMomentum,
+    beginCameraPointer,
+    cancelTouchObjectInteraction,
+    markPrewarmInteraction,
+  ])
+
+  const handleRotatePointerDown = useCallback((event: ReactPointerEvent<HTMLButtonElement>, objectId: Id) => {
+    event.stopPropagation()
+    const currentTransform = currentTransformForObject(objectId)
+    if (!currentTransform) {
+      return
+    }
+
+    const localPoint = clientToLocal(rootRef.current, event.clientX, event.clientY)
+    if (!localPoint) {
+      return
+    }
+
+    if (event.pointerType === 'touch') {
+      event.preventDefault()
+    }
+
+    markPrewarmInteraction()
+    stopCameraMomentum()
+    resetPointerPanState()
+    startDrag(objectId, event.pointerId, 'rotate', localPoint, currentTransform)
+  }, [currentTransformForObject, markPrewarmInteraction, resetPointerPanState, startDrag, stopCameraMomentum])
+
+  function resetDropTarget() {
+    dropDepthRef.current = 0
+    setIsImageDropTarget(false)
+  }
+
+  function handleDragEnter(event: ReactDragEvent<HTMLDivElement>) {
+    if (!canEdit || !event.dataTransfer || !hasFileTransfer(event.dataTransfer)) {
+      return
+    }
+
+    event.preventDefault()
+    dropDepthRef.current += 1
+    setIsImageDropTarget(true)
+  }
+
+  function handleDragOver(event: ReactDragEvent<HTMLDivElement>) {
+    if (!canEdit || !event.dataTransfer || !hasFileTransfer(event.dataTransfer)) {
+      return
+    }
+
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+    setIsImageDropTarget(true)
+  }
+
+  function handleDragLeave(event: ReactDragEvent<HTMLDivElement>) {
+    if (!event.dataTransfer || !hasFileTransfer(event.dataTransfer)) {
+      return
+    }
+
+    event.preventDefault()
+    dropDepthRef.current = Math.max(0, dropDepthRef.current - 1)
+    if (dropDepthRef.current === 0) {
+      setIsImageDropTarget(false)
+    }
+  }
+
+  function handleDrop(event: ReactDragEvent<HTMLDivElement>) {
+    if (!canEdit || !event.dataTransfer || !hasFileTransfer(event.dataTransfer)) {
+      return
+    }
+
+    event.preventDefault()
+    const file = imageFileFromTransfer(event.dataTransfer)
+    resetDropTarget()
+    if (!file) {
+      return
+    }
+
+    const localPoint = clientToLocal(rootRef.current, event.clientX, event.clientY)
+    if (!localPoint) {
+      return
+    }
+
+    onDropImageFileAt(file, screenToLogical(viewportSize, cameraRef.current, localPoint))
+  }
+
+  const objectElements = useMemo(
+    () =>
+      worldObjects.map(({ index, objectId, object, transform, worldSize }) => {
+        const isDragging =
+          dragRef.current?.id === objectId ||
+          Boolean(dragRef.current?.groupMembers?.some((member) => member.id === objectId))
+        const selectionStrokeWidth =
+          hoverDeckId === objectId
+            ? 5
+            : selectionMode === 'group'
+              ? selectedIdsSet.has(objectId)
+                ? selectedId === objectId
+                  ? 5
+                  : 4
+                : 0
+              : selectedId === objectId
+                ? 4
+                : 0
+        const selectionStrokeColor =
+          hoverDeckId === objectId
+            ? '#ff8d47'
+            : selectionMode === 'group' && selectedId === objectId
+              ? '#ffd78a'
+              : '#ffcb72'
+        const boardSelectionSpec = isBoard(object) ? (isBoardFaceUp(object) ? object.face : object.back) : undefined
+        const usesAlphaBoardSelection = Boolean(
+          boardSelectionSpec &&
+          boardSelectionSpec.kind === 'image-url' &&
+          (boardSelectionSpec.bg === undefined || boardSelectionSpec.bg === 'transparent'),
+        )
+        const usesCardOutlineSelection = isCard(object) && selectionStrokeWidth > 0
+        const showsRotateHandle =
+          selectionMode === 'normal' && selectedId === objectId && canEdit && !object.locked
+        const worldPosition = transform
+
+        return (
+          <div
+            key={objectId}
+            className={`board-object board-object-${object.type}${isDragging ? ' is-dragging' : ''}${usesCardOutlineSelection ? ' has-card-outline-selection' : ''}`}
+            data-board-object-id={objectId}
+            data-board-object-type={object.type}
+            style={{
+              left: `${worldPosition.x}px`,
+              top: `${worldPosition.y}px`,
+              width: `${worldSize.width}px`,
+              height: `${worldSize.height}px`,
+              transform: `translate3d(-50%, -50%, 0) rotate(${transform.rotation}rad)`,
+              zIndex: isDragging ? 1000 + index : index + 1,
+              cursor: objectCursor(object, canEdit, allowSelectLocked, isDragging),
+              ...(selectionStrokeWidth > 0
+                ? ({
+                    ['--board-selection-width' as const]: `${selectionStrokeWidth}px`,
+                    ['--board-selection-color' as const]: selectionStrokeColor,
+                  } as CSSProperties)
+                : undefined),
+            }}
+            title={object.name}
+            aria-label={`${object.type}: ${object.name}`}
+            onPointerDown={(event) => handleObjectPointerDown(event, objectId)}
+          >
+            {selectionStrokeWidth > 0 && boardSelectionSpec && usesAlphaBoardSelection ? (
+              <BoardSelectionOverlay
+                spec={boardSelectionSpec}
+                size={worldSize}
+                imageAssets={imageAssets}
+                cameraZoom={objectElementsZoomDependency ?? 1}
+                selectionStrokeWidth={selectionStrokeWidth}
+                selectionStrokeColor={selectionStrokeColor}
+              />
+            ) : null}
+            <MemoBoardObjectContent
+              objectId={objectId}
+              room={room}
+              currentPlayerId={currentPlayerId}
+              imageAssets={imageAssets}
+              size={worldSize}
+              constrainedEffects={constrainedEffects}
+            />
+            {selectionStrokeWidth > 0 && !usesCardOutlineSelection && (!boardSelectionSpec || !usesAlphaBoardSelection) ? (
+              <div
+                className={`board-object-selection ${object.type === 'board' ? 'is-square' : 'is-rounded'}`}
+              />
+            ) : null}
+            {showsRotateHandle ? (
+              <button
+                type="button"
+                className="board-rotate-handle"
+                data-board-ui="rotate-handle"
+                onPointerDown={(event) => handleRotatePointerDown(event, objectId)}
+                aria-label={`Rotate ${object.name}`}
+              />
+            ) : null}
+          </div>
+        )
+      }),
+    [
+      allowSelectLocked,
+      canEdit,
+      currentPlayerId,
+      constrainedEffects,
+      handleObjectPointerDown,
+      handleRotatePointerDown,
+      hoverDeckId,
+      imageAssets,
+      objectElementsZoomDependency,
+      room,
+      selectedId,
+      selectedIdsSet,
+      selectionMode,
+      worldObjects,
+    ],
+  )
 
   return (
-    <div className={`board-root ${isImageDropTarget ? 'is-image-drop-target' : ''}`} ref={rootRef}>
-      <div className="board-canvas" ref={hostRef} />
+    <div
+      className={`board-root ${isImageDropTarget ? 'is-image-drop-target' : ''}`}
+      ref={rootRef}
+      onContextMenu={(event) => event.preventDefault()}
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      <div
+        className="board-canvas"
+        ref={hostRef}
+        onPointerDown={handleRootPointerDown}
+      >
+        <div className="board-grid" ref={boardGridRef} style={boardGridStyle} />
+        <div className="board-world" ref={boardWorldRef} style={boardWorldStyle}>
+          <div className="board-objects">{objectElements}</div>
+        </div>
+      </div>
       {isImageDropTarget ? (
         <div className="board-drop-overlay">Drop image to create board</div>
       ) : null}
@@ -2651,20 +3661,26 @@ export function BoardView({
         <div className="board-drop-error" role="status">{dropImageError}</div>
       ) : null}
       {lassoPath.length > 1 ? (
-        <svg className="lasso-overlay" viewBox={`0 0 ${hostRef.current?.clientWidth ?? 1} ${hostRef.current?.clientHeight ?? 1}`} preserveAspectRatio="none">
-          <path
-            d={`M ${lassoPath.map((point) => `${point.x} ${point.y}`).join(' L ')} Z`}
-          />
+        <svg
+          className="lasso-overlay"
+          viewBox={`0 0 ${viewportSize.width} ${viewportSize.height}`}
+          preserveAspectRatio="none"
+        >
+          <path d={`M ${lassoPath.map((point) => `${point.x} ${point.y}`).join(' L ')} Z`} />
         </svg>
       ) : null}
-      {quickActions.length > 0 ? (
+      {quickActions.length > 0 && quickActionsPosition ? (
         <div
           ref={quickActionsRef}
           className="quick-actions"
+          data-board-ui="quick-actions"
+          style={quickActionsPosition}
         >
           {quickActions.map((action) => (
             <button
               key={action.id}
+              type="button"
+              onPointerDown={(event) => event.stopPropagation()}
               onClick={action.onClick}
               className={action.icon ? 'quick-action-icon' : undefined}
               aria-label={action.label}

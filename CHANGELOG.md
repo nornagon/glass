@@ -1,8 +1,28 @@
 # Changelog
 
+## 2026-04-17
+
+- Smoothed steady-state board zooming by preparing cropped sprite-backed card and deck faces into dedicated image surfaces after load, which cuts repeated large sprite-sheet decode work out of the compositor hot path.
+- Added a board input recorder plus Playwright zoom and recorded-input replay harnesses so zoom and pan jank can be reproduced and measured against real room interactions.
+- Tightened board image preloading and DOM image layout for the HTML/CSS board renderer while preserving the card/deck/board selection and transform model.
+- Raised prepared surface sizing for large image boards so unified cached surfaces stay crisp instead of downsampling big assets too aggressively.
+- Added Google Maps-style pan momentum to the DOM board camera, then fixed the release/clamping math so background flings glide smoothly instead of snapping or dying on the first tick.
+- Tightened resting and pickup shadows for boards, cards, and decks so object separation reads more crisply without the earlier diffuse blur.
+- Made alpha-masked board selection outlines track live zoom updates continuously so they rerasterize during the gesture instead of snapping at the end.
+- Made prepared image-surface prewarming yield to active interaction and memoized per-object board content so startup decode work and camera churn interfere less with pan and zoom.
+- Switched prepared sprite-surface generation to prefer cached `ImageBitmap` crop-and-resize work before blob encoding, reducing the amount of main-thread canvas resizing in the image prep path.
+- Suppressed native iOS Safari touch selection and loupe behavior inside the board canvas so dragging cards on mobile no longer triggers the system magnifier.
+- Reduced mobile Safari zoom-out crash pressure by removing the giant transformed world-sized grid surface, lowering Safari image prep caps, and simplifying card rendering to only keep the visible side mounted on that path.
+- Refined mobile touch gesture handoff so locked-object pinches zoom correctly and a second finger can pan during an active object drag without spuriously resetting into zoom.
+- Kept selection quick actions attached to the selected object during live pan and zoom by wiring the overlay into the same imperative camera-update path as the board transform.
+
 ## 2026-04-16
 
 - Fixed the WebGL `glDrawElements: Insufficient buffer size` warnings in large image-heavy rooms by tightening sprite texture cropping and separating movable pieces into their own Pixi render group.
+- Rebuilt the board renderer as pure HTML/CSS, removing the PixiJS dependency while keeping board pan/zoom, selection, dragging, deck interactions, and image-backed surfaces working in the DOM.
+- Reduced camera panning overhead by moving the board world with a single transform and debouncing persisted camera updates.
+- Fixed deck card lift-out dragging, removed default board chrome from transparent image boards, and replaced image-board selection rendering with a cached canvas-generated alpha outline that behaves better across zoom levels and cropped assets.
+- Moved card selection to CSS outlines, pushed regular selection rings fully outside cards and decks, and repositioned the rotate handle above the selected object without hover drift.
 
 ## 2026-04-15
 

@@ -19,7 +19,6 @@ export default defineConfig({
             '@automerge/automerge-repo-network-broadcastchannel',
             '@automerge/automerge-repo-network-websocket',
           ],
-          pixi: ['pixi.js', 'pixi-viewport'],
         },
       },
     },
