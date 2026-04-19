@@ -230,6 +230,17 @@ function boardSizeFromImageDimensions(dimensions: { width: number; height: numbe
   return boardSizeFromDimensions(dimensions.width, dimensions.height, 32)
 }
 
+const MIN_CARD_DIMENSION = 16
+
+function cardSizeFromDimensions(width: number, height: number) {
+  const safeWidth = Number.isFinite(width) && width > 0 ? width : DEFAULT_CARD_SIZE.width
+  const safeHeight = Number.isFinite(height) && height > 0 ? height : DEFAULT_CARD_SIZE.height
+  return {
+    width: Math.max(MIN_CARD_DIMENSION, Math.round(safeWidth)),
+    height: Math.max(MIN_CARD_DIMENSION, Math.round(safeHeight)),
+  }
+}
+
 function boardNameFromImageFile(file: File) {
   const trimmedName = file.name.trim()
   if (!trimmedName) {
@@ -853,13 +864,15 @@ function ObjectEditor({
   )
 }
 
-function BoardSizeEditor({
+function DimensionEditor({
+  title = 'Layout',
   width,
   height,
   disabled,
   onCommitWidth,
   onCommitHeight,
 }: {
+  title?: string
   width: number
   height: number
   disabled: boolean
@@ -893,7 +906,7 @@ function BoardSizeEditor({
     <section className="board-size-editor">
       <div className="board-size-editor-header">
         <div className="board-size-editor-copy">
-          <strong>Layout</strong>
+          <strong>{title}</strong>
         </div>
       </div>
       <div className="board-size-editor-dimensions">
@@ -2455,6 +2468,30 @@ function createBoardHere() {
                     Normal view: {canSeeCardFace(selectedObject, currentPlayer?.id) ? 'face visible' : 'back only'}
                   </div>
 
+                  <DimensionEditor
+                    key={selectedObject.id}
+                    title="Size"
+                    width={selectedObject.size.width}
+                    height={selectedObject.size.height}
+                    disabled={!canEdit}
+                    onCommitWidth={(width) =>
+                      mutate((draft) => {
+                        const card = draft.objects[selectedObject.id]
+                        if (isCard(card)) {
+                          card.size = cardSizeFromDimensions(width, card.size.height)
+                        }
+                      })
+                    }
+                    onCommitHeight={(height) =>
+                      mutate((draft) => {
+                        const card = draft.objects[selectedObject.id]
+                        if (isCard(card)) {
+                          card.size = cardSizeFromDimensions(card.size.width, height)
+                        }
+                      })
+                    }
+                  />
+
                   <SpriteEditor
                     label="Face"
                     value={selectedObject.face}
@@ -2523,7 +2560,7 @@ function createBoardHere() {
                     </button>
                   </div>
 
-                  <BoardSizeEditor
+                  <DimensionEditor
                     key={selectedObject.id}
                     width={selectedObject.size.width}
                     height={selectedObject.size.height}
@@ -2599,7 +2636,7 @@ function createBoardHere() {
                     </button>
                   </div>
 
-                  <BoardSizeEditor
+                  <DimensionEditor
                     key={selectedObject.id}
                     width={selectedObject.size.width}
                     height={selectedObject.size.height}
