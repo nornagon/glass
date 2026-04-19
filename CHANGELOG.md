@@ -2,6 +2,7 @@
 
 ## 2026-04-19
 
+- Fixed alpha-image selection outlines so reselecting after zooming with nothing selected no longer paints one frame at the wrong outline thickness.
 - Added a subtle bottom-left prepared-surface prewarm progress badge and kept its percent stable across deck drag-out and other routine object mutations instead of restarting from zero.
 - Fixed pool token gestures so pool copies only instantiate boards once a real drag begins, touch drag-out requires selecting the pool first, long-press dragging moves the pool itself, and simple clicks/taps no longer consume pool supply.
 

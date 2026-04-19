@@ -3550,7 +3550,7 @@ export function BoardView({
   }, [room, selectedId, selectedIds, selectionMode])
   hasActiveAlphaSelectionRef.current = hasActiveAlphaSelection
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!hasActiveAlphaSelection) {
       return
     }
