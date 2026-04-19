@@ -372,6 +372,42 @@ function formatPdfAssetSummary(asset?: ResolvedPdfAsset) {
   return [asset.mimeType, formatFileSize(asset.sizeBytes)].join(' · ')
 }
 
+function waitForNextPaint() {
+  return new Promise<void>((resolve) => {
+    if (typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
+      resolve()
+      return
+    }
+
+    window.requestAnimationFrame(() => resolve())
+  })
+}
+
+function waitForBrowserIdle(timeoutMs = 200) {
+  return new Promise<void>((resolve) => {
+    if (typeof window === 'undefined') {
+      resolve()
+      return
+    }
+
+    if ('requestIdleCallback' in window) {
+      window.requestIdleCallback(() => resolve(), { timeout: timeoutMs })
+      return
+    }
+
+    globalThis.setTimeout(() => resolve(), Math.min(timeoutMs, 32))
+  })
+}
+
+async function inspectPdfFile(file: File) {
+  const objectUrl = URL.createObjectURL(file)
+  try {
+    return await inspectPdfSource(objectUrl)
+  } finally {
+    URL.revokeObjectURL(objectUrl)
+  }
+}
+
 async function loadPdfSourceInfo(
   url: string,
   pdfAssets: ReadonlyMap<AutomergeUrl, ResolvedPdfAsset>,
@@ -860,6 +896,8 @@ function BookViewerModal({
       },
       disabledCategories: [
         'annotation',
+        'form',
+        'insert',
         'redaction',
         'signature',
       ],
@@ -2370,6 +2408,102 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     return createdBookId
   }
 
+  function createPendingBookImport({
+    name,
+    transform,
+    locked = true,
+  }: {
+    name?: string
+    transform: Transform2D
+    locked?: boolean
+  }) {
+    let createdBookId: string | undefined
+    mutate((draft) => {
+      createdBookId = createBookOnPlane(
+        draft,
+        draft.rootId,
+        transform,
+        name?.trim() || undefined,
+      )
+
+      if (!createdBookId) {
+        return
+      }
+
+      const createdBook = draft.objects[createdBookId]
+      if (!isBook(createdBook)) {
+        return
+      }
+
+      createdBook.locked = locked
+      createdBook.meta.importingPdf = true
+      delete createdBook.meta.pdfImportError
+    })
+
+    return createdBookId
+  }
+
+  async function populatePendingBookImport({
+    bookId,
+    file,
+    candidateUrls,
+    onError,
+  }: {
+    bookId: string
+    file: File
+    candidateUrls: string[]
+    onError?: (message: string) => void
+  }) {
+    await waitForNextPaint()
+
+    try {
+      const info = await inspectPdfFile(file)
+      const size = boardSizeFromImageDimensions({
+        width: info.width,
+        height: info.height,
+      })
+
+      mutate((draft) => {
+        const book = draft.objects[bookId]
+        if (!isBook(book)) {
+          return
+        }
+
+        book.size = size
+        book.meta.aspectRatio = size.width / size.height
+        book.currentPage = 1
+        book.pageCount = info.pageCount
+      })
+
+      await waitForBrowserIdle()
+
+      const { url } = await createOrReusePdfAsset(file, candidateUrls)
+      candidateUrls.push(url)
+
+      mutate((draft) => {
+        const book = draft.objects[bookId]
+        if (!isBook(book)) {
+          return
+        }
+
+        book.pdfUrl = url
+        delete book.meta.importingPdf
+        delete book.meta.pdfImportError
+      })
+    } catch {
+      mutate((draft) => {
+        const book = draft.objects[bookId]
+        if (!isBook(book)) {
+          return
+        }
+
+        delete book.meta.importingPdf
+        book.meta.pdfImportError = true
+      })
+      onError?.(`Could not import ${file.name || 'that PDF'} into the room.`)
+    }
+  }
+
   async function createBoardFromImage() {
     const offset = spawnCountRef.current++
     const createdBoardId = await createBoardFromImageSource({
@@ -2420,6 +2554,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
       const createdObjectIds: string[] = []
       const reusableImageAssetUrls = [...imageAssetUrls]
       const reusablePdfAssetUrls = [...pdfAssetUrls]
+      let pendingPdfImport = Promise.resolve()
 
       for (const [index, file] of files.entries()) {
         const transform = {
@@ -2446,18 +2581,24 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
         }
 
         if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
-          const { url } = await createOrReusePdfAsset(file, reusablePdfAssetUrls)
-          reusablePdfAssetUrls.push(url)
-          const createdBookId = await createBookFromPdfSource({
-            pdfUrl: url,
+          const createdBookId = createPendingBookImport({
             name: bookNameFromPdfFile(file),
             transform,
             locked: false,
-            onError: setBoardDropError,
           })
 
           if (createdBookId) {
             createdObjectIds.push(createdBookId)
+            pendingPdfImport = pendingPdfImport
+              .catch(() => undefined)
+              .then(async () => {
+                await populatePendingBookImport({
+                  bookId: createdBookId,
+                  file,
+                  candidateUrls: reusablePdfAssetUrls,
+                  onError: setBoardDropError,
+                })
+              })
           }
         }
       }

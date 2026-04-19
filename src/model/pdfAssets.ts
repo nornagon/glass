@@ -31,8 +31,16 @@ export interface ResolvedPdfSource {
   asset?: ResolvedPdfAsset
 }
 
+function bytesToArrayBuffer(bytes: Uint8Array) {
+  if (bytes.buffer instanceof ArrayBuffer && bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength) {
+    return bytes.buffer
+  }
+
+  return bytes.slice().buffer
+}
+
 function blobPartFromBytes(bytes: Uint8Array) {
-  return Uint8Array.from(bytes)
+  return bytesToArrayBuffer(bytes)
 }
 
 function isFinitePositiveNumber(value: unknown): value is number {
@@ -44,8 +52,7 @@ async function sha256Hex(bytes: Uint8Array) {
     return undefined
   }
 
-  const digestInput = Uint8Array.from(bytes)
-  const digest = await globalThis.crypto.subtle.digest('SHA-256', digestInput)
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytesToArrayBuffer(bytes))
   return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('')
 }
 

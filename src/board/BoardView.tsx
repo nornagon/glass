@@ -2032,6 +2032,9 @@ function BookObject({ bookId, room, imageAssets, pdfAssets, size }: BookObjectPr
   if (!book) {
     return null
   }
+  const isImportingPdf = book.meta.importingPdf === true
+  const hasImportError = book.meta.pdfImportError === true
+  const bookLabel = book.name.trim() || 'PDF'
   const previewSpec: SpriteSpec = imageUrl
     ? {
         kind: 'image-url',
@@ -2041,12 +2044,12 @@ function BookObject({ bookId, room, imageAssets, pdfAssets, size }: BookObjectPr
       }
     : {
         kind: 'label',
-        label: loading
-          ? 'Loading PDF...'
-          : error
+        label: isImportingPdf || loading
+          ? bookLabel
+          : error || hasImportError
             ? 'PDF Error'
             : pdfSource
-              ? book.name
+              ? bookLabel
               : 'Missing PDF',
         bg: '#f5f0e4',
         fg: '#22303a',
