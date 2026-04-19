@@ -894,6 +894,20 @@ textarea {
   min-height: 0;
 }
 
+.selection-group-inspector {
+  top: auto;
+  bottom: calc(max(1rem, env(safe-area-inset-bottom)) + 5rem);
+  width: auto;
+  max-width: calc(100vw - 2rem);
+  align-items: flex-end;
+}
+
+.selection-group-inspector .inspector-section {
+  width: fit-content;
+  max-width: min(22rem, calc(100vw - 2rem));
+  padding-bottom: var(--panel-inset);
+}
+
 .creation-dock {
   position: absolute;
   right: 1rem;
@@ -991,6 +1005,12 @@ textarea {
   padding-inline: 0;
   font-size: 1.3rem;
   line-height: 1;
+}
+
+.selection-edit-button {
+  min-width: 2.65rem;
+  padding-inline: 0.7rem;
+  letter-spacing: 0.08em;
 }
 
 .room-panel {
@@ -1939,6 +1959,15 @@ button,
 
   .inspector-compact {
     height: auto;
+  }
+
+  .selection-group-inspector {
+    bottom: calc(max(0.75rem, env(safe-area-inset-bottom)) + 4.6rem);
+    max-width: calc(100vw - 1.5rem);
+  }
+
+  .selection-group-inspector .inspector-section {
+    max-width: min(20rem, calc(100vw - 1.5rem));
   }
 
   .inspector-section {

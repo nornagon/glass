@@ -426,6 +426,43 @@ export function bringObjectForward(room: RoomDoc, objectId: Id) {
   ]
 }
 
+export function bringObjectsForward(room: RoomDoc, objectIds: readonly Id[]) {
+  const selectionsByParent = new Map<Id, Set<Id>>()
+
+  for (const objectId of objectIds) {
+    const object = room.objects[objectId]
+    const parentId = object?.parentId
+    const parent = parentId ? room.objects[parentId] : undefined
+    if (parent?.type !== 'plane') {
+      continue
+    }
+
+    let selectedIds = selectionsByParent.get(parent.id)
+    if (!selectedIds) {
+      selectedIds = new Set<Id>()
+      selectionsByParent.set(parent.id, selectedIds)
+    }
+    selectedIds.add(objectId)
+  }
+
+  for (const [parentId, selectedIds] of selectionsByParent) {
+    const parent = room.objects[parentId]
+    if (parent?.type !== 'plane') {
+      continue
+    }
+
+    for (let index = parent.childOrder.length - 2; index >= 0; index -= 1) {
+      const currentId = parent.childOrder[index]
+      const nextId = parent.childOrder[index + 1]
+      if (!selectedIds.has(currentId) || selectedIds.has(nextId)) {
+        continue
+      }
+
+      ;[parent.childOrder[index], parent.childOrder[index + 1]] = [nextId, currentId]
+    }
+  }
+}
+
 export function bringObjectToFront(room: RoomDoc, objectId: Id) {
   const object = room.objects[objectId]
   const parent = object?.parentId ? room.objects[object.parentId] : undefined
@@ -456,6 +493,43 @@ export function sendObjectBackward(room: RoomDoc, objectId: Id) {
     parent.childOrder[index - 1],
     parent.childOrder[index],
   ]
+}
+
+export function sendObjectsBackward(room: RoomDoc, objectIds: readonly Id[]) {
+  const selectionsByParent = new Map<Id, Set<Id>>()
+
+  for (const objectId of objectIds) {
+    const object = room.objects[objectId]
+    const parentId = object?.parentId
+    const parent = parentId ? room.objects[parentId] : undefined
+    if (parent?.type !== 'plane') {
+      continue
+    }
+
+    let selectedIds = selectionsByParent.get(parent.id)
+    if (!selectedIds) {
+      selectedIds = new Set<Id>()
+      selectionsByParent.set(parent.id, selectedIds)
+    }
+    selectedIds.add(objectId)
+  }
+
+  for (const [parentId, selectedIds] of selectionsByParent) {
+    const parent = room.objects[parentId]
+    if (parent?.type !== 'plane') {
+      continue
+    }
+
+    for (let index = 1; index < parent.childOrder.length; index += 1) {
+      const previousId = parent.childOrder[index - 1]
+      const currentId = parent.childOrder[index]
+      if (!selectedIds.has(currentId) || selectedIds.has(previousId)) {
+        continue
+      }
+
+      ;[parent.childOrder[index - 1], parent.childOrder[index]] = [currentId, previousId]
+    }
+  }
 }
 
 export function flipCard(room: RoomDoc, cardId: Id) {

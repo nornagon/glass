@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   addCardToDeck,
+  bringObjectsForward,
   canSeeCardFace,
   createBoardOnPlane,
   createCardOnPlane,
@@ -14,6 +15,7 @@ import {
   moveObject,
   removePlayer,
   renameOrAddPlayer,
+  sendObjectsBackward,
   setTurnPlayer,
   shuffleDeck,
 } from './room'
@@ -193,6 +195,30 @@ describe('room model', () => {
     expect(room.objects[duplicatedIds[0]!].name).toBe('Card Name')
     expect(room.objects[duplicatedIds[1]!].name).toBe('Deck Name')
     expect(room.objects[duplicatedIds[2]!].name).toBe('Board Name')
+  })
+
+  it('moves a selected group forward together while preserving relative order', () => {
+    const room = createRoomDoc()
+    const cardA = createCardOnPlane(room, room.rootId, { x: 0, y: 0, rotation: 0 }, 'A')
+    const cardB = createCardOnPlane(room, room.rootId, { x: 10, y: 0, rotation: 0 }, 'B')
+    const cardC = createCardOnPlane(room, room.rootId, { x: 20, y: 0, rotation: 0 }, 'C')
+    const cardD = createCardOnPlane(room, room.rootId, { x: 30, y: 0, rotation: 0 }, 'D')
+
+    bringObjectsForward(room, [cardB, cardC])
+
+    expect(getRootPlane(room).childOrder).toEqual([cardA, cardD, cardB, cardC])
+  })
+
+  it('moves a selected group backward together while preserving relative order', () => {
+    const room = createRoomDoc()
+    const cardA = createCardOnPlane(room, room.rootId, { x: 0, y: 0, rotation: 0 }, 'A')
+    const cardB = createCardOnPlane(room, room.rootId, { x: 10, y: 0, rotation: 0 }, 'B')
+    const cardC = createCardOnPlane(room, room.rootId, { x: 20, y: 0, rotation: 0 }, 'C')
+    const cardD = createCardOnPlane(room, room.rootId, { x: 30, y: 0, rotation: 0 }, 'D')
+
+    sendObjectsBackward(room, [cardB, cardC])
+
+    expect(getRootPlane(room).childOrder).toEqual([cardB, cardC, cardA, cardD])
   })
 
   it('shuffles deterministically when random is injected', () => {

@@ -21,6 +21,7 @@ import {
 import {
   addCardToDeck,
   bringObjectToFront,
+  bringObjectsForward,
   canSeeCardFace,
   createBoardOnPlane,
   createCardOnPlane,
@@ -43,6 +44,7 @@ import {
   mergeDeckIntoDeck,
   renameOrAddPlayer,
   sendObjectBackward,
+  sendObjectsBackward,
   setTurnPlayer,
   shuffleDeck,
   bringObjectForward,
@@ -918,6 +920,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   const [sheetDeckDraft, setSheetDeckDraft] = useState<SheetDeckDraft>(() => defaultSheetDeckDraft())
   const [sheetDeckError, setSheetDeckError] = useState('')
   const [ephemeralTransforms, setEphemeralTransforms] = useState<Record<Id, Transform2D>>({})
+  const groupLockedInputRef = useRef<HTMLInputElement>(null)
   const spawnCountRef = useRef(0)
   const clientIdRef = useRef(createClientId())
   const remoteDragSessionsRef = useRef(new Map<string, RemoteDragSession>())
@@ -936,19 +939,48 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   )
   const resolvedImageAssets = useResolvedImageAssets(imageAssetUrls)
   const selectedObject = selectionMode === 'normal' && selectedId ? room.objects[selectedId] : undefined
+  const selectedGroupObjects = useMemo(
+    () =>
+      selectionMode === 'group'
+        ? groupSelectionIds
+            .map((objectId) => room.objects[objectId])
+            .filter((object): object is GameObject => Boolean(object))
+        : [],
+    [groupSelectionIds, room.objects, selectionMode],
+  )
   const boardSelectedIds = selectionMode === 'group' ? groupSelectionIds : selectedId ? [selectedId] : []
   const boardPrimarySelectedId = selectionMode === 'group' ? groupPrimaryId : selectedObject?.id
   const visibleRightPanelMode =
     rightPanelMode === 'selection'
-      ? selectionMode === 'normal' && selectedObject
-        ? rightPanelMode
-        : undefined
+      ? selectionMode === 'normal'
+        ? selectedObject
+          ? rightPanelMode
+          : undefined
+        : selectedGroupObjects.length > 0
+          ? rightPanelMode
+          : undefined
       : rightPanelMode
   const currentPlayer = joinedPlayerId ? room.players[joinedPlayerId] : undefined
   const canEdit = Boolean(currentPlayer)
   const roomTitle = formatRoomTitle(room)
   const linkedTemplate = room.sourceTemplateId ? loadRoomTemplates().find((template) => template.id === room.sourceTemplateId) : undefined
   const isGroupSelectionMode = selectionMode === 'group'
+  const groupLockedState =
+    selectedGroupObjects.length === 0
+      ? 'none'
+      : selectedGroupObjects.every((object) => object.locked)
+        ? 'all'
+        : selectedGroupObjects.every((object) => !object.locked)
+          ? 'none'
+          : 'mixed'
+
+  useEffect(() => {
+    if (!groupLockedInputRef.current) {
+      return
+    }
+
+    groupLockedInputRef.current.indeterminate = groupLockedState === 'mixed'
+  }, [groupLockedState])
 
   const flushCameraState = useCallback((next: CameraState) => {
     cameraRef.current = next
@@ -1253,6 +1285,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     setGroupPrimaryId(undefined)
     setIsLassoMode(false)
     setSelectedId(undefined)
+    setRightPanelMode((current) => (current === 'selection' ? undefined : current))
   }
 
   function toggleGroupSelection(id: string) {
@@ -1305,12 +1338,79 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     setIsLassoMode(false)
   }
 
+  function toggleSelectionPanel() {
+    setIsRoomPanelOpen(false)
+    setIsAddMenuOpen(false)
+    setRightPanelMode((current) => {
+      if (current === 'selection') {
+        return undefined
+      }
+
+      if ((selectionMode === 'normal' && selectedObject) || (selectionMode === 'group' && groupSelectionIds.length > 0)) {
+        return 'selection'
+      }
+
+      return current
+    })
+  }
+
   function openSelectionPanel() {
-    if (selectionMode === 'normal' && selectedObject) {
+    if ((selectionMode === 'normal' && selectedObject) || (selectionMode === 'group' && groupSelectionIds.length > 0)) {
       setIsRoomPanelOpen(false)
       setIsAddMenuOpen(false)
       setRightPanelMode('selection')
     }
+  }
+
+  function bringGroupSelectionForward() {
+    mutate((draft) => {
+      bringObjectsForward(draft, groupSelectionIds)
+    })
+  }
+
+  function sendGroupSelectionBackward() {
+    mutate((draft) => {
+      sendObjectsBackward(draft, groupSelectionIds)
+    })
+  }
+
+  function duplicateGroupSelection() {
+    let duplicateIds: string[] = []
+    mutate((draft) => {
+      duplicateIds = groupSelectionIds
+        .map((objectId) => duplicateObject(draft, objectId))
+        .filter((objectId): objectId is string => Boolean(objectId))
+    })
+
+    if (duplicateIds.length === 0) {
+      return
+    }
+
+    setSelectionMode('group')
+    setGroupSelectionIds(duplicateIds)
+    setGroupPrimaryId(duplicateIds[duplicateIds.length - 1])
+    setSelectedId(undefined)
+    setRightPanelMode('selection')
+  }
+
+  function setGroupSelectionLocked(locked: boolean) {
+    mutate((draft) => {
+      for (const objectId of groupSelectionIds) {
+        const object = draft.objects[objectId]
+        if (object) {
+          object.locked = locked
+        }
+      }
+    })
+  }
+
+  function deleteGroupSelection() {
+    mutate((draft) => {
+      for (const objectId of new Set(groupSelectionIds)) {
+        deleteObject(draft, objectId)
+      }
+    })
+    exitGroupSelectionMode()
   }
 
   function closeRoomPanel() {
@@ -2288,6 +2388,49 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
           </aside>
         ) : null}
 
+        {visibleRightPanelMode === 'selection' && isGroupSelectionMode && selectedGroupObjects.length > 0 ? (
+          <aside className="inspector inspector-right inspector-compact selection-group-inspector">
+            <section className="inspector-section">
+              <div className="inspector-toolbar">
+                <div>
+                  <p className="eyebrow">Selection</p>
+                  <h2>{selectedGroupObjects.length} selected</h2>
+                </div>
+                <button aria-label="Close panel" className="panel-close" onClick={closeRightPanel} title="Close panel" />
+              </div>
+
+              <div className="button-row">
+                <button disabled={!canEdit} onClick={bringGroupSelectionForward}>
+                  Forward
+                </button>
+                <button disabled={!canEdit} onClick={sendGroupSelectionBackward}>
+                  Back
+                </button>
+                <button disabled={!canEdit} onClick={duplicateGroupSelection}>
+                  Duplicate
+                </button>
+              </div>
+
+              <label className="toggle-row">
+                <span>Locked{groupLockedState === 'mixed' ? ' (mixed)' : ''}</span>
+                <input
+                  ref={groupLockedInputRef}
+                  disabled={!canEdit}
+                  type="checkbox"
+                  checked={groupLockedState === 'all'}
+                  onChange={(event) => setGroupSelectionLocked(event.target.checked)}
+                />
+              </label>
+
+              <div className="button-row">
+                <button className="danger" disabled={!canEdit} onClick={deleteGroupSelection}>
+                  Delete
+                </button>
+              </div>
+            </section>
+          </aside>
+        ) : null}
+
         {canEdit ? (
           isGroupSelectionMode ? (
             <div className="creation-dock selection-dock">
@@ -2299,6 +2442,13 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                     onClick={() => setIsLassoMode((current) => !current)}
                   >
                     Lasso
+                  </button>
+                  <button
+                    className={`selection-tool-button selection-edit-button ${rightPanelMode === 'selection' ? 'active' : ''}`}
+                    onClick={toggleSelectionPanel}
+                    title="Edit selection"
+                  >
+                    ...
                   </button>
                   <button
                     aria-label="Exit selection mode"
