@@ -910,7 +910,11 @@ function duplicateDeck(deck: Deck): Deck {
   }
 }
 
-export function duplicateObject(room: RoomDoc, objectId: Id) {
+interface DuplicateObjectOptions {
+  transform?: Transform2D
+}
+
+export function duplicateObject(room: RoomDoc, objectId: Id, options?: DuplicateObjectOptions) {
   const object = room.objects[objectId]
   if (!object) {
     return undefined
@@ -922,9 +926,11 @@ export function duplicateObject(room: RoomDoc, objectId: Id) {
     const transform = getTransform(room, objectId)
     if (transform && object.parentId) {
       placeObjectOnPlane(room, copy.id, object.parentId, {
-        ...transform,
-        x: transform.x + 36,
-        y: transform.y + 36,
+        ...(options?.transform ?? {
+          ...transform,
+          x: transform.x + 36,
+          y: transform.y + 36,
+        }),
       })
     }
     return copy.id
@@ -944,9 +950,11 @@ export function duplicateObject(room: RoomDoc, objectId: Id) {
     const transform = getTransform(room, objectId)
     if (transform && object.parentId) {
       placeObjectOnPlane(room, copy.id, object.parentId, {
-        ...transform,
-        x: transform.x + 42,
-        y: transform.y + 30,
+        ...(options?.transform ?? {
+          ...transform,
+          x: transform.x + 42,
+          y: transform.y + 30,
+        }),
       })
     }
     return copy.id
@@ -958,9 +966,11 @@ export function duplicateObject(room: RoomDoc, objectId: Id) {
     const transform = getTransform(room, objectId)
     if (transform && object.parentId) {
       placeObjectOnPlane(room, copy.id, object.parentId, {
-        ...transform,
-        x: transform.x + 48,
-        y: transform.y + 48,
+        ...(options?.transform ?? {
+          ...transform,
+          x: transform.x + 48,
+          y: transform.y + 48,
+        }),
       })
     }
     return copy.id
@@ -972,9 +982,11 @@ export function duplicateObject(room: RoomDoc, objectId: Id) {
     const transform = getTransform(room, objectId)
     if (transform && object.parentId) {
       placeObjectOnPlane(room, copy.id, object.parentId, {
-        ...transform,
-        x: transform.x + 48,
-        y: transform.y + 48,
+        ...(options?.transform ?? {
+          ...transform,
+          x: transform.x + 48,
+          y: transform.y + 48,
+        }),
       })
     }
     return copy.id

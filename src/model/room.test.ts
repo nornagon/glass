@@ -17,6 +17,7 @@ import {
   duplicateObject,
   getPoolDisplaySize,
   getRootPlane,
+  getTransform,
   isGroupSelectableObject,
   moveObject,
   removePlayer,
@@ -206,6 +207,23 @@ describe('room model', () => {
     expect(room.objects[duplicatedIds[1]!].name).toBe('Deck Name')
     expect(room.objects[duplicatedIds[2]!].name).toBe('Board Name')
     expect(room.objects[duplicatedIds[3]!].name).toBe('Pool Name')
+  })
+
+  it('can duplicate an object at an explicit transform', () => {
+    const room = createRoomDoc()
+    const cardId = createCardOnPlane(room, room.rootId, { x: 10, y: 20, rotation: Math.PI / 6 })
+
+    const copyId = duplicateObject(room, cardId, {
+      transform: { x: 10, y: 20, rotation: Math.PI / 6 },
+    })
+
+    expect(copyId).toBeTruthy()
+    expect(copyId).not.toBe(cardId)
+    expect(copyId ? getTransform(room, copyId) : undefined).toEqual({
+      x: 10,
+      y: 20,
+      rotation: Math.PI / 6,
+    })
   })
 
   it('instantiates boards from pools as unlocked copies', () => {

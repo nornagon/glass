@@ -47,6 +47,7 @@ import {
   duplicateObject,
   flipCard,
   formatRoomTitle,
+  getTransform,
   getPoolRemainingTokens,
   getRootPlane,
   isBoard,
@@ -1527,6 +1528,56 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     setRightPanelMode('selection')
   }
 
+  function startDuplicateDragSelection(objectId: Id, groupObjectIds?: Id[]) {
+    const sourceIds = groupObjectIds && groupObjectIds.length > 0 ? groupObjectIds : [objectId]
+    const sourceSnapshots = sourceIds
+      .map((sourceId) => {
+        const transform = room.objects[sourceId]?.parentId ? getTransform(room, sourceId) : undefined
+        return transform ? { sourceId, startTransform: { ...transform } } : undefined
+      })
+      .filter((snapshot): snapshot is { sourceId: Id; startTransform: Transform2D } => Boolean(snapshot))
+
+    if (sourceSnapshots.length === 0) {
+      return undefined
+    }
+
+    let duplicateSnapshots: Array<{ sourceId: Id; id: Id; startTransform: Transform2D }> = []
+    mutate((draft) => {
+      duplicateSnapshots = sourceSnapshots
+        .map(({ sourceId, startTransform }) => {
+          const duplicateId = duplicateObject(draft, sourceId, { transform: startTransform })
+          return duplicateId ? { sourceId, id: duplicateId, startTransform } : undefined
+        })
+        .filter((snapshot): snapshot is { sourceId: Id; id: Id; startTransform: Transform2D } => Boolean(snapshot))
+    })
+
+    if (duplicateSnapshots.length === 0) {
+      return undefined
+    }
+
+    const dragSnapshot = duplicateSnapshots.find((snapshot) => snapshot.sourceId === objectId)
+    if (!dragSnapshot) {
+      return undefined
+    }
+
+    if (duplicateSnapshots.length > 1) {
+      setSelectionMode('group')
+      setGroupSelectionIds(duplicateSnapshots.map((snapshot) => snapshot.id))
+      setGroupPrimaryId(dragSnapshot.id)
+      setSelectedId(undefined)
+    } else {
+      updateSelection(dragSnapshot.id)
+    }
+
+    return {
+      id: dragSnapshot.id,
+      startTransform: dragSnapshot.startTransform,
+      groupMembers: duplicateSnapshots.length > 1
+        ? duplicateSnapshots.map(({ id, startTransform }) => ({ id, startTransform }))
+        : undefined,
+    }
+  }
+
   function setGroupSelectionLocked(locked: boolean) {
     mutate((draft) => {
       for (const objectId of groupSelectionIds) {
@@ -2008,6 +2059,7 @@ function createBoardHere() {
               bringObjectToFront(draft, objectId)
             })
           }
+          onStartDuplicateDrag={startDuplicateDragSelection}
           onDropObjectOntoObject={(objectId, targetId) => {
             const droppedObject = room.objects[objectId]
             const targetObject = room.objects[targetId]

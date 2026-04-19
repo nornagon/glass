@@ -34,6 +34,10 @@ interface BoardViewProps {
   onClearPreviewTransform: (id: Id, finalTransform?: Transform2D) => void
   onDropObjectOntoObject: (objectId: Id, targetId: Id) => void
   onBringObjectToFront: (objectId: Id) => void
+  onStartDuplicateDrag: (
+    objectId: Id,
+    groupObjectIds?: Id[],
+  ) => { id: Id; startTransform: Transform2D; groupMembers?: Array<{ id: Id; startTransform: Transform2D }> } | undefined
   onInstantiateBoardFromPool: (poolId: Id, transform: Transform2D) => Id | undefined
   onDeleteObject: (objectId: Id) => void
   onLiftTopCardFromDeck: (deckId: Id) => Id | undefined
@@ -2157,6 +2161,7 @@ export function BoardView({
   onClearPreviewTransform,
   onDropObjectOntoObject,
   onBringObjectToFront,
+  onStartDuplicateDrag,
   onInstantiateBoardFromPool,
   onDeleteObject,
   onLiftTopCardFromDeck,
@@ -2541,6 +2546,29 @@ export function BoardView({
       groupMembers,
     }
   }, [viewportSize])
+
+  const startDuplicateDrag = useCallback((
+    objectId: Id,
+    pointerId: number,
+    startPoint: Point,
+    groupObjectIds?: Id[],
+  ) => {
+    const duplicateDrag = onStartDuplicateDrag(objectId, groupObjectIds)
+    if (!duplicateDrag) {
+      return false
+    }
+
+    startDrag(
+      duplicateDrag.id,
+      pointerId,
+      'move',
+      startPoint,
+      duplicateDrag.startTransform,
+      undefined,
+      duplicateDrag.groupMembers,
+    )
+    return true
+  }, [onStartDuplicateDrag, startDrag])
 
   const beginPendingTouchPress = useCallback((
     objectId: Id,
@@ -3798,6 +3826,13 @@ export function BoardView({
         return
       }
 
+      if (
+        event.altKey &&
+        startDuplicateDrag(objectId, event.pointerId, localPoint, selectedIds)
+      ) {
+        return
+      }
+
       startDrag(
         objectId,
         event.pointerId,
@@ -3841,6 +3876,10 @@ export function BoardView({
         startPoint: localPoint,
       }
 
+      if (!isTouchPointer && event.altKey && startDuplicateDrag(objectId, event.pointerId, localPoint)) {
+        return
+      }
+
       beginPendingTouchPress(objectId, event.pointerId, localPoint, { ...currentTransform }, 'deck-drag-out')
       return
     }
@@ -3865,6 +3904,10 @@ export function BoardView({
       event.stopPropagation()
       onSelect(objectId)
       if (!canEdit || !isMovableObjectType(room, objectId)) {
+        return
+      }
+
+      if (event.altKey && startDuplicateDrag(objectId, event.pointerId, localPoint)) {
         return
       }
 
@@ -3899,6 +3942,7 @@ export function BoardView({
     selectedIds,
     selectedIdsSet,
     selectionMode,
+    startDuplicateDrag,
     startDrag,
     stopCameraMomentum,
     beginCameraPointer,
