@@ -240,6 +240,18 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
 }
 
+function normalizeSurfaceBackground(spec: SpriteSpec, rounded: boolean) {
+  if (spec.kind === 'image-url') {
+    return 'transparent'
+  }
+
+  return spec.bg ?? (rounded ? '#f8efe1' : '#d8d2c1')
+}
+
+function usesAlphaSurfaceSelection(spec: SpriteSpec) {
+  return spec.kind === 'image-url'
+}
+
 function sameTransform(a: Transform2D | undefined, b: Transform2D | undefined) {
   if (!a || !b) {
     return a === b
@@ -1496,8 +1508,7 @@ function useBoardSurfaceLayout(
     : targetAspect * (crop.height / crop.width)
   const cropAspect = sourceAspect * crop.width / crop.height
   const fit = spec.fit ?? 'cover'
-  const surfaceBackground =
-    spec.bg ?? (imageUrl && !rounded ? 'transparent' : rounded ? '#f8efe1' : '#d8d2c1')
+  const surfaceBackground = normalizeSurfaceBackground(spec, rounded)
 
   let fitWidth = 1
   let fitHeight = 1
@@ -1960,9 +1971,9 @@ function BoardSelectionOverlay({
 }: BoardSelectionOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const outlineRenderVersionRef = useRef(0)
-  const { imageUrl, crop, fitWidth, fitHeight, surfaceBackground } = useBoardSurfaceLayout(spec, size, imageAssets, false)
+  const { imageUrl, crop, fitWidth, fitHeight } = useBoardSurfaceLayout(spec, size, imageAssets, false)
   const dominantRegion = useLargestOpaqueRegion(imageUrl, crop)
-  const isAlphaSelection = Boolean(imageUrl && surfaceBackground === 'transparent')
+  const isAlphaSelection = Boolean(imageUrl && usesAlphaSurfaceSelection(spec))
 
   const region = dominantRegion ?? FULL_CROP
   const regionCrop = composeCrop(crop, region)
@@ -4033,8 +4044,7 @@ export function BoardView({
             : undefined
         const usesAlphaBoardSelection = Boolean(
           boardSelectionSpec &&
-          boardSelectionSpec.kind === 'image-url' &&
-          (boardSelectionSpec.bg === undefined || boardSelectionSpec.bg === 'transparent'),
+          usesAlphaSurfaceSelection(boardSelectionSpec),
         )
         const usesCardOutlineSelection = isCard(object) && selectionStrokeWidth > 0
         const usesPoolOutlineSelection = isPool(object) && selectionStrokeWidth > 0

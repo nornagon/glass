@@ -2,6 +2,7 @@
 
 ## 2026-04-19
 
+- Made image-backed board faces and backs render without fallback fills, and aligned their selection outlines so both sides use the same alpha-aware selection treatment.
 - Fixed inspector teardown so focused fields commit pending edits when the inspected selection changes or the panel closes.
 - Fixed alpha-image selection outlines so reselecting after zooming with nothing selected no longer paints one frame at the wrong outline thickness.
 - Added a subtle bottom-left prepared-surface prewarm progress badge and kept its percent stable across deck drag-out and other routine object mutations instead of restarting from zero.
