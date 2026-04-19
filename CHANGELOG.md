@@ -3,6 +3,7 @@
 ## 2026-04-19
 
 - Sped up prepared-surface prewarming by shortening its idle startup/backoff delays and letting each idle slice process a small batch of queued tasks instead of exactly one.
+- Replaced the inspector's metadata-only JSON editor with a whole-object editor, while guarding `id`, `type`, and `parentId` so raw edits cannot break object identity or hierarchy.
 - Made image-backed board faces and backs render without fallback fills, and aligned their selection outlines so both sides use the same alpha-aware selection treatment.
 - Fixed inspector teardown so focused fields commit pending edits when the inspected selection changes or the panel closes.
 - Fixed alpha-image selection outlines so reselecting after zooming with nothing selected no longer paints one frame at the wrong outline thickness.

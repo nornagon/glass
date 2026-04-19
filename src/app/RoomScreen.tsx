@@ -158,8 +158,29 @@ function nextSpawnTransform(camera: CameraState, offset: number) {
   }
 }
 
-function normalizeMetaDraft(draft: string) {
-  const parsed = JSON.parse(draft) as Record<string, string | number | boolean>
+function normalizeObjectDraft(
+  draft: string,
+  expectedId: Id,
+  expectedType: GameObject['type'],
+  expectedParentId: Id | null,
+) {
+  const parsed = JSON.parse(draft) as GameObject
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Object draft must be a JSON object.')
+  }
+
+  if (parsed.id !== expectedId) {
+    throw new Error('Object id cannot change in the inspector editor.')
+  }
+
+  if (parsed.type !== expectedType) {
+    throw new Error('Object type cannot change in the inspector editor.')
+  }
+
+  if (parsed.parentId !== expectedParentId) {
+    throw new Error('Object parentId cannot change in the inspector editor.')
+  }
+
   return parsed
 }
 
@@ -789,21 +810,21 @@ function SpriteEditor({
   )
 }
 
-function MetaEditor({
+function ObjectEditor({
   object,
   disabled,
   onCommit,
 }: {
   object: GameObject
   disabled: boolean
-  onCommit: (next: Record<string, string | number | boolean>) => void
+  onCommit: (next: GameObject) => void
 }) {
-  const [draft, setDraft] = useState(() => JSON.stringify(object.meta, null, 2))
+  const [draft, setDraft] = useState(() => JSON.stringify(object, null, 2))
   const [error, setError] = useState('')
 
   return (
     <section className="inspector-group">
-      <h4>Metadata</h4>
+      <h4>Object</h4>
       <textarea
         className="meta-editor"
         disabled={disabled}
@@ -815,14 +836,14 @@ function MetaEditor({
           disabled={disabled}
           onClick={() => {
             try {
-              onCommit(normalizeMetaDraft(draft))
+              onCommit(normalizeObjectDraft(draft, object.id, object.type, object.parentId))
               setError('')
             } catch {
-              setError('Metadata must be valid JSON with string/number/boolean values.')
+              setError('Object must be valid JSON and keep the same id, type, and parentId.')
             }
           }}
         >
-          Apply Metadata
+          Apply Object
         </button>
       </div>
       {error ? <p className="inline-error">{error}</p> : null}
@@ -2607,13 +2628,13 @@ function createBoardHere() {
                 </>
               ) : null}
 
-              <MetaEditor
-                key={`${selectedObject.id}:${JSON.stringify(selectedObject.meta)}`}
+              <ObjectEditor
+                key={`${selectedObject.id}:${JSON.stringify(selectedObject)}`}
                 object={selectedObject}
                 disabled={!canEdit}
-                onCommit={(meta) =>
+                onCommit={(nextObject) =>
                   mutate((draft) => {
-                    draft.objects[selectedObject.id].meta = meta
+                    draft.objects[selectedObject.id] = nextObject
                   })
                 }
               />
