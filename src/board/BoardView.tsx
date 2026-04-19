@@ -1708,43 +1708,47 @@ function BoardSurface({
 
   return (
     <div
-      className={`board-surface ${rounded ? 'is-rounded' : 'is-square'}${shadowMode ? ` surface-shadow-${shadowMode}` : ''}${className ? ` ${className}` : ''}`}
-      style={{
-        background: surfaceBackground,
-        color: spec.fg ?? '#1d2428',
-      }}
+      className={`board-surface-shadow-frame${shadowMode ? ` surface-shadow-${shadowMode}` : ''}`}
     >
-      {imageUrl ? (
-        <div className="board-sprite-frame">
-          <div
-            className="board-sprite-fit-frame"
-            style={{
-              width: `${fitWidth * 100}%`,
-              height: `${fitHeight * 100}%`,
-            }}
-          >
-            <img
-              className="board-sprite-image"
-              src={preparedSurfaceUrl}
-              alt=""
-              draggable={false}
-              decoding="async"
-              loading="eager"
-              fetchPriority="high"
-              data-board-sprite-stage={stage}
+      <div
+        className={`board-surface ${rounded ? 'is-rounded' : 'is-square'}${className ? ` ${className}` : ''}`}
+        style={{
+          background: surfaceBackground,
+          color: spec.fg ?? '#1d2428',
+        }}
+      >
+        {imageUrl ? (
+          <div className="board-sprite-frame">
+            <div
+              className="board-sprite-fit-frame"
               style={{
-                width: '100%',
-                height: '100%',
-                opacity: preparedSurfaceUrl ? 1 : 0,
+                width: `${fitWidth * 100}%`,
+                height: `${fitHeight * 100}%`,
               }}
-            />
+            >
+              <img
+                className="board-sprite-image"
+                src={preparedSurfaceUrl}
+                alt=""
+                draggable={false}
+                decoding="async"
+                loading="eager"
+                fetchPriority="high"
+                data-board-sprite-stage={stage}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  opacity: preparedSurfaceUrl ? 1 : 0,
+                }}
+              />
+            </div>
           </div>
-        </div>
-      ) : (
-        <div className="board-surface-label" style={{ fontSize: `${labelFontSize}px` }}>
-          {spec.label ?? fallbackLabel}
-        </div>
-      )}
+        ) : (
+          <div className="board-surface-label" style={{ fontSize: `${labelFontSize}px` }}>
+            {spec.label ?? fallbackLabel}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
