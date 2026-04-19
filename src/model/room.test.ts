@@ -7,6 +7,7 @@ import {
   convertBoardToPool,
   createBoardFromPool,
   createBoardOnPlane,
+  createBookOnPlane,
   createCardOnPlane,
   createDeckOnPlane,
   createDeckFromSpriteSheetOnPlane,
@@ -42,11 +43,13 @@ describe('room model', () => {
   it('treats boards as group-selectable objects', () => {
     const room = createRoomDoc()
     const boardId = createBoardOnPlane(room, room.rootId, { x: 0, y: 0, rotation: 0 }, 'Board')
+    const bookId = createBookOnPlane(room, room.rootId, { x: 5, y: 5, rotation: 0 }, 'Rulebook')
     const cardId = createCardOnPlane(room, room.rootId, { x: 10, y: 20, rotation: 0 })
     const deckId = createDeckOnPlane(room, room.rootId, { x: 30, y: 40, rotation: 0 })
     const poolId = createPoolOnPlane(room, room.rootId, { x: 50, y: 60, rotation: 0 }, 'Board')
 
     expect(isGroupSelectableObject(room.objects[boardId])).toBe(true)
+    expect(isGroupSelectableObject(room.objects[bookId])).toBe(true)
     expect(isGroupSelectableObject(room.objects[cardId])).toBe(true)
     expect(isGroupSelectableObject(room.objects[deckId])).toBe(true)
     expect(isGroupSelectableObject(room.objects[poolId])).toBe(true)
@@ -198,15 +201,25 @@ describe('room model', () => {
     const deckId = createDeckOnPlane(room, room.rootId, { x: 20, y: 20, rotation: 0 }, 'Deck Name')
     const boardId = createBoardOnPlane(room, room.rootId, { x: 40, y: 40, rotation: 0 }, 'Board Name')
     const poolId = createPoolOnPlane(room, room.rootId, { x: 60, y: 60, rotation: 0 }, 'Pool Name')
+    const bookId = createBookOnPlane(room, room.rootId, { x: 80, y: 80, rotation: 0 }, 'Rulebook')
 
-    const duplicatedIds = [cardId, deckId, boardId, poolId].map((objectId) => duplicateObject(room, objectId))
+    if (room.objects[bookId].type === 'book') {
+      room.objects[bookId].pdfUrl = 'https://example.com/rules.pdf'
+      room.objects[bookId].currentPage = 3
+      room.objects[bookId].pageCount = 9
+    }
 
-    expect(duplicatedIds).toHaveLength(4)
+    const duplicatedIds = [cardId, deckId, boardId, poolId, bookId].map((objectId) => duplicateObject(room, objectId))
+
+    expect(duplicatedIds).toHaveLength(5)
     expect(duplicatedIds.every((objectId) => objectId)).toBe(true)
     expect(room.objects[duplicatedIds[0]!].name).toBe('Card Name')
     expect(room.objects[duplicatedIds[1]!].name).toBe('Deck Name')
     expect(room.objects[duplicatedIds[2]!].name).toBe('Board Name')
     expect(room.objects[duplicatedIds[3]!].name).toBe('Pool Name')
+    expect(room.objects[duplicatedIds[4]!].name).toBe('Rulebook')
+    const duplicatedBook = room.objects[duplicatedIds[4]!]
+    expect(duplicatedBook.type === 'book' ? duplicatedBook.currentPage : undefined).toBe(3)
   })
 
   it('can duplicate an object at an explicit transform', () => {
