@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-04-19
+
+- Fixed pool token gestures so pool copies only instantiate boards once a real drag begins, touch drag-out requires selecting the pool first, long-press dragging moves the pool itself, and simple clicks/taps no longer consume pool supply.
+
 ## 2026-04-18
 
 - Added optional finite pool supply tracking with a limited-supply inspector toggle, on-board remaining-count display, and low-supply copy hiding.

@@ -71,12 +71,14 @@ interface DragState {
   groupMembers?: Array<{ id: Id; startTransform: Transform2D }>
 }
 
-interface PendingDeckPress {
-  deckId: Id
+interface PendingTouchPress {
+  objectId: Id
   pointerId: number
   startPoint: Point
   startTransform: Transform2D
-  timeoutId: number
+  dragOutTransform?: Transform2D
+  timeoutId: number | null
+  moveAction: 'none' | 'deck-drag-out' | 'pool-drag-out'
 }
 
 interface TapCandidate {
@@ -111,7 +113,7 @@ type EphemeralTransformMap = Partial<Record<Id, Transform2D>>
 
 const FULL_CROP = { x: 0, y: 0, width: 1, height: 1 } as const
 const TAP_GRACE_DISTANCE = 10
-const DECK_LONG_PRESS_MS = 360
+const TOUCH_LONG_PRESS_MS = 360
 const MIN_ZOOM_SCALE = 0.2
 const MAX_ZOOM_SCALE = 2.5
 const PAN_CLAMP_MARGIN = 640
@@ -2176,7 +2178,7 @@ export function BoardView({
   const selectionModeRef = useRef(selectionMode)
   const previewTransformsRef = useRef<EphemeralTransformMap>({})
   const dragRef = useRef<DragState | null>(null)
-  const pendingDeckPressRef = useRef<PendingDeckPress | null>(null)
+  const pendingTouchPressRef = useRef<PendingTouchPress | null>(null)
   const tapCandidateRef = useRef<TapCandidate | null>(null)
   const backgroundTapCandidateRef = useRef<BackgroundTapCandidate | null>(null)
   const lassoRef = useRef<LassoState | null>(null)
@@ -2237,14 +2239,16 @@ export function BoardView({
     setPreviewTransforms((current) => (sameTransformMap(current, nextTransforms) ? current : nextTransforms))
   }, [])
 
-  const clearPendingDeckPress = useCallback(() => {
-    const pendingDeckPress = pendingDeckPressRef.current
-    if (!pendingDeckPress) {
+  const clearPendingTouchPress = useCallback(() => {
+    const pendingTouchPress = pendingTouchPressRef.current
+    if (!pendingTouchPress) {
       return
     }
 
-    window.clearTimeout(pendingDeckPress.timeoutId)
-    pendingDeckPressRef.current = null
+    if (pendingTouchPress.timeoutId !== null) {
+      window.clearTimeout(pendingTouchPress.timeoutId)
+    }
+    pendingTouchPressRef.current = null
   }, [])
 
   const beginCameraPointer = useCallback((pointerId: number, localPoint: Point) => {
@@ -2261,7 +2265,7 @@ export function BoardView({
   }, [])
 
   const cancelTouchObjectInteraction = useCallback((handoffPointer?: { pointerId: number; localPoint: Point }) => {
-    clearPendingDeckPress()
+    clearPendingTouchPress()
     tapCandidateRef.current = null
     backgroundTapCandidateRef.current = null
 
@@ -2288,7 +2292,7 @@ export function BoardView({
       onClearPreviewTransform(activeDrag.id)
     }
     replacePreviewTransforms({})
-  }, [clearPendingDeckPress, onClearPreviewTransform, replacePreviewTransforms])
+  }, [clearPendingTouchPress, onClearPreviewTransform, replacePreviewTransforms])
 
   const currentTransformForObject = useCallback((objectId: Id) => {
     return displayedTransformForObject(
@@ -2499,7 +2503,7 @@ export function BoardView({
     mode: DragState['mode'],
     startPoint: Point,
     startTransform: Transform2D,
-    options?: Pick<DragState, 'spawnedFromPool' | 'selectOnMove'>,
+    options?: Pick<DragState, 'spawnedFromPool' | 'selectOnMove' | 'moved'>,
     groupMembers?: DragState['groupMembers'],
   ) => {
     tapCandidateRef.current = null
@@ -2511,13 +2515,85 @@ export function BoardView({
       startPointer: screenToLogical(viewportSize, cameraRef.current, startPoint),
       startTransform: { ...startTransform },
       currentPoint: startPoint,
-      moved: false,
+      moved: options?.moved ?? false,
       raisedToFront: false,
       spawnedFromPool: options?.spawnedFromPool,
       selectOnMove: options?.selectOnMove,
       groupMembers,
     }
   }, [viewportSize])
+
+  const beginPendingTouchPress = useCallback((
+    objectId: Id,
+    pointerId: number,
+    startPoint: Point,
+    startTransform: Transform2D,
+    moveAction: PendingTouchPress['moveAction'],
+    enableLongPressMove = true,
+    dragOutTransform?: Transform2D,
+  ) => {
+    clearPendingTouchPress()
+    pendingTouchPressRef.current = {
+      objectId,
+      pointerId,
+      startPoint,
+      startTransform,
+      dragOutTransform,
+      moveAction,
+      timeoutId: enableLongPressMove
+        ? window.setTimeout(() => {
+            const pendingTouchPress = pendingTouchPressRef.current
+            if (
+              !pendingTouchPress ||
+              pendingTouchPress.objectId !== objectId ||
+              pendingTouchPress.pointerId !== pointerId
+            ) {
+              return
+            }
+
+            pendingTouchPressRef.current = null
+            startDrag(
+              objectId,
+              pointerId,
+              'move',
+              pendingTouchPress.startPoint,
+              pendingTouchPress.startTransform,
+            )
+          }, TOUCH_LONG_PRESS_MS)
+        : null,
+    }
+  }, [clearPendingTouchPress, startDrag])
+
+  const armPoolCopyDragOut = useCallback((
+    poolId: Id,
+    pointerId: number,
+    startPoint: Point,
+    startTransform: Transform2D,
+    enableLongPressMove: boolean,
+  ) => {
+    const worldPoint = screenToLogical(viewportSize, cameraRef.current, startPoint)
+    const dragOutTransform = {
+      x: worldPoint.x,
+      y: worldPoint.y,
+      rotation: 0,
+    }
+
+    tapCandidateRef.current = {
+      id: poolId,
+      pointerId,
+      startPoint,
+    }
+
+    beginPendingTouchPress(
+      poolId,
+      pointerId,
+      startPoint,
+      startTransform,
+      'pool-drag-out',
+      enableLongPressMove,
+      dragOutTransform,
+    )
+  }, [beginPendingTouchPress, viewportSize])
 
   useEffect(() => {
     onCameraChange(camera)
@@ -2853,30 +2929,46 @@ export function BoardView({
         return
       }
 
-      const pendingDeckPress = pendingDeckPressRef.current
-      if (!dragRef.current && pendingDeckPress && pendingDeckPress.pointerId === event.pointerId) {
+      const pendingTouchPress = pendingTouchPressRef.current
+      if (!dragRef.current && pendingTouchPress && pendingTouchPress.pointerId === event.pointerId) {
         const pointerDistance = Math.hypot(
-          localPoint.x - pendingDeckPress.startPoint.x,
-          localPoint.y - pendingDeckPress.startPoint.y,
+          localPoint.x - pendingTouchPress.startPoint.x,
+          localPoint.y - pendingTouchPress.startPoint.y,
         )
 
         if (pointerDistance > TAP_GRACE_DISTANCE) {
-          clearPendingDeckPress()
+          clearPendingTouchPress()
 
-          const liftedCardId = onLiftTopCardFromDeck(pendingDeckPress.deckId)
-          const dragId = liftedCardId ?? pendingDeckPress.deckId
-          if (liftedCardId) {
-            onBringObjectToFront(liftedCardId)
-            onSelect(liftedCardId)
+          if (pendingTouchPress.moveAction === 'deck-drag-out') {
+            const liftedCardId = onLiftTopCardFromDeck(pendingTouchPress.objectId)
+            const dragId = liftedCardId ?? pendingTouchPress.objectId
+            if (liftedCardId) {
+              onBringObjectToFront(liftedCardId)
+              onSelect(liftedCardId)
+            }
+
+            startDrag(
+              dragId,
+              event.pointerId,
+              'move',
+              pendingTouchPress.startPoint,
+              pendingTouchPress.startTransform,
+            )
+          } else if (pendingTouchPress.moveAction === 'pool-drag-out') {
+            const dragOutTransform = pendingTouchPress.dragOutTransform ?? pendingTouchPress.startTransform
+            const createdId = onInstantiateBoardFromPool(pendingTouchPress.objectId, dragOutTransform)
+            if (createdId) {
+              startDrag(createdId, event.pointerId, 'move', pendingTouchPress.startPoint, dragOutTransform, {
+                spawnedFromPool: true,
+                selectOnMove: true,
+                moved: true,
+              })
+            }
           }
+        }
 
-          startDrag(
-            dragId,
-            event.pointerId,
-            'move',
-            pendingDeckPress.startPoint,
-            pendingDeckPress.startTransform,
-          )
+        if (pendingTouchPressRef.current?.pointerId === event.pointerId && pendingTouchPress.moveAction === 'pool-drag-out') {
+          return
         }
       }
 
@@ -3076,7 +3168,7 @@ export function BoardView({
 
     const handlePointerUp = (event: PointerEvent) => {
       markPrewarmInteraction()
-      clearPendingDeckPress()
+      clearPendingTouchPress()
       const hadCameraPointer = cameraPointersRef.current.has(event.pointerId)
       const shouldStartMomentum =
         hadCameraPointer &&
@@ -3258,7 +3350,7 @@ export function BoardView({
         backgroundTapCandidateRef.current = null
       }
 
-      clearPendingDeckPress()
+      clearPendingTouchPress()
       cameraPointersRef.current.delete(event.pointerId)
       stopCameraMomentum()
       resetPointerPanState()
@@ -3274,13 +3366,15 @@ export function BoardView({
       window.removeEventListener('pointercancel', handlePointerCancel)
     }
   }, [
-    clearPendingDeckPress,
+    clearPendingTouchPress,
+    beginPendingTouchPress,
     onAddToGroupSelection,
     onBringObjectToFront,
     onClearPreviewTransform,
     onCommitTransform,
     onDeleteObject,
     onDropObjectOntoObject,
+    onInstantiateBoardFromPool,
     onLiftTopCardFromDeck,
     onPreviewTransform,
     onSelect,
@@ -3305,7 +3399,7 @@ export function BoardView({
         window.clearTimeout(cameraRenderSyncTimeoutRef.current)
         cameraRenderSyncTimeoutRef.current = null
       }
-      clearPendingDeckPress()
+      clearPendingTouchPress()
       if (dragRef.current) {
         if (dragRef.current.groupMembers && dragRef.current.groupMembers.length > 0) {
           for (const member of dragRef.current.groupMembers) {
@@ -3316,7 +3410,7 @@ export function BoardView({
         }
       }
     },
-    [clearPendingDeckPress, flushPendingCameraUpdate, stopCameraMomentum],
+    [clearPendingTouchPress, flushPendingCameraUpdate, stopCameraMomentum],
   )
 
   const quickActions = useMemo<QuickAction[]>(() => {
@@ -3531,6 +3625,8 @@ export function BoardView({
       return
     }
 
+    const startedOnPoolCopy = Boolean((event.target as HTMLElement | null)?.closest('[data-board-ui="pool-copy"]'))
+
     if (isTouchPointer) {
       event.preventDefault()
       const activeDrag = dragRef.current
@@ -3646,6 +3742,23 @@ export function BoardView({
       return
     }
 
+    if (isTouchPointer && isPool(object) && startedOnPoolCopy) {
+      event.stopPropagation()
+
+      tapCandidateRef.current = {
+        id: objectId,
+        pointerId: event.pointerId,
+        startPoint: localPoint,
+      }
+
+      if (selectedId !== objectId || !canEdit) {
+        return
+      }
+
+      armPoolCopyDragOut(objectId, event.pointerId, localPoint, { ...currentTransform }, true)
+      return
+    }
+
     if (isDeck(object) && canEdit && (!isTouchPointer || selectedId === objectId)) {
       event.stopPropagation()
       onSelect(objectId)
@@ -3655,22 +3768,23 @@ export function BoardView({
         startPoint: localPoint,
       }
 
-      clearPendingDeckPress()
-      pendingDeckPressRef.current = {
-        deckId: objectId,
+      beginPendingTouchPress(objectId, event.pointerId, localPoint, { ...currentTransform }, 'deck-drag-out')
+      return
+    }
+
+    if (isTouchPointer && isPool(object)) {
+      event.stopPropagation()
+      tapCandidateRef.current = {
+        id: objectId,
         pointerId: event.pointerId,
         startPoint: localPoint,
-        startTransform: { ...currentTransform },
-        timeoutId: window.setTimeout(() => {
-          const pendingDeckPress = pendingDeckPressRef.current
-          if (!pendingDeckPress || pendingDeckPress.deckId !== objectId || pendingDeckPress.pointerId !== event.pointerId) {
-            return
-          }
-
-          pendingDeckPressRef.current = null
-          startDrag(objectId, event.pointerId, 'move', localPoint, pendingDeckPress.startTransform)
-        }, DECK_LONG_PRESS_MS),
       }
+
+      if (selectedId !== objectId || !canEdit || !isMovableObjectType(room, objectId)) {
+        return
+      }
+
+      beginPendingTouchPress(objectId, event.pointerId, localPoint, { ...currentTransform }, 'none')
       return
     }
 
@@ -3698,9 +3812,10 @@ export function BoardView({
 
     startDrag(objectId, event.pointerId, 'move', localPoint, currentTransform)
   }, [
+    armPoolCopyDragOut,
     allowSelectLocked,
     canEdit,
-    clearPendingDeckPress,
+    beginPendingTouchPress,
     currentTransformForObject,
     lassoMode,
     onAddToGroupSelection,
@@ -3745,46 +3860,38 @@ export function BoardView({
       return
     }
 
-    event.stopPropagation()
+    if (event.pointerType === 'touch') {
+      return
+    }
 
     const localPoint = clientToLocal(rootRef.current, event.clientX, event.clientY)
     if (!localPoint) {
       return
     }
 
-    if (event.pointerType === 'touch') {
-      event.preventDefault()
-    }
-
-    markPrewarmInteraction()
-    stopCameraMomentum()
-    resetPointerPanState()
-    clearPendingDeckPress()
-    const worldPoint = screenToLogical(viewportSize, cameraRef.current, localPoint)
-    const startTransform = {
-      x: worldPoint.x,
-      y: worldPoint.y,
-      rotation: 0,
-    }
-    const createdId = onInstantiateBoardFromPool(poolId, startTransform)
-    if (!createdId) {
+    const pool = room.objects[poolId]
+    if (!isPool(pool)) {
       return
     }
 
-    startDrag(createdId, event.pointerId, 'move', localPoint, startTransform, {
-      spawnedFromPool: true,
-      selectOnMove: true,
-    })
+    event.stopPropagation()
+    markPrewarmInteraction()
+    stopCameraMomentum()
+    resetPointerPanState()
+    const worldPoint = screenToLogical(viewportSize, cameraRef.current, localPoint)
+    armPoolCopyDragOut(poolId, event.pointerId, localPoint, {
+      x: worldPoint.x,
+      y: worldPoint.y,
+      rotation: 0,
+    }, false)
   }, [
+    armPoolCopyDragOut,
     canEdit,
-    clearPendingDeckPress,
     markPrewarmInteraction,
-    onInstantiateBoardFromPool,
     resetPointerPanState,
+    room,
     selectionMode,
-    startDrag,
     stopCameraMomentum,
-    viewportSize,
   ])
 
   function resetDropTarget() {
