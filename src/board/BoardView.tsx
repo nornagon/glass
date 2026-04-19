@@ -3,6 +3,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { resolveImageSource, type ResolvedImageAsset } from '../model/assets'
 import { BOARD_WORLD_SIZE, DEFAULT_CARD_SIZE, type CameraState, type Id, type RoomDoc, type SpriteSpec, type Transform2D } from '../model/types'
 import { canSeeCardFace, getRootPlane, getTransform, isBoard, isBoardFaceUp, isCard, isDeck, isGroupSelectableObject } from '../model/room'
+import { releasePanVelocity } from './panMomentum'
 import {
   bindBoardInputRecorder,
   recordBoardInputRecorderCamera,
@@ -2910,12 +2911,20 @@ export function BoardView({
         hadCameraPointer &&
         cameraPointersRef.current.size === 1 &&
         pointerPanStateRef.current.active
-      const releaseVelocity = pointerPanStateRef.current.lastVelocity
 
       const localPoint = clientToLocal(rootRef.current, event.clientX, event.clientY)
       if (!localPoint) {
         return
       }
+
+      const releaseVelocity = shouldStartMomentum
+        ? releasePanVelocity(
+            pointerPanStateRef.current.recentSamples,
+            localPoint,
+            performance.now() / 1000,
+            PAN_MOMENTUM_SAMPLE_WINDOW_SECONDS,
+          )
+        : pointerPanStateRef.current.lastVelocity
 
       const activeLasso = lassoRef.current
       if (activeLasso && activeLasso.pointerId === event.pointerId) {
