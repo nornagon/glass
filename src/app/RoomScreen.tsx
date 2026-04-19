@@ -93,7 +93,7 @@ import {
 } from '../model/pdfAssets'
 import type { Board, Book, CameraState, Card, GameObject, Id, Pool, RoomDoc, SpriteSpec, Transform2D } from '../model/types'
 import { DEFAULT_BOARD_SIZE, DEFAULT_CARD_SIZE } from '../model/types'
-import { inspectPdfSource } from '../pdf/render'
+import { inspectPdfPageSource, inspectPdfSource } from '../pdf/render'
 import {
   boardSizeFromDimensions,
   boardSizeFromHeight,
@@ -820,7 +820,7 @@ function BookViewerModal({
 }: {
   book: Book
   pdfAssets: ReadonlyMap<AutomergeUrl, ResolvedPdfAsset>
-  onClose: (nextPage: number, pageCount: number) => void
+  onClose: (nextPage: number, pageCount: number, pageSize?: { width: number; height: number }) => void
 }) {
   const pdfSource = resolvePdfSource(book.pdfUrl, pdfAssets)
   const pdfRenderUrl = pdfSource?.renderUrl
@@ -855,7 +855,7 @@ function BookViewerModal({
     }
   }, [pdfRenderUrl])
 
-  const closeViewer = useCallback(() => {
+  const closeViewer = useCallback(async () => {
     if (viewerRegistry) {
       const scrollPlugin = viewerRegistry.getPlugin<ScrollPlugin>(ScrollPlugin.id)
       const scroll = scrollPlugin?.provides() as ScrollCapability | undefined
@@ -871,8 +871,17 @@ function BookViewerModal({
       }
     }
 
-    onClose(currentPageRef.current, totalPagesRef.current)
-  }, [onClose, viewerRegistry])
+    const pageSize = pdfRenderUrl
+      ? await inspectPdfPageSource(pdfRenderUrl, currentPageRef.current)
+          .then((info) => ({
+            width: info.width,
+            height: info.height,
+          }))
+          .catch(() => undefined)
+      : undefined
+
+    onClose(currentPageRef.current, totalPagesRef.current, pageSize)
+  }, [onClose, pdfRenderUrl, viewerRegistry])
 
   useEffect(() => {
     currentPageRef.current = Math.max(1, book.currentPage)
@@ -933,7 +942,7 @@ function BookViewerModal({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault()
-        closeViewer()
+        void closeViewer()
       }
     }
 
@@ -942,9 +951,9 @@ function BookViewerModal({
   }, [closeViewer])
 
   return (
-    <div className="modal-scrim" onClick={closeViewer}>
+    <div className="modal-scrim" onClick={() => void closeViewer()}>
       <section aria-modal="true" className="modal-card book-viewer-modal" role="dialog" onClick={(event) => event.stopPropagation()}>
-        <button aria-label="Close viewer" className="panel-close" onClick={closeViewer} title="Close viewer" />
+        <button aria-label="Close viewer" className="panel-close" onClick={() => void closeViewer()} title="Close viewer" />
         <div className="book-viewer-shell">
           {viewerConfig ? (
             <PDFViewer
@@ -3769,7 +3778,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
             key={`${viewerBook.id}:${viewerBook.currentPage}`}
             book={viewerBook}
             pdfAssets={resolvedPdfAssets}
-            onClose={(nextPage, pageCount) => {
+            onClose={(nextPage, pageCount, pageSize) => {
               mutate((draft) => {
                 const book = draft.objects[viewerBook.id]
                 if (!isBook(book)) {
@@ -3778,6 +3787,10 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
 
                 book.currentPage = Math.max(1, Math.min(nextPage, Math.max(1, pageCount)))
                 book.pageCount = Math.max(1, pageCount)
+                if (pageSize && pageSize.width > 0 && pageSize.height > 0) {
+                  book.size = boardSizeFromImageDimensions(pageSize)
+                  book.meta.aspectRatio = book.size.width / book.size.height
+                }
               })
               setOpenBookViewerId(undefined)
             }}

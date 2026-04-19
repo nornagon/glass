@@ -2,6 +2,7 @@
 
 ## 2026-04-19
 
+- Updated PDF books so closing the viewer resizes the board preview to the current page, which keeps mixed-size PDFs from showing later pages at the wrong aspect ratio.
 - Added room-local PDF `book` objects with board thumbnails, an EmbedPDF-backed viewer that preserves the last viewed page, and moved PDF inspection/rasterization onto EmbedPDF's PDFium engine so PDF.js is no longer used.
 - Deduped room image uploads by content so re-uploading the same image reuses an existing stored asset instead of creating another copy.
 - Sped up prepared-surface prewarming by shortening its idle startup/backoff delays and letting each idle slice process a small batch of queued tasks instead of exactly one.

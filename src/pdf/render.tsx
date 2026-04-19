@@ -77,6 +77,20 @@ export async function inspectPdfSource(url: string) {
   }
 }
 
+export async function inspectPdfPageSource(url: string, pageNumber: number) {
+  const document = await loadPdfDocument(url)
+  const safePageIndex = Math.max(0, Math.min(pageNumber - 1, document.pageCount - 1))
+  const page = document.pages[safePageIndex]
+  const size = page ? pageDisplaySize(page) : { width: 0, height: 0 }
+
+  return {
+    pageCount: document.pageCount,
+    pageNumber: safePageIndex + 1,
+    width: size.width,
+    height: size.height,
+  }
+}
+
 function normalizedRenderSize(size: Size, qualityBoost: number, maxDimension: number) {
   const deviceScale = typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1
   const targetWidth = Math.max(1, Math.round(size.width * deviceScale * qualityBoost))
