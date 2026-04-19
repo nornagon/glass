@@ -69,6 +69,7 @@ import {
 import type { Board, CameraState, Card, GameObject, Id, Pool, RoomDoc, SpriteSpec, Transform2D } from '../model/types'
 import { DEFAULT_BOARD_SIZE, DEFAULT_CARD_SIZE } from '../model/types'
 import {
+  boardSizeFromDimensions,
   boardSizeFromHeight,
   boardSizeFromWidth,
   parseNumericExpression,
@@ -185,10 +186,7 @@ async function loadImageSourceDimensions(
 }
 
 function boardSizeFromImageDimensions(dimensions: { width: number; height: number }) {
-  return {
-    width: Math.max(160, Math.round(dimensions.width)),
-    height: Math.max(160, Math.round(dimensions.height)),
-  }
+  return boardSizeFromDimensions(dimensions.width, dimensions.height, 32)
 }
 
 function boardNameFromImageFile(file: File) {

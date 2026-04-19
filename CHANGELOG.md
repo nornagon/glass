@@ -2,6 +2,7 @@
 
 ## 2026-04-18
 
+- Make imported image boards keep their native size above a 32px minimum while preserving aspect ratio.
 - Added a multiselect `...` tray action that opens a compact bottom-right selection panel for shared actions like forward/back, duplicate, lock, and delete.
 - Fixed multiselect so clicking an already selected object deselects it, while dragging still moves the whole selected group.
 - Fixed pan fling release velocity so pausing briefly after a drag no longer reuses stale movement speed and launches the viewport unnaturally.

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  boardSizeFromDimensions,
   boardSizeFromHeight,
   boardSizeFromWidth,
   parseNumericExpression,
@@ -24,6 +25,20 @@ describe('board sizing', () => {
     expect(boardSizeFromWidth(16, 2)).toEqual({
       width: 32,
       height: 16,
+    })
+  })
+
+  it('keeps imported image boards at their native size when both dimensions clear the minimum', () => {
+    expect(boardSizeFromDimensions(75, 48, 32)).toEqual({
+      width: 75,
+      height: 48,
+    })
+  })
+
+  it('scales imported image boards up to a 32px minimum without changing aspect ratio', () => {
+    expect(boardSizeFromDimensions(24, 16, 32)).toEqual({
+      width: 48,
+      height: 32,
     })
   })
 

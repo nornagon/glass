@@ -10,31 +10,36 @@ function isPositiveFiniteNumber(value: number) {
   return Number.isFinite(value) && value > 0
 }
 
-function finalizeLockedBoardSize(width: number, height: number): BoardSize {
-  const safeWidth = isPositiveFiniteNumber(width) ? width : MIN_BOARD_DIMENSION
-  const safeHeight = isPositiveFiniteNumber(height) ? height : MIN_BOARD_DIMENSION
+export function boardSizeFromDimensions(
+  width: number,
+  height: number,
+  minimumDimension = MIN_BOARD_DIMENSION,
+): BoardSize {
+  const safeMinimumDimension = isPositiveFiniteNumber(minimumDimension) ? minimumDimension : MIN_BOARD_DIMENSION
+  const safeWidth = isPositiveFiniteNumber(width) ? width : safeMinimumDimension
+  const safeHeight = isPositiveFiniteNumber(height) ? height : safeMinimumDimension
   const minimumScale = Math.max(
-    MIN_BOARD_DIMENSION / safeWidth,
-    MIN_BOARD_DIMENSION / safeHeight,
+    safeMinimumDimension / safeWidth,
+    safeMinimumDimension / safeHeight,
     1,
   )
 
   return {
-    width: Math.max(MIN_BOARD_DIMENSION, Math.round(safeWidth * minimumScale)),
-    height: Math.max(MIN_BOARD_DIMENSION, Math.round(safeHeight * minimumScale)),
+    width: Math.max(safeMinimumDimension, Math.round(safeWidth * minimumScale)),
+    height: Math.max(safeMinimumDimension, Math.round(safeHeight * minimumScale)),
   }
 }
 
 export function boardSizeFromWidth(width: number, aspectRatio: number): BoardSize {
   const safeWidth = isPositiveFiniteNumber(width) ? width : MIN_BOARD_DIMENSION
   const safeAspectRatio = isPositiveFiniteNumber(aspectRatio) ? aspectRatio : 1
-  return finalizeLockedBoardSize(safeWidth, safeWidth / safeAspectRatio)
+  return boardSizeFromDimensions(safeWidth, safeWidth / safeAspectRatio)
 }
 
 export function boardSizeFromHeight(height: number, aspectRatio: number): BoardSize {
   const safeHeight = isPositiveFiniteNumber(height) ? height : MIN_BOARD_DIMENSION
   const safeAspectRatio = isPositiveFiniteNumber(aspectRatio) ? aspectRatio : 1
-  return finalizeLockedBoardSize(safeHeight * safeAspectRatio, safeHeight)
+  return boardSizeFromDimensions(safeHeight * safeAspectRatio, safeHeight)
 }
 
 export function parseNumericExpression(value: string) {
