@@ -2,6 +2,7 @@
 
 ## 2026-04-19
 
+- Used cheaper box shadows for opaque board and pool images, while keeping pixel-accurate drop shadows only for images with transparency.
 - Deduped room image uploads by content so re-uploading the same image reuses an existing stored asset instead of creating another copy.
 - Sped up prepared-surface prewarming by shortening its idle startup/backoff delays and letting each idle slice process a small batch of queued tasks instead of exactly one.
 - Replaced the inspector's metadata-only JSON editor with a whole-object editor, while guarding `id`, `type`, and `parentId` so raw edits cannot break object identity or hierarchy.

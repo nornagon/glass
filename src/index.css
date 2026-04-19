@@ -586,9 +586,14 @@ textarea {
 .board-object-board > .board-surface {
   border: 0;
   box-shadow: none;
+  filter: none;
 }
 
-.board-object-board {
+.board-object-board > .board-surface.surface-shadow-box {
+  box-shadow: 0 1.5px 4px rgba(0, 0, 0, 0.58);
+}
+
+.board-object-board > .board-surface.surface-shadow-pixel {
   filter: drop-shadow(0 1.5px 4px rgba(0, 0, 0, 0.58));
 }
 
@@ -628,12 +633,20 @@ textarea {
   position: absolute;
   cursor: grab;
   transform-origin: center center;
-  filter: drop-shadow(0 1.5px 4px rgba(0, 0, 0, 0.58));
 }
 
 .board-pool-copy .board-surface {
   border: 0;
   box-shadow: none;
+  filter: none;
+}
+
+.board-pool-copy .board-surface.surface-shadow-box {
+  box-shadow: 0 1.5px 4px rgba(0, 0, 0, 0.58);
+}
+
+.board-pool-copy .board-surface.surface-shadow-pixel {
+  filter: drop-shadow(0 1.5px 4px rgba(0, 0, 0, 0.58));
 }
 
 .board-pool-count {

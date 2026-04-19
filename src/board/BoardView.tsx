@@ -145,6 +145,7 @@ const PREPARED_SPRITE_PREWARM_QUIET_MS = 400
 const PREPARED_SPRITE_PREWARM_FALLBACK_DELAY_MS = 80
 const PREPARED_SPRITE_PREWARM_MIN_IDLE_MS = 12
 const PREPARED_SPRITE_PREWARM_MAX_TASKS_PER_IDLE = 2
+const SURFACE_SHADOW_ALPHA_THRESHOLD = 250
 
 const intrinsicImageSizeCache = new Map<string, Size | null>()
 const resolvedSourceImageElementCache = new Map<string, HTMLImageElement>()
@@ -155,6 +156,8 @@ const preparedSpriteSurfaceUrlCache = new Map<string, string | null>()
 const preparedSpriteSurfaceRequestCache = new Map<string, Promise<string | null>>()
 const opaqueRegionBoundsCache = new Map<string, { x: number; y: number; width: number; height: number } | null>()
 const opaqueRegionRequestCache = new Map<string, Promise<{ x: number; y: number; width: number; height: number } | null>>()
+const surfaceShadowModeCache = new Map<string, 'box' | 'pixel'>()
+const surfaceShadowModeRequestCache = new Map<string, Promise<'box' | 'pixel'>>()
 
 function hashString(value: string) {
   let hash = 2166136261
@@ -953,6 +956,67 @@ function composeCrop(
   })
 }
 
+function surfaceShadowModeCacheKey(
+  imageUrl: string,
+  crop: ReturnType<typeof normalizeCrop>,
+) {
+  return [
+    imageUrl,
+    crop.x.toFixed(4),
+    crop.y.toFixed(4),
+    crop.width.toFixed(4),
+    crop.height.toFixed(4),
+  ].join('|')
+}
+
+async function analyzeSurfaceShadowMode(
+  imageUrl: string,
+  crop: ReturnType<typeof normalizeCrop>,
+): Promise<'box' | 'pixel'> {
+  if (typeof document === 'undefined') {
+    return 'pixel'
+  }
+
+  const image = await loadSourceImageElement(imageUrl)
+  const cropPixelWidth = Math.max(1, Math.round(image.naturalWidth * crop.width))
+  const cropPixelHeight = Math.max(1, Math.round(image.naturalHeight * crop.height))
+  const analysisScale = Math.min(
+    1,
+    ALPHA_COMPONENT_ANALYSIS_MAX_DIMENSION / Math.max(cropPixelWidth, cropPixelHeight, 1),
+  )
+  const rasterWidth = Math.max(1, Math.round(cropPixelWidth * analysisScale))
+  const rasterHeight = Math.max(1, Math.round(cropPixelHeight * analysisScale))
+  const canvas = document.createElement('canvas')
+  canvas.width = rasterWidth
+  canvas.height = rasterHeight
+  const context = canvas.getContext('2d', { willReadFrequently: true })
+  if (!context) {
+    return 'pixel'
+  }
+
+  context.clearRect(0, 0, rasterWidth, rasterHeight)
+  context.drawImage(
+    image,
+    image.naturalWidth * crop.x,
+    image.naturalHeight * crop.y,
+    image.naturalWidth * crop.width,
+    image.naturalHeight * crop.height,
+    0,
+    0,
+    rasterWidth,
+    rasterHeight,
+  )
+
+  const { data } = context.getImageData(0, 0, rasterWidth, rasterHeight)
+  for (let index = 3; index < data.length; index += 4) {
+    if (data[index] < SURFACE_SHADOW_ALPHA_THRESHOLD) {
+      return 'pixel'
+    }
+  }
+
+  return 'box'
+}
+
 async function analyzeLargestOpaqueRegion(
   imageUrl: string,
   crop: ReturnType<typeof normalizeCrop>,
@@ -1340,6 +1404,77 @@ function useLargestOpaqueRegion(
   return loadedRegion && loadedRegion.key === cacheKey ? loadedRegion.region ?? undefined : undefined
 }
 
+function useBoardSurfaceShadowMode(
+  spec: SpriteSpec,
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
+  enabled: boolean,
+): 'box' | 'pixel' | undefined {
+  const imageSource = spec.kind === 'image-url' ? resolveImageSource(spec.url, imageAssets) : undefined
+  const imageUrl = imageSource?.renderUrl
+  const crop = normalizeCrop(spec.crop)
+  const cacheKey = enabled && imageUrl ? surfaceShadowModeCacheKey(imageUrl, crop) : undefined
+  const cachedMode = cacheKey ? surfaceShadowModeCache.get(cacheKey) : undefined
+  const [loadedMode, setLoadedMode] = useState<{ key: string; mode: 'box' | 'pixel' } | undefined>(
+    () => (
+      cacheKey && cachedMode
+        ? {
+            key: cacheKey,
+            mode: cachedMode,
+          }
+        : undefined
+    ),
+  )
+
+  useEffect(() => {
+    if (!enabled || !cacheKey || !imageUrl || cachedMode !== undefined) {
+      return
+    }
+
+    let cancelled = false
+    const request =
+      surfaceShadowModeRequestCache.get(cacheKey) ??
+      analyzeSurfaceShadowMode(imageUrl, crop)
+        .then((mode) => {
+          surfaceShadowModeCache.set(cacheKey, mode)
+          surfaceShadowModeRequestCache.delete(cacheKey)
+          return mode
+        })
+        .catch(() => {
+          surfaceShadowModeCache.set(cacheKey, 'pixel')
+          surfaceShadowModeRequestCache.delete(cacheKey)
+          return 'pixel'
+        })
+
+    surfaceShadowModeRequestCache.set(cacheKey, request)
+    void request.then((mode) => {
+      if (!cancelled) {
+        setLoadedMode({
+          key: cacheKey,
+          mode,
+        })
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [cacheKey, cachedMode, crop, enabled, imageUrl])
+
+  if (!enabled) {
+    return undefined
+  }
+
+  if (!imageUrl) {
+    return 'box'
+  }
+
+  if (cachedMode) {
+    return cachedMode
+  }
+
+  return loadedMode?.key === cacheKey ? loadedMode?.mode ?? 'pixel' : 'pixel'
+}
+
 function outlineSampleCount(radius: number) {
   const circumference = Math.PI * 2 * Math.max(radius, 1)
 
@@ -1474,6 +1609,7 @@ interface BoardSurfaceProps {
   imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>
   rounded: boolean
   className?: string
+  shadowMode?: 'box' | 'pixel'
 }
 
 interface BoardSurfaceLayout {
@@ -1549,6 +1685,7 @@ function BoardSurface({
   imageAssets,
   rounded,
   className,
+  shadowMode,
 }: BoardSurfaceProps) {
   const {
     imageUrl,
@@ -1571,7 +1708,7 @@ function BoardSurface({
 
   return (
     <div
-      className={`board-surface ${rounded ? 'is-rounded' : 'is-square'}${className ? ` ${className}` : ''}`}
+      className={`board-surface ${rounded ? 'is-rounded' : 'is-square'}${shadowMode ? ` surface-shadow-${shadowMode}` : ''}${className ? ` ${className}` : ''}`}
       style={{
         background: surfaceBackground,
         color: spec.fg ?? '#1d2428',
@@ -1749,6 +1886,7 @@ function PoolObject({ poolId, room, imageAssets, interactive, onInstantiate }: P
   }
 
   const visibleSpec = isPoolFaceUp(pool) ? pool.face : pool.back
+  const shadowMode = useBoardSurfaceShadowMode(visibleSpec, imageAssets, true)
   const tokenSize = getPoolTokenSize(pool)
   const remainingTokens = getPoolRemainingTokens(pool)
   const clusterCenterX = 50
@@ -1827,6 +1965,7 @@ function PoolObject({ poolId, room, imageAssets, interactive, onInstantiate }: P
               }}
               imageAssets={imageAssets}
               rounded={false}
+              shadowMode={shadowMode}
             />
           </div>
         ))}
@@ -1858,6 +1997,11 @@ function BoardObjectContent({
   onInstantiatePoolBoard,
 }: BoardObjectContentProps) {
   const object = room.objects[objectId]
+  const boardShadowMode = useBoardSurfaceShadowMode(
+    isBoard(object) ? (isBoardFaceUp(object) ? object.face : object.back) : { kind: 'label' },
+    imageAssets,
+    isBoard(object),
+  )
   if (isCard(object)) {
     return (
       <CardObject
@@ -1891,6 +2035,7 @@ function BoardObjectContent({
         size={size}
         imageAssets={imageAssets}
         rounded={false}
+        shadowMode={boardShadowMode}
       />
     )
   }
