@@ -136,10 +136,11 @@ const ALPHA_OUTLINE_MIN_SAMPLES = 12
 const ALPHA_OUTLINE_MAX_SAMPLES = 64
 const PREPARED_SPRITE_MAX_DIMENSION = 4096
 const PREPARED_SPRITE_MOBILE_SAFARI_MAX_DIMENSION = 2048
-const PREPARED_SPRITE_PREWARM_INITIAL_DELAY_MS = 1500
-const PREPARED_SPRITE_PREWARM_QUIET_MS = 1000
-const PREPARED_SPRITE_PREWARM_FALLBACK_DELAY_MS = 250
+const PREPARED_SPRITE_PREWARM_INITIAL_DELAY_MS = 500
+const PREPARED_SPRITE_PREWARM_QUIET_MS = 400
+const PREPARED_SPRITE_PREWARM_FALLBACK_DELAY_MS = 80
 const PREPARED_SPRITE_PREWARM_MIN_IDLE_MS = 12
+const PREPARED_SPRITE_PREWARM_MAX_TASKS_PER_IDLE = 2
 
 const intrinsicImageSizeCache = new Map<string, Size | null>()
 const resolvedSourceImageElementCache = new Map<string, HTMLImageElement>()
@@ -2874,7 +2875,17 @@ export function BoardView({
             return
           }
 
-          await runNextTask()
+          let tasksRun = 0
+          while (
+            !cancelled &&
+            nextTaskIndex < pendingQueue.length &&
+            tasksRun < PREPARED_SPRITE_PREWARM_MAX_TASKS_PER_IDLE &&
+            prewarmPauseUntilRef.current <= performance.now() &&
+            deadline.timeRemaining() >= PREPARED_SPRITE_PREWARM_MIN_IDLE_MS
+          ) {
+            await runNextTask()
+            tasksRun += 1
+          }
           scheduleNextTask()
         })
         return
