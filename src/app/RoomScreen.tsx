@@ -4,7 +4,16 @@ import {
   useRepo,
   type AutomergeUrl,
 } from '@automerge/react'
-import { startTransition, useCallback, useEffect, useEffectEvent, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from 'react'
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent as ReactDragEvent,
+} from 'react'
 import { BoardView } from '../board/BoardView'
 import { syncTurnBadge } from './badge'
 import { applyRoomEphemeralMessage, isRoomEphemeralMessage, type RemoteDragSession } from '../model/ephemeral'
@@ -129,6 +138,18 @@ function isEditableKeyboardTarget(target: EventTarget | null) {
       null
   )
 }
+
+function blurActiveEditableElement() {
+  if (typeof document === 'undefined') {
+    return
+  }
+
+  const activeElement = document.activeElement
+  if (isEditableKeyboardTarget(activeElement) && activeElement instanceof HTMLElement) {
+    activeElement.blur()
+  }
+}
+
 function nextSpawnTransform(camera: CameraState, offset: number) {
   return {
     x: camera.centerX + offset * 26,
@@ -1284,6 +1305,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   )
 
   function updateSelection(nextId?: string) {
+    blurActiveEditableElement()
     setSelectionMode('normal')
     setGroupSelectionIds([])
     setGroupPrimaryId(undefined)
@@ -1336,6 +1358,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
       const next = !current
       setIsAddMenuOpen(false)
       if (next) {
+        blurActiveEditableElement()
         setRightPanelMode(undefined)
       }
       return next
@@ -1347,6 +1370,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
       const next = current === 'turn' ? undefined : 'turn'
       setIsAddMenuOpen(false)
       if (next) {
+        blurActiveEditableElement()
         setIsRoomPanelOpen(false)
       }
       return next
@@ -1358,6 +1382,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
       selectedId && isGroupSelectableObject(room.objects[selectedId])
         ? selectedId
         : undefined
+    blurActiveEditableElement()
     setSelectionMode('group')
     setGroupSelectionIds(seedId ? [seedId] : [])
     setGroupPrimaryId(seedId)
@@ -1367,6 +1392,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   }
 
   function exitGroupSelectionMode() {
+    blurActiveEditableElement()
     setSelectionMode('normal')
     setGroupSelectionIds([])
     setGroupPrimaryId(undefined)
@@ -1501,14 +1527,17 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   }
 
   function closeRoomPanel() {
+    blurActiveEditableElement()
     setIsRoomPanelOpen(false)
   }
 
   function closeTurnPanel() {
+    blurActiveEditableElement()
     setRightPanelMode((current) => (current === 'turn' ? undefined : current))
   }
 
   function closeRightPanel() {
+    blurActiveEditableElement()
     setRightPanelMode(undefined)
   }
 
@@ -1546,6 +1575,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     setIsAddMenuOpen((current) => {
       const next = !current
       if (next) {
+        blurActiveEditableElement()
         setIsRoomPanelOpen(false)
         setRightPanelMode(undefined)
       }
