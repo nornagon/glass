@@ -2,6 +2,7 @@
 
 ## 2026-04-18
 
+- Fixed multiselect so clicking an already selected object deselects it, while dragging still moves the whole selected group.
 - Scope board width/height draft edits to the currently selected board so switching selection does not apply the draft to a different board.
 - Allow dropping multiple image files at once to create separate unlocked boards with a small placement offset for each imported image.
 - Lower the minimum board dimension to 16 pixels while preserving aspect ratio in the board sizing helpers.

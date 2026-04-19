@@ -77,6 +77,10 @@ interface TapCandidate {
   id: Id
   pointerId: number
   startPoint: Point
+  drag?: {
+    startTransform: Transform2D
+    groupMembers?: DragState['groupMembers']
+  }
 }
 
 interface BackgroundTapCandidate {
@@ -2709,6 +2713,25 @@ export function BoardView({
         }
       }
 
+      const tapCandidate = tapCandidateRef.current
+      if (!dragRef.current && tapCandidate?.pointerId === event.pointerId && tapCandidate.drag) {
+        const pointerDistance = Math.hypot(
+          localPoint.x - tapCandidate.startPoint.x,
+          localPoint.y - tapCandidate.startPoint.y,
+        )
+
+        if (pointerDistance > TAP_GRACE_DISTANCE) {
+          startDrag(
+            tapCandidate.id,
+            event.pointerId,
+            'move',
+            tapCandidate.startPoint,
+            tapCandidate.drag.startTransform,
+            tapCandidate.drag.groupMembers,
+          )
+        }
+      }
+
       const activeDrag = dragRef.current
       if (activeDrag && activeDrag.pointerId === event.pointerId) {
         activeDrag.currentPoint = localPoint
@@ -3382,33 +3405,21 @@ export function BoardView({
 
       event.stopPropagation()
       const isSelected = selectedIdsSet.has(objectId)
+      const groupMembers =
+        isSelected && canEdit && isMovableObjectType(room, objectId)
+          ? selectedIds
+              .map((memberId) => {
+                const memberTransform = currentTransformForObject(memberId)
+                return memberTransform ? { id: memberId, startTransform: { ...memberTransform } } : undefined
+              })
+              .filter((member): member is { id: Id; startTransform: Transform2D } => Boolean(member))
+          : undefined
       tapCandidateRef.current = {
         id: objectId,
         pointerId: event.pointerId,
         startPoint: localPoint,
+        drag: groupMembers ? { startTransform: { ...currentTransform }, groupMembers } : undefined,
       }
-
-      if (!isSelected) {
-        return
-      }
-
-      if (!canEdit || !isMovableObjectType(room, objectId)) {
-        return
-      }
-
-      startDrag(
-        objectId,
-        event.pointerId,
-        'move',
-        localPoint,
-        currentTransform,
-        selectedIds
-          .map((memberId) => {
-            const memberTransform = currentTransformForObject(memberId)
-            return memberTransform ? { id: memberId, startTransform: { ...memberTransform } } : undefined
-          })
-          .filter((member): member is { id: Id; startTransform: Transform2D } => Boolean(member)),
-      )
       return
     }
 
