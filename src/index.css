@@ -571,6 +571,14 @@ textarea {
   overflow: visible;
 }
 
+.board-surface-shadow-frame.is-rounded {
+  border-radius: 18px;
+}
+
+.board-surface-shadow-frame.is-square {
+  border-radius: 4px;
+}
+
 .board-surface {
   position: relative;
   width: 100%;

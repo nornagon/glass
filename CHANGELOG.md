@@ -3,6 +3,7 @@
 ## 2026-04-19
 
 - Made card width and height editable from the inspector.
+- Reduced Safari background-grid jitter while panning by snapping the grid layer to screen pixels, and fixed box shadows on boards to respect their border radius again.
 - Fixed transparent board and pool image shadows so alpha-based drop shadows render from an unclipped wrapper again instead of getting boxed into the sprite bounds.
 - Used cheaper box shadows for opaque board and pool images, while keeping pixel-accurate drop shadows only for images with transparency.
 - Deduped room image uploads by content so re-uploading the same image reuses an existing stored asset instead of creating another copy.

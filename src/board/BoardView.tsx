@@ -305,6 +305,11 @@ function logicalToScreen(viewport: Size, camera: CameraState, point: Point): Poi
   }
 }
 
+function snapScreenCoordinate(value: number) {
+  const devicePixelRatio = typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1
+  return Math.round(value * devicePixelRatio) / devicePixelRatio
+}
+
 function boardGridScreenStyle(viewport: Size, camera: CameraState): CSSProperties {
   const surfaceScreenSize = Math.max(1, BOARD_WORLD_SIZE * camera.zoom)
   const gridSize = Math.max(1, 160 * camera.zoom)
@@ -313,13 +318,15 @@ function boardGridScreenStyle(viewport: Size, camera: CameraState): CSSPropertie
     y: -BOARD_WORLD_SIZE / 2,
   })
   const originOffset = surfaceScreenSize / 2
+  const snappedLeft = snapScreenCoordinate(topLeft.x)
+  const snappedTop = snapScreenCoordinate(topLeft.y)
 
   return {
-    left: `${topLeft.x}px`,
-    top: `${topLeft.y}px`,
+    left: `${snappedLeft}px`,
+    top: `${snappedTop}px`,
     width: `${surfaceScreenSize}px`,
     height: `${surfaceScreenSize}px`,
-    backgroundPosition: `${originOffset}px ${originOffset}px`,
+    backgroundPosition: `${originOffset + (topLeft.x - snappedLeft)}px ${originOffset + (topLeft.y - snappedTop)}px`,
     backgroundSize: `${gridSize}px ${gridSize}px, ${gridSize}px ${gridSize}px`,
   }
 }
@@ -1708,7 +1715,7 @@ function BoardSurface({
 
   return (
     <div
-      className={`board-surface-shadow-frame${shadowMode ? ` surface-shadow-${shadowMode}` : ''}`}
+      className={`board-surface-shadow-frame ${rounded ? 'is-rounded' : 'is-square'}${shadowMode ? ` surface-shadow-${shadowMode}` : ''}`}
     >
       <div
         className={`board-surface ${rounded ? 'is-rounded' : 'is-square'}${className ? ` ${className}` : ''}`}
