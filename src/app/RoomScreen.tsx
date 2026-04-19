@@ -22,7 +22,6 @@ import {
   addCardToDeck,
   bringObjectToFront,
   bringObjectsForward,
-  canReturnBoardToPool,
   convertBoardToPool,
   canSeeCardFace,
   createBoardFromPool,
@@ -1961,7 +1960,6 @@ function createBoardHere() {
           onDropObjectOntoObject={(objectId, targetId) => {
             const droppedObject = room.objects[objectId]
             const targetObject = room.objects[targetId]
-            const shouldReturnBoardToPool = canReturnBoardToPool(room, objectId, targetId)
             mutate((draft) => {
               if (droppedObject?.type === 'card' && targetObject?.type === 'deck') {
                 addCardToDeck(draft, objectId, targetId)
@@ -1980,9 +1978,6 @@ function createBoardHere() {
               }
             })
             if (droppedObject?.type === 'deck' && targetObject?.type === 'deck' && selectedId === objectId) {
-              updateSelection(targetId)
-            }
-            if (shouldReturnBoardToPool && selectedId === objectId) {
               updateSelection(targetId)
             }
           }}
