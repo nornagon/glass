@@ -10,6 +10,7 @@ export interface ImageAssetDoc {
   mimeType: string
   bytes: Uint8Array
   sizeBytes: number
+  contentHash?: string
   width?: number
   height?: number
   createdAt: number
@@ -22,6 +23,7 @@ export interface ResolvedImageAsset {
   name: string
   mimeType: string
   sizeBytes: number
+  contentHash?: string
   width?: number
   height?: number
 }
@@ -39,6 +41,30 @@ function blobPartFromBytes(bytes: Uint8Array) {
 
 function isFinitePositiveNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
+}
+
+async function sha256Hex(bytes: Uint8Array) {
+  if (!globalThis.crypto?.subtle) {
+    return undefined
+  }
+
+  const digestInput = Uint8Array.from(bytes)
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', digestInput)
+  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('')
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array) {
+  if (left.byteLength !== right.byteLength) {
+    return false
+  }
+
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) {
+      return false
+    }
+  }
+
+  return true
 }
 
 export function isImageAssetDoc(value: unknown): value is ImageAssetDoc {
@@ -139,6 +165,7 @@ export async function readImageBlobDimensions(blob: Blob) {
 export async function buildImageAssetDoc(file: File): Promise<ImageAssetDoc> {
   const bytes = new Uint8Array(await file.arrayBuffer())
   const dimensions = await readImageBlobDimensions(file)
+  const contentHash = await sha256Hex(bytes)
 
   return {
     version: 1,
@@ -147,6 +174,7 @@ export async function buildImageAssetDoc(file: File): Promise<ImageAssetDoc> {
     mimeType: file.type || 'application/octet-stream',
     bytes,
     sizeBytes: bytes.byteLength,
+    contentHash,
     width: dimensions.width,
     height: dimensions.height,
     createdAt: Date.now(),
@@ -162,6 +190,46 @@ export async function loadStoredImageAsset(url: string) {
   const handle = await repo.find<ImageAssetDoc>(assetUrl)
   const doc = handle.doc()
   return isImageAssetDoc(doc) ? doc : undefined
+}
+
+export async function findMatchingStoredImageAssetUrl(
+  assetDoc: Pick<ImageAssetDoc, 'bytes' | 'sizeBytes' | 'contentHash'>,
+  candidateUrls: Array<string | undefined>,
+  loadAsset: (url: string) => Promise<ImageAssetDoc | undefined> = loadStoredImageAsset,
+) {
+  for (const assetUrl of collectAutomergeUrls(candidateUrls)) {
+    const existingAsset = await loadAsset(assetUrl)
+    if (!existingAsset || existingAsset.sizeBytes !== assetDoc.sizeBytes) {
+      continue
+    }
+
+    if (existingAsset.contentHash && assetDoc.contentHash && existingAsset.contentHash === assetDoc.contentHash) {
+      return assetUrl
+    }
+
+    if (sameBytes(existingAsset.bytes, assetDoc.bytes)) {
+      return assetUrl
+    }
+  }
+
+  return undefined
+}
+
+export async function createOrReuseImageAsset(file: File, candidateUrls: Array<string | undefined> = []) {
+  const assetDoc = await buildImageAssetDoc(file)
+  const existingUrl = await findMatchingStoredImageAssetUrl(assetDoc, candidateUrls)
+  if (existingUrl) {
+    return {
+      url: existingUrl,
+      reused: true as const,
+    }
+  }
+
+  const handle = repo.create<ImageAssetDoc>(assetDoc)
+  return {
+    url: handle.url,
+    reused: false as const,
+  }
 }
 
 export async function loadStoredImageDimensions(url: string) {
@@ -200,6 +268,7 @@ export function useResolvedImageAssets(urls: Array<string | undefined>) {
       }
 
       const signature = [
+        assetDoc.contentHash ?? '',
         assetDoc.name,
         assetDoc.mimeType,
         assetDoc.sizeBytes,
@@ -233,6 +302,7 @@ export function useResolvedImageAssets(urls: Array<string | undefined>) {
         name: assetDoc.name,
         mimeType: assetDoc.mimeType,
         sizeBytes: assetDoc.sizeBytes,
+        contentHash: assetDoc.contentHash,
         width: assetDoc.width,
         height: assetDoc.height,
       })

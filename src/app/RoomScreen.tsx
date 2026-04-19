@@ -1,7 +1,6 @@
 import {
   useDocHandle,
   useDocument,
-  useRepo,
   type AutomergeUrl,
 } from '@automerge/react'
 import {
@@ -68,12 +67,11 @@ import {
   removePlayer,
 } from '../model/room'
 import {
-  buildImageAssetDoc,
   collectRoomImageAssetUrls,
+  createOrReuseImageAsset,
   loadStoredImageDimensions,
   resolveImageSource,
   useResolvedImageAssets,
-  type ImageAssetDoc,
   type ResolvedImageAsset,
 } from '../model/assets'
 import type { Board, CameraState, Card, GameObject, Id, Pool, RoomDoc, SpriteSpec, Transform2D } from '../model/types'
@@ -332,6 +330,7 @@ function ImageSourceInput({
   value,
   disabled,
   placeholder,
+  existingAssetUrls,
   imageAssets,
   onChange,
 }: {
@@ -339,10 +338,10 @@ function ImageSourceInput({
   value: string
   disabled: boolean
   placeholder: string
+  existingAssetUrls: Array<string | undefined>
   imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>
   onChange: (next: string) => void
 }) {
-  const repo = useRepo()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const dragDepthRef = useRef(0)
   const [uploadError, setUploadError] = useState('')
@@ -377,9 +376,8 @@ function ImageSourceInput({
 
     setIsUploading(true)
     try {
-      const assetDoc = await buildImageAssetDoc(file)
-      const assetHandle = repo.create<ImageAssetDoc>(assetDoc)
-      onChange(assetHandle.url)
+      const { url } = await createOrReuseImageAsset(file, existingAssetUrls)
+      onChange(url)
       setUploadError('')
     } catch {
       setUploadError('Could not import that image into the room.')
@@ -626,12 +624,14 @@ function SpriteEditor({
   label,
   value,
   disabled,
+  existingAssetUrls,
   imageAssets,
   onChange,
 }: {
   label: string
   value: SpriteSpec
   disabled: boolean
+  existingAssetUrls: Array<string | undefined>
   imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>
   onChange: (next: SpriteSpec) => void
 }) {
@@ -661,6 +661,7 @@ function SpriteEditor({
             value={value.url ?? ''}
             disabled={disabled}
             placeholder="https://example.com/card.png"
+            existingAssetUrls={existingAssetUrls}
             imageAssets={imageAssets}
             onChange={(url) =>
               onChange({
@@ -1029,7 +1030,6 @@ export function RoomScreen({ roomUrl }: { roomUrl: AutomergeUrl }) {
 function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   const [room, changeRoom] = useDocument<RoomDoc>(roomUrl, { suspense: true })
   const roomHandle = useDocHandle<RoomDoc>(roomUrl, { suspense: true })
-  const repo = useRepo()
   const [selectedId, setSelectedId] = useState<string>()
   const [selectionMode, setSelectionMode] = useState<SelectionMode>('normal')
   const [groupSelectionIds, setGroupSelectionIds] = useState<string[]>([])
@@ -1872,12 +1872,13 @@ function createBoardHere() {
 
     try {
       const createdBoardIds: string[] = []
+      const reusableAssetUrls = [...imageAssetUrls]
 
       for (const [index, file] of files.entries()) {
-        const assetDoc = await buildImageAssetDoc(file)
-        const assetHandle = repo.create<ImageAssetDoc>(assetDoc)
+        const { url } = await createOrReuseImageAsset(file, reusableAssetUrls)
+        reusableAssetUrls.push(url)
         const createdBoardId = await createBoardFromImageSource({
-          faceUrl: assetHandle.url,
+          faceUrl: url,
           name: boardNameFromImageFile(file),
           transform: {
             x: point.x + index * 36,
@@ -2458,6 +2459,7 @@ function createBoardHere() {
                     label="Face"
                     value={selectedObject.face}
                     disabled={!canEdit}
+                    existingAssetUrls={imageAssetUrls}
                     imageAssets={resolvedImageAssets}
                     onChange={(next) =>
                       mutate((draft) => {
@@ -2469,6 +2471,7 @@ function createBoardHere() {
                     label="Back"
                     value={selectedObject.back}
                     disabled={!canEdit}
+                    existingAssetUrls={imageAssetUrls}
                     imageAssets={resolvedImageAssets}
                     onChange={(next) =>
                       mutate((draft) => {
@@ -2559,6 +2562,7 @@ function createBoardHere() {
                     label="Face"
                     value={selectedObject.face}
                     disabled={!canEdit}
+                    existingAssetUrls={imageAssetUrls}
                     imageAssets={resolvedImageAssets}
                     onChange={(next) =>
                       mutate((draft) => {
@@ -2573,6 +2577,7 @@ function createBoardHere() {
                     label="Back"
                     value={selectedObject.back}
                     disabled={!canEdit}
+                    existingAssetUrls={imageAssetUrls}
                     imageAssets={resolvedImageAssets}
                     onChange={(next) =>
                       mutate((draft) => {
@@ -2653,6 +2658,7 @@ function createBoardHere() {
                     label="Face"
                     value={selectedObject.face}
                     disabled={!canEdit}
+                    existingAssetUrls={imageAssetUrls}
                     imageAssets={resolvedImageAssets}
                     onChange={(next) =>
                       mutate((draft) => {
@@ -2667,6 +2673,7 @@ function createBoardHere() {
                     label="Back"
                     value={selectedObject.back}
                     disabled={!canEdit}
+                    existingAssetUrls={imageAssetUrls}
                     imageAssets={resolvedImageAssets}
                     onChange={(next) =>
                       mutate((draft) => {
@@ -2867,6 +2874,7 @@ function createBoardHere() {
                     value={boardDraft.faceUrl}
                     disabled={!canEdit}
                     placeholder="https://example.com/board.png"
+                    existingAssetUrls={imageAssetUrls}
                     imageAssets={resolvedImageAssets}
                     onChange={(faceUrl) =>
                       setBoardDraft((current) => ({
@@ -2881,6 +2889,7 @@ function createBoardHere() {
                     value={boardDraft.backUrl}
                     disabled={!canEdit}
                     placeholder="Optional"
+                    existingAssetUrls={imageAssetUrls}
                     imageAssets={resolvedImageAssets}
                     onChange={(backUrl) =>
                       setBoardDraft((current) => ({
@@ -2926,6 +2935,7 @@ function createBoardHere() {
                     value={sheetDeckDraft.faceUrl}
                     disabled={!canEdit}
                     placeholder="https://example.com/cards.png"
+                    existingAssetUrls={imageAssetUrls}
                     imageAssets={resolvedImageAssets}
                     onChange={(faceUrl) =>
                       setSheetDeckDraft((current) => ({
@@ -2989,6 +2999,7 @@ function createBoardHere() {
                     value={sheetDeckDraft.backUrl}
                     disabled={!canEdit}
                     placeholder="Optional"
+                    existingAssetUrls={imageAssetUrls}
                     imageAssets={resolvedImageAssets}
                     onChange={(backUrl) =>
                       setSheetDeckDraft((current) => ({
