@@ -109,6 +109,11 @@ interface QuickAction {
   text?: string
 }
 
+interface PrewarmProgress {
+  completed: number
+  total: number
+}
+
 type EphemeralTransformMap = Partial<Record<Id, Transform2D>>
 
 const FULL_CROP = { x: 0, y: 0, width: 1, height: 1 } as const
@@ -2193,6 +2198,7 @@ export function BoardView({
   const prewarmPauseUntilRef = useRef(
     typeof performance === 'undefined' ? 0 : performance.now() + PREPARED_SPRITE_PREWARM_INITIAL_DELAY_MS,
   )
+  const completedPrewarmTaskKeysRef = useRef(new Set<string>())
   const hasActiveAlphaSelectionRef = useRef(false)
   const hasQuickActionsRef = useRef(false)
   const selectedWorldObjectRef = useRef<{ transform: Transform2D; worldSize: Size } | undefined>(undefined)
@@ -2215,6 +2221,7 @@ export function BoardView({
   const [hoverDropTargetId, setHoverDropTargetId] = useState<Id | undefined>()
   const [lassoPath, setLassoPath] = useState<Point[]>([])
   const [isImageDropTarget, setIsImageDropTarget] = useState(false)
+  const [prewarmProgress, setPrewarmProgress] = useState<PrewarmProgress | null>(null)
   const constrainedEffects = useMemo(() => isLikelyMobileSafari(), [])
 
   roomRef.current = room
@@ -2715,9 +2722,9 @@ export function BoardView({
     })
 
     const seenTaskKeys = new Set<string>()
-    const queue = tasks.filter(({ spec, size }) => {
+    const queue = tasks.flatMap(({ spec, size }) => {
       if (spec.kind !== 'image-url' || !spec.url) {
-        return false
+        return []
       }
 
       const crop = normalizeCrop(spec.crop)
@@ -2732,59 +2739,99 @@ export function BoardView({
         crop.height.toFixed(4),
       ].join('|')
       if (seenTaskKeys.has(taskKey)) {
-        return false
+        return []
       }
 
       seenTaskKeys.add(taskKey)
-      return true
+      return [{ spec, size, taskKey }]
     })
+
+    if (queue.length === 0) {
+      setPrewarmProgress(null)
+      return
+    }
+
+    const completedTaskCount = queue.reduce(
+      (count, task) => count + (completedPrewarmTaskKeysRef.current.has(task.taskKey) ? 1 : 0),
+      0,
+    )
+    const pendingQueue = queue.filter((task) => !completedPrewarmTaskKeysRef.current.has(task.taskKey))
+
+    if (pendingQueue.length === 0) {
+      setPrewarmProgress(null)
+      return
+    }
 
     let cancelled = false
     let idleCallbackId: number | undefined
     let timeoutId: ReturnType<typeof globalThis.setTimeout> | undefined
     let nextTaskIndex = 0
+    setPrewarmProgress({ completed: completedTaskCount, total: queue.length })
+
+    const markTaskComplete = (taskKey: string) => {
+      if (cancelled) {
+        return
+      }
+
+      completedPrewarmTaskKeysRef.current.add(taskKey)
+      setPrewarmProgress((current) => {
+        if (!current) {
+          return current
+        }
+
+        const completed = Math.min(current.total, current.completed + 1)
+        return completed >= current.total ? null : { completed, total: current.total }
+      })
+    }
 
     const runNextTask = async () => {
-      const task = queue[nextTaskIndex]
+      const task = pendingQueue[nextTaskIndex]
       nextTaskIndex += 1
-      if (!task || task.spec.kind !== 'image-url' || !task.spec.url) {
-        return
-      }
 
-      const source = resolveImageSource(task.spec.url, imageAssets)
-      const imageUrl = source?.renderUrl
-      if (!imageUrl) {
-        return
-      }
+      try {
+        if (!task || task.spec.kind !== 'image-url' || !task.spec.url) {
+          return
+        }
 
-      const image = await loadSourceImageElement(imageUrl).catch(() => undefined)
-      if (!image || cancelled) {
-        return
-      }
+        const source = resolveImageSource(task.spec.url, imageAssets)
+        const imageUrl = source?.renderUrl
+        if (!imageUrl) {
+          return
+        }
 
-      const intrinsicSize =
-        source?.asset?.width && source.asset.height
-          ? {
-            width: source.asset.width,
-            height: source.asset.height,
-          }
-          : {
-            width: image.naturalWidth,
-            height: image.naturalHeight,
-          }
-      const crop = normalizeCrop(task.spec.crop)
-      const { fitWidth, fitHeight } = computeSurfaceFit(crop, task.size, intrinsicSize, task.spec.fit ?? 'cover')
-      await requestPreparedSpriteSurface(
-        imageUrl,
-        crop,
-        task.size.width * fitWidth,
-        task.size.height * fitHeight,
-        intrinsicSize,
-      )
+        const image = await loadSourceImageElement(imageUrl).catch(() => undefined)
+        if (!image || cancelled) {
+          return
+        }
+
+        const intrinsicSize =
+          source?.asset?.width && source.asset.height
+            ? {
+              width: source.asset.width,
+              height: source.asset.height,
+            }
+            : {
+              width: image.naturalWidth,
+              height: image.naturalHeight,
+            }
+        const crop = normalizeCrop(task.spec.crop)
+        const { fitWidth, fitHeight } = computeSurfaceFit(crop, task.size, intrinsicSize, task.spec.fit ?? 'cover')
+        await requestPreparedSpriteSurface(
+          imageUrl,
+          crop,
+          task.size.width * fitWidth,
+          task.size.height * fitHeight,
+          intrinsicSize,
+        )
+      } finally {
+        if (task) {
+          markTaskComplete(task.taskKey)
+        }
+      }
     }
 
     const scheduleNextTask = (delayMs = 0) => {
-      if (cancelled || nextTaskIndex >= queue.length) {
+      if (cancelled || nextTaskIndex >= pendingQueue.length) {
         return
       }
 
@@ -2845,6 +2892,10 @@ export function BoardView({
       }
     }
   }, [constrainedEffects, currentPlayerId, imageAssets, room.objects])
+
+  const prewarmPercent = prewarmProgress
+    ? Math.round((prewarmProgress.completed / prewarmProgress.total) * 100)
+    : undefined
 
   useEffect(() => {
     const host = hostRef.current
@@ -3892,6 +3943,7 @@ export function BoardView({
     room,
     selectionMode,
     stopCameraMomentum,
+    viewportSize,
   ])
 
   function resetDropTarget() {
@@ -4096,6 +4148,11 @@ export function BoardView({
       ) : null}
       {dropImageError ? (
         <div className="board-drop-error" role="status">{dropImageError}</div>
+      ) : null}
+      {prewarmPercent !== undefined ? (
+        <div aria-hidden="true" className="board-asset-progress">
+          {prewarmPercent}%
+        </div>
       ) : null}
       {lassoPath.length > 1 ? (
         <svg
