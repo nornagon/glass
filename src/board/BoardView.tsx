@@ -2,7 +2,7 @@ import type { AutomergeUrl } from '@automerge/react'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { resolveImageSource, type ResolvedImageAsset } from '../model/assets'
 import { BOARD_WORLD_SIZE, DEFAULT_CARD_SIZE, type CameraState, type Id, type RoomDoc, type SpriteSpec, type Transform2D } from '../model/types'
-import { canSeeCardFace, getRootPlane, getTransform, isBoard, isBoardFaceUp, isCard, isDeck, isGroupSelectableObject } from '../model/room'
+import { canSeeCardFace, getPoolDisplaySize, getPoolTokenSize, getRootPlane, getTransform, isBoard, isBoardFaceUp, isCard, isDeck, isGroupSelectableObject, isPool, isPoolFaceUp } from '../model/room'
 import { releasePanVelocity } from './panMomentum'
 import {
   bindBoardInputRecorder,
@@ -34,9 +34,12 @@ interface BoardViewProps {
   onClearPreviewTransform: (id: Id, finalTransform?: Transform2D) => void
   onDropObjectOntoObject: (objectId: Id, targetId: Id) => void
   onBringObjectToFront: (objectId: Id) => void
+  onInstantiateBoardFromPool: (poolId: Id, transform: Transform2D) => Id | undefined
+  onDeleteObject: (objectId: Id) => void
   onLiftTopCardFromDeck: (deckId: Id) => Id | undefined
   onFlipCard: (cardId: Id) => void
   onFlipBoard: (boardId: Id) => void
+  onFlipPool: (poolId: Id) => void
   onFlipDeck: (deckId: Id) => void
   onDrawDeck: (deckId: Id) => void
   onDropImageFileAt: (files: File[], point: { x: number; y: number }) => void
@@ -63,6 +66,8 @@ interface DragState {
   currentPoint: Point
   moved: boolean
   raisedToFront: boolean
+  spawnedFromPool?: boolean
+  selectOnMove?: boolean
   groupMembers?: Array<{ id: Id; startTransform: Transform2D }>
 }
 
@@ -138,6 +143,20 @@ const preparedSpriteSurfaceUrlCache = new Map<string, string | null>()
 const preparedSpriteSurfaceRequestCache = new Map<string, Promise<string | null>>()
 const opaqueRegionBoundsCache = new Map<string, { x: number; y: number; width: number; height: number } | null>()
 const opaqueRegionRequestCache = new Map<string, Promise<{ x: number; y: number; width: number; height: number } | null>>()
+
+function hashString(value: string) {
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return hash >>> 0
+}
+
+function seededUnit(seed: number) {
+  const value = Math.sin(seed * 12.9898 + seed * seed * 0.00037) * 43758.5453
+  return value - Math.floor(value)
+}
 
 function computeSurfaceFit(
   crop: ReturnType<typeof normalizeCrop>,
@@ -330,7 +349,7 @@ function clientToLocal(root: HTMLDivElement | null, clientX: number, clientY: nu
 
 function isMovableObjectType(room: RoomDoc, objectId: Id) {
   const object = room.objects[objectId]
-  return Boolean(isCard(object) || isDeck(object) || isBoard(object))
+  return Boolean(isCard(object) || isDeck(object) || isBoard(object) || isPool(object))
 }
 
 function isMultiselectObjectType(room: RoomDoc, objectId: Id) {
@@ -341,6 +360,9 @@ function objectDimensions(room: RoomDoc, objectId: Id) {
   const object = room.objects[objectId]
   if (isCard(object) || isBoard(object)) {
     return object.size
+  }
+  if (isPool(object)) {
+    return getPoolDisplaySize(object)
   }
   if (isDeck(object)) {
     if (object.size?.width && object.size?.height) {
@@ -417,6 +439,10 @@ function findDropTargetAtPoint(
     }
 
     if (isDeck(draggedObject) && (isDeck(object) || isCard(object))) {
+      return objectId
+    }
+
+    if (isBoard(draggedObject) && isPool(object) && draggedObject.name === object.name) {
       return objectId
     }
   }
@@ -1685,6 +1711,94 @@ function DeckObject({ deckId, room, currentPlayerId, imageAssets, size }: DeckOb
   )
 }
 
+interface PoolObjectProps {
+  poolId: Id
+  room: RoomDoc
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>
+  interactive: boolean
+  onInstantiate: (event: ReactPointerEvent<HTMLDivElement>, poolId: Id) => void
+}
+
+function PoolObject({ poolId, room, imageAssets, interactive, onInstantiate }: PoolObjectProps) {
+  const pool = room.objects[poolId]
+  if (!isPool(pool)) {
+    return null
+  }
+
+  const visibleSpec = isPoolFaceUp(pool) ? pool.face : pool.back
+  const tokenSize = getPoolTokenSize(pool)
+  const clusterCenterX = 50
+  const ringCenterY = 48
+  const frontTokenY = 50
+  const ringStartAngle = seededUnit(hashString(`${poolId}:ring-angle`)) * Math.PI * 2
+  const decorativeCopies = [
+    (() => {
+      const seed = hashString(`${poolId}:center`)
+      return {
+        key: `${poolId}:center`,
+        x: clusterCenterX,
+        y: frontTokenY,
+        rotation: (seededUnit(seed + 3) - 0.5) * 0.35,
+        zIndex: 1000,
+      }
+    })(),
+    ...Array.from({ length: 6 }, (_, index) => {
+      const seed = hashString(`${poolId}:ring:${index}`)
+      const stackSeed = hashString(`${poolId}:ring-stack:${index}`)
+      const angle = ringStartAngle + index * (Math.PI / 3)
+      const radiusX = 18
+      const radiusY = 15
+      const jitterX = (seededUnit(seed + 1) - 0.5) * 2.8
+      const jitterY = (seededUnit(seed + 2) - 0.5) * 2.4
+      const x = clusterCenterX + Math.cos(angle) * radiusX + jitterX
+      const y = ringCenterY + Math.sin(angle) * radiusY + jitterY
+      const rotation = (seededUnit(seed + 3) - 0.5) * 0.4
+      return {
+        key: `${poolId}:ring:${index}`,
+        x,
+        y,
+        rotation,
+        zIndex: 200 + Math.round(seededUnit(stackSeed) * 100),
+      }
+    }),
+  ]
+
+  return (
+    <div className="board-pool-shell">
+      <div className="board-pool-outline" />
+      <div className="board-pool-copy-cloud">
+        {decorativeCopies.map((copy) => (
+          <div
+            key={copy.key}
+            className="board-pool-copy"
+            data-board-ui="pool-copy"
+            onPointerDown={interactive ? (event) => onInstantiate(event, poolId) : undefined}
+            style={{
+              left: `${copy.x}%`,
+              top: `${copy.y}%`,
+              width: `${tokenSize.width}px`,
+              height: `${tokenSize.height}px`,
+              transform: `translate3d(-50%, -50%, 0) rotate(${copy.rotation}rad)`,
+              zIndex: copy.zIndex,
+            }}
+          >
+            <BoardSurface
+              spec={visibleSpec}
+              fallbackLabel={pool.name}
+              size={{
+                width: tokenSize.width,
+                height: tokenSize.height,
+              }}
+              imageAssets={imageAssets}
+              rounded={false}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 interface BoardObjectContentProps {
   objectId: Id
   room: RoomDoc
@@ -1692,6 +1806,8 @@ interface BoardObjectContentProps {
   imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>
   size: Size
   constrainedEffects: boolean
+  canInstantiatePool: boolean
+  onInstantiatePoolBoard: (event: ReactPointerEvent<HTMLDivElement>, poolId: Id) => void
 }
 
 function BoardObjectContent({
@@ -1701,6 +1817,8 @@ function BoardObjectContent({
   imageAssets,
   size,
   constrainedEffects,
+  canInstantiatePool,
+  onInstantiatePoolBoard,
 }: BoardObjectContentProps) {
   const object = room.objects[objectId]
   if (isCard(object)) {
@@ -1740,6 +1858,18 @@ function BoardObjectContent({
     )
   }
 
+  if (isPool(object)) {
+    return (
+      <PoolObject
+        poolId={objectId}
+        room={room}
+        imageAssets={imageAssets}
+        interactive={canInstantiatePool}
+        onInstantiate={onInstantiatePoolBoard}
+      />
+    )
+  }
+
   return null
 }
 
@@ -1754,6 +1884,9 @@ const MemoBoardObjectContent = memo(BoardObjectContent, (prevProps, nextProps) =
     return false
   }
   if (prevProps.constrainedEffects !== nextProps.constrainedEffects) {
+    return false
+  }
+  if (prevProps.canInstantiatePool !== nextProps.canInstantiatePool) {
     return false
   }
   if (
@@ -1991,9 +2124,12 @@ export function BoardView({
   onClearPreviewTransform,
   onDropObjectOntoObject,
   onBringObjectToFront,
+  onInstantiateBoardFromPool,
+  onDeleteObject,
   onLiftTopCardFromDeck,
   onFlipCard,
   onFlipBoard,
+  onFlipPool,
   onFlipDeck: _onFlipDeck,
   onDrawDeck: _onDrawDeck,
   onDropImageFileAt,
@@ -2349,6 +2485,7 @@ export function BoardView({
     mode: DragState['mode'],
     startPoint: Point,
     startTransform: Transform2D,
+    options?: Pick<DragState, 'spawnedFromPool' | 'selectOnMove'>,
     groupMembers?: DragState['groupMembers'],
   ) => {
     tapCandidateRef.current = null
@@ -2362,6 +2499,8 @@ export function BoardView({
       currentPoint: startPoint,
       moved: false,
       raisedToFront: false,
+      spawnedFromPool: options?.spawnedFromPool,
+      selectOnMove: options?.selectOnMove,
       groupMembers,
     }
   }, [viewportSize])
@@ -2466,6 +2605,19 @@ export function BoardView({
         return [
           { spec: object.face, size: object.size },
           { spec: object.back, size: object.size },
+        ]
+      }
+
+      if (isPool(object)) {
+        const visibleSpec = isPoolFaceUp(object) ? object.face : object.back
+        const displaySize = getPoolDisplaySize(object)
+        if (constrainedEffects) {
+          return [{ spec: visibleSpec, size: displaySize }]
+        }
+
+        return [
+          { spec: object.face, size: displaySize },
+          { spec: object.back, size: displaySize },
         ]
       }
 
@@ -2728,6 +2880,7 @@ export function BoardView({
             'move',
             tapCandidate.startPoint,
             tapCandidate.drag.startTransform,
+            undefined,
             tapCandidate.drag.groupMembers,
           )
         }
@@ -2743,6 +2896,10 @@ export function BoardView({
           worldPoint.y - activeDrag.startPointer.y,
         )
         activeDrag.moved ||= distance > 8
+        if (activeDrag.moved && activeDrag.selectOnMove) {
+          activeDrag.selectOnMove = false
+          onSelect(activeDrag.id)
+        }
 
         if (
           activeDrag.mode === 'move' &&
@@ -2789,7 +2946,7 @@ export function BoardView({
 
             const draggingObject = roomRef.current.objects[activeDrag.id]
             const nextHoverDropTargetId =
-              draggingObject && (draggingObject.type === 'card' || draggingObject.type === 'deck')
+              draggingObject && (draggingObject.type === 'card' || draggingObject.type === 'deck' || draggingObject.type === 'board')
                 ? findDropTargetAtPoint(
                     roomRef.current,
                     { x: nextTransform.x, y: nextTransform.y },
@@ -2952,6 +3109,13 @@ export function BoardView({
 
         const nextPreviewTransforms = previewTransformsRef.current
         if (activeDrag.mode === 'move') {
+          if (activeDrag.spawnedFromPool && !activeDrag.moved) {
+            onClearPreviewTransform(activeDrag.id)
+            replacePreviewTransforms({})
+            onDeleteObject(activeDrag.id)
+            return
+          }
+
           if (activeDrag.groupMembers && activeDrag.groupMembers.length > 0) {
             for (const member of activeDrag.groupMembers) {
               const finalTransform = nextPreviewTransforms[member.id]
@@ -2974,7 +3138,7 @@ export function BoardView({
           const worldPoint = screenToLogical(viewportSize, cameraRef.current, localPoint)
           const object = roomRef.current.objects[activeDrag.id]
           const targetId =
-            object && (object.type === 'card' || object.type === 'deck')
+            object && (object.type === 'card' || object.type === 'deck' || object.type === 'board')
               ? findDropTargetAtPoint(
                   roomRef.current,
                   worldPoint,
@@ -3054,7 +3218,10 @@ export function BoardView({
         const drag = dragRef.current
         dragRef.current = null
         setHoverDropTargetId(undefined)
-        if (drag.groupMembers && drag.groupMembers.length > 0) {
+        if (drag.spawnedFromPool && !drag.moved) {
+          onClearPreviewTransform(drag.id)
+          onDeleteObject(drag.id)
+        } else if (drag.groupMembers && drag.groupMembers.length > 0) {
           for (const member of drag.groupMembers) {
             onClearPreviewTransform(member.id)
           }
@@ -3098,6 +3265,7 @@ export function BoardView({
     onBringObjectToFront,
     onClearPreviewTransform,
     onCommitTransform,
+    onDeleteObject,
     onDropObjectOntoObject,
     onLiftTopCardFromDeck,
     onPreviewTransform,
@@ -3168,8 +3336,15 @@ export function BoardView({
       ]
     }
 
+    if (object.type === 'pool') {
+      return [
+        { id: 'flip', label: 'Flip', icon: 'flip', onClick: () => onFlipPool(object.id) },
+        { id: 'more', label: 'More actions', icon: 'more', onClick: onOpenSelectionPanel },
+      ]
+    }
+
     return []
-  }, [canEdit, onFlipBoard, onFlipCard, onOpenSelectionPanel, onShuffleDeck, room.objects, selectedId, selectionMode])
+  }, [canEdit, onFlipBoard, onFlipCard, onFlipPool, onOpenSelectionPanel, onShuffleDeck, room.objects, selectedId, selectionMode])
   hasQuickActionsRef.current = quickActions.length > 0
 
   const root = getRootPlane(room)
@@ -3205,10 +3380,12 @@ export function BoardView({
     const candidateIds = selectionMode === 'group' ? selectedIds : selectedId ? [selectedId] : []
     return candidateIds.some((objectId) => {
       const object = room.objects[objectId]
-      if (!isBoard(object)) {
+      if (!isBoard(object) && !isPool(object)) {
         return false
       }
-      const spec = isBoardFaceUp(object) ? object.face : object.back
+      const spec = isBoard(object)
+        ? (isBoardFaceUp(object) ? object.face : object.back)
+        : (isPoolFaceUp(object) ? object.face : object.back)
       return spec.kind === 'image-url' && (spec.bg === undefined || spec.bg === 'transparent')
     })
   }, [room, selectedId, selectedIds, selectionMode])
@@ -3429,6 +3606,29 @@ export function BoardView({
         startPoint: localPoint,
         drag: groupMembers ? { startTransform: { ...currentTransform }, groupMembers } : undefined,
       }
+
+      if (!isSelected) {
+        return
+      }
+
+      if (!canEdit || !isMovableObjectType(room, objectId)) {
+        return
+      }
+
+      startDrag(
+        objectId,
+        event.pointerId,
+        'move',
+        localPoint,
+        currentTransform,
+        undefined,
+        selectedIds
+          .map((memberId) => {
+            const memberTransform = currentTransformForObject(memberId)
+            return memberTransform ? { id: memberId, startTransform: { ...memberTransform } } : undefined
+          })
+          .filter((member): member is { id: Id; startTransform: Transform2D } => Boolean(member)),
+      )
       return
     }
 
@@ -3526,6 +3726,53 @@ export function BoardView({
     startDrag(objectId, event.pointerId, 'rotate', localPoint, currentTransform)
   }, [currentTransformForObject, markPrewarmInteraction, resetPointerPanState, startDrag, stopCameraMomentum])
 
+  const handlePoolInstantiatePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>, poolId: Id) => {
+    if (!canEdit || selectionMode !== 'normal') {
+      return
+    }
+
+    event.stopPropagation()
+
+    const localPoint = clientToLocal(rootRef.current, event.clientX, event.clientY)
+    if (!localPoint) {
+      return
+    }
+
+    if (event.pointerType === 'touch') {
+      event.preventDefault()
+    }
+
+    markPrewarmInteraction()
+    stopCameraMomentum()
+    resetPointerPanState()
+    clearPendingDeckPress()
+    const worldPoint = screenToLogical(viewportSize, cameraRef.current, localPoint)
+    const startTransform = {
+      x: worldPoint.x,
+      y: worldPoint.y,
+      rotation: 0,
+    }
+    const createdId = onInstantiateBoardFromPool(poolId, startTransform)
+    if (!createdId) {
+      return
+    }
+
+    startDrag(createdId, event.pointerId, 'move', localPoint, startTransform, {
+      spawnedFromPool: true,
+      selectOnMove: true,
+    })
+  }, [
+    canEdit,
+    clearPendingDeckPress,
+    markPrewarmInteraction,
+    onInstantiateBoardFromPool,
+    resetPointerPanState,
+    selectionMode,
+    startDrag,
+    stopCameraMomentum,
+    viewportSize,
+  ])
+
   function resetDropTarget() {
     dropDepthRef.current = 0
     setIsImageDropTarget(false)
@@ -3607,13 +3854,17 @@ export function BoardView({
             : selectionMode === 'group' && selectedId === objectId
               ? '#ffd78a'
               : '#ffcb72'
-        const boardSelectionSpec = isBoard(object) ? (isBoardFaceUp(object) ? object.face : object.back) : undefined
+        const boardSelectionSpec =
+          isBoard(object)
+            ? (isBoardFaceUp(object) ? object.face : object.back)
+            : undefined
         const usesAlphaBoardSelection = Boolean(
           boardSelectionSpec &&
           boardSelectionSpec.kind === 'image-url' &&
           (boardSelectionSpec.bg === undefined || boardSelectionSpec.bg === 'transparent'),
         )
         const usesCardOutlineSelection = isCard(object) && selectionStrokeWidth > 0
+        const usesPoolOutlineSelection = isPool(object) && selectionStrokeWidth > 0
         const showsRotateHandle =
           selectionMode === 'normal' && selectedId === objectId && canEdit && !object.locked
         const worldPosition = transform
@@ -3621,7 +3872,7 @@ export function BoardView({
         return (
           <div
             key={objectId}
-            className={`board-object board-object-${object.type}${isDragging ? ' is-dragging' : ''}${usesCardOutlineSelection ? ' has-card-outline-selection' : ''}`}
+            className={`board-object board-object-${object.type}${isDragging ? ' is-dragging' : ''}${usesCardOutlineSelection ? ' has-card-outline-selection' : ''}${usesPoolOutlineSelection ? ' has-pool-outline-selection' : ''}`}
             data-board-object-id={objectId}
             data-board-object-type={object.type}
             style={{
@@ -3659,8 +3910,10 @@ export function BoardView({
               imageAssets={imageAssets}
               size={worldSize}
               constrainedEffects={constrainedEffects}
+              canInstantiatePool={canEdit && selectionMode === 'normal'}
+              onInstantiatePoolBoard={handlePoolInstantiatePointerDown}
             />
-            {selectionStrokeWidth > 0 && !usesCardOutlineSelection && (!boardSelectionSpec || !usesAlphaBoardSelection) ? (
+            {selectionStrokeWidth > 0 && !usesCardOutlineSelection && !usesPoolOutlineSelection && (!boardSelectionSpec || !usesAlphaBoardSelection) ? (
               <div
                 className={`board-object-selection ${object.type === 'board' ? 'is-square' : 'is-rounded'}`}
               />
@@ -3683,6 +3936,7 @@ export function BoardView({
       currentPlayerId,
       constrainedEffects,
       handleObjectPointerDown,
+      handlePoolInstantiatePointerDown,
       handleRotatePointerDown,
       hoverDropTargetId,
       imageAssets,

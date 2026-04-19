@@ -22,7 +22,10 @@ import {
   addCardToDeck,
   bringObjectToFront,
   bringObjectsForward,
+  canReturnBoardToPool,
+  convertBoardToPool,
   canSeeCardFace,
+  createBoardFromPool,
   createBoardOnPlane,
   createCardOnPlane,
   createDeckOnPlane,
@@ -32,6 +35,7 @@ import {
   drawFromDeck,
   flipBoard,
   flipDeck,
+  flipPool,
   duplicateObject,
   flipCard,
   formatRoomTitle,
@@ -40,9 +44,11 @@ import {
   isCard,
   isDeck,
   isGroupSelectableObject,
+  isPool,
   liftTopCardFromDeck,
   mergeDeckIntoDeck,
   renameOrAddPlayer,
+  returnBoardToPool,
   sendObjectBackward,
   sendObjectsBackward,
   setTurnPlayer,
@@ -60,7 +66,7 @@ import {
   type ImageAssetDoc,
   type ResolvedImageAsset,
 } from '../model/assets'
-import type { Board, CameraState, Card, GameObject, Id, RoomDoc, SpriteSpec, Transform2D } from '../model/types'
+import type { Board, CameraState, Card, GameObject, Id, Pool, RoomDoc, SpriteSpec, Transform2D } from '../model/types'
 import { DEFAULT_BOARD_SIZE, DEFAULT_CARD_SIZE } from '../model/types'
 import {
   boardSizeFromHeight,
@@ -220,7 +226,7 @@ async function resolveSpriteAspectRatio(
 }
 
 async function resolveBoardResizeAspectRatio(
-  board: Board,
+  board: Board | Pool,
   imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
 ) {
   const faceAspect = await resolveSpriteAspectRatio(board.face, imageAssets).catch(() => undefined)
@@ -1566,7 +1572,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     setIsAddMenuOpen(false)
   }
 
-  function createBoardHere() {
+function createBoardHere() {
     const offset = spawnCountRef.current++
     let createdBoardId: string | undefined
     mutate((draft) => {
@@ -1873,6 +1879,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
           onDropObjectOntoObject={(objectId, targetId) => {
             const droppedObject = room.objects[objectId]
             const targetObject = room.objects[targetId]
+            const shouldReturnBoardToPool = canReturnBoardToPool(room, objectId, targetId)
             mutate((draft) => {
               if (droppedObject?.type === 'card' && targetObject?.type === 'deck') {
                 addCardToDeck(draft, objectId, targetId)
@@ -1884,12 +1891,34 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
               }
               if (droppedObject?.type === 'deck' && targetObject?.type === 'card') {
                 addCardToDeck(draft, targetId, objectId, 0)
+                return
+              }
+              if (droppedObject?.type === 'board' && targetObject?.type === 'pool') {
+                returnBoardToPool(draft, objectId, targetId)
               }
             })
             if (droppedObject?.type === 'deck' && targetObject?.type === 'deck' && selectedId === objectId) {
               updateSelection(targetId)
             }
+            if (shouldReturnBoardToPool && selectedId === objectId) {
+              updateSelection(targetId)
+            }
           }}
+          onInstantiateBoardFromPool={(poolId, transform) => {
+            let createdBoardId: string | undefined
+            mutate((draft) => {
+              createdBoardId = createBoardFromPool(draft, poolId, transform)
+            })
+            return createdBoardId
+          }}
+          onDeleteObject={(objectId) =>
+            mutate((draft) => {
+              deleteObject(draft, objectId)
+              if (selectedId === objectId) {
+                updateSelection(undefined)
+              }
+            })
+          }
           onLiftTopCardFromDeck={(deckId) => {
             let liftedCardId: string | undefined
             mutate((draft) => {
@@ -1908,6 +1937,11 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
           onFlipBoard={(boardId) =>
             mutate((draft) => {
               flipBoard(draft, boardId)
+            })
+          }
+          onFlipPool={(poolId) =>
+            mutate((draft) => {
+              flipPool(draft, poolId)
             })
           }
           onFlipDeck={(deckId) =>
@@ -2291,6 +2325,19 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                     <button disabled={!canEdit} onClick={() => mutate((draft) => flipBoard(draft, selectedObject.id))}>
                       {selectedObject.meta.faceUp === false ? 'Show Face' : 'Show Back'}
                     </button>
+                    <button
+                      disabled={!canEdit}
+                      onClick={() =>
+                        mutate((draft) => {
+                          const poolId = convertBoardToPool(draft, selectedObject.id)
+                          if (poolId) {
+                            updateSelection(poolId)
+                          }
+                        })
+                      }
+                    >
+                      Create Pool
+                    </button>
                   </div>
 
                   <BoardSizeEditor
@@ -2352,6 +2399,80 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                         const board = draft.objects[selectedObject.id]
                         if (isBoard(board)) {
                           board.back = next
+                        }
+                      })
+                    }
+                  />
+                </>
+              ) : null}
+
+              {isPool(selectedObject) ? (
+                <>
+                  <div className="button-row">
+                    <button disabled={!canEdit} onClick={() => mutate((draft) => flipPool(draft, selectedObject.id))}>
+                      {selectedObject.meta.faceUp === false ? 'Show Face' : 'Show Back'}
+                    </button>
+                  </div>
+
+                  <BoardSizeEditor
+                    key={selectedObject.id}
+                    width={selectedObject.size.width}
+                    height={selectedObject.size.height}
+                    disabled={!canEdit}
+                    onCommitWidth={async (width) => {
+                      const pool = room.objects[selectedObject.id]
+                      if (!isPool(pool)) {
+                        return
+                      }
+
+                      const aspectRatio = await resolveBoardResizeAspectRatio(pool, resolvedImageAssets)
+                      mutate((draft) => {
+                        const nextPool = draft.objects[selectedObject.id]
+                        if (isPool(nextPool)) {
+                          nextPool.size = boardSizeFromWidth(width, aspectRatio)
+                        }
+                      })
+                    }}
+                    onCommitHeight={async (height) => {
+                      const pool = room.objects[selectedObject.id]
+                      if (!isPool(pool)) {
+                        return
+                      }
+
+                      const aspectRatio = await resolveBoardResizeAspectRatio(pool, resolvedImageAssets)
+                      mutate((draft) => {
+                        const nextPool = draft.objects[selectedObject.id]
+                        if (isPool(nextPool)) {
+                          nextPool.size = boardSizeFromHeight(height, aspectRatio)
+                        }
+                      })
+                    }}
+                  />
+
+                  <SpriteEditor
+                    label="Face"
+                    value={selectedObject.face}
+                    disabled={!canEdit}
+                    imageAssets={resolvedImageAssets}
+                    onChange={(next) =>
+                      mutate((draft) => {
+                        const pool = draft.objects[selectedObject.id]
+                        if (isPool(pool)) {
+                          pool.face = next
+                        }
+                      })
+                    }
+                  />
+                  <SpriteEditor
+                    label="Back"
+                    value={selectedObject.back}
+                    disabled={!canEdit}
+                    imageAssets={resolvedImageAssets}
+                    onChange={(next) =>
+                      mutate((draft) => {
+                        const pool = draft.objects[selectedObject.id]
+                        if (isPool(pool)) {
+                          pool.back = next
                         }
                       })
                     }

@@ -77,7 +77,7 @@ export function collectRoomImageAssetUrls(room: RoomDoc, extraUrls: Array<string
   const candidates = [...extraUrls]
 
   for (const object of Object.values(room.objects)) {
-    if (object.type === 'card' || object.type === 'board') {
+    if (object.type === 'card' || object.type === 'board' || object.type === 'pool') {
       candidates.push(spriteImageUrl(object.face))
       candidates.push(spriteImageUrl(object.back))
     }

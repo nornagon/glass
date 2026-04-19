@@ -592,6 +592,50 @@ textarea {
   filter: drop-shadow(0 1.5px 4px rgba(0, 0, 0, 0.58));
 }
 
+.board-object-pool {
+  filter: none;
+}
+
+.board-pool-shell {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+}
+
+.board-pool-outline {
+  position: absolute;
+  inset: 3%;
+  border-radius: 999px;
+  border: 3px dotted rgba(236, 222, 188, 0.72);
+  background: rgba(255, 248, 231, 0.04);
+}
+
+.board-object-pool.has-pool-outline-selection .board-pool-outline {
+  --pool-selection-outline-width: calc(var(--board-selection-width, 0px) / var(--board-zoom, 1));
+  outline: var(--pool-selection-outline-width) solid var(--board-selection-color, transparent);
+  outline-offset: calc(var(--pool-selection-outline-width) * 0.8);
+  box-shadow:
+    0 0 0 1px rgba(255, 250, 240, 0.08),
+    0 0 22px rgba(255, 203, 114, 0.28);
+}
+
+.board-pool-copy-cloud {
+  position: absolute;
+  inset: 0;
+}
+
+.board-pool-copy {
+  position: absolute;
+  cursor: grab;
+  transform-origin: center center;
+  filter: drop-shadow(0 1.5px 4px rgba(0, 0, 0, 0.58));
+}
+
+.board-pool-copy .board-surface {
+  border: 0;
+  box-shadow: none;
+}
+
 .board-sprite-frame {
   position: absolute;
   inset: 0;

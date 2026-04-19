@@ -1,19 +1,22 @@
 import { describe, expect, it } from 'vitest'
 import type { AutomergeUrl } from '@automerge/react'
-import { createBoardOnPlane, createCardOnPlane, createRoomDoc } from './room'
+import { createBoardOnPlane, createCardOnPlane, createPoolOnPlane, createRoomDoc } from './room'
 import { collectRoomImageAssetUrls, resolveImageSource, type ResolvedImageAsset } from './assets'
 
 const FACE_ASSET_URL = 'automerge:4NMNnkMhL8jXrdJ9jamS58PAVdXu' as AutomergeUrl
 const BACK_ASSET_URL = 'automerge:uKK1dJ4vE3E6r27kz5bsFaCykvM' as AutomergeUrl
+const POOL_ASSET_URL = 'automerge:4MQ2w6yyaaWT1ZfysuJhS6iCmh7t' as AutomergeUrl
 
 describe('image assets', () => {
   it('collects only Automerge-backed image URLs from the room and extra sources', () => {
     const room = createRoomDoc()
     const cardId = createCardOnPlane(room, room.rootId, { x: 0, y: 0, rotation: 0 }, 'Card')
     const boardId = createBoardOnPlane(room, room.rootId, { x: 0, y: 0, rotation: 0 }, 'Board')
+    const poolId = createPoolOnPlane(room, room.rootId, { x: 0, y: 0, rotation: 0 }, 'Board')
 
     expect(room.objects[cardId].type).toBe('card')
     expect(room.objects[boardId].type).toBe('board')
+    expect(room.objects[poolId].type).toBe('pool')
 
     if (room.objects[cardId].type === 'card') {
       room.objects[cardId].face = {
@@ -33,12 +36,19 @@ describe('image assets', () => {
       }
     }
 
+    if (room.objects[poolId].type === 'pool') {
+      room.objects[poolId].back = {
+        kind: 'image-url',
+        url: POOL_ASSET_URL,
+      }
+    }
+
     expect(
       collectRoomImageAssetUrls(room, [
         FACE_ASSET_URL,
         'https://example.com/ignored.png',
       ]),
-    ).toEqual([FACE_ASSET_URL, BACK_ASSET_URL])
+    ).toEqual([FACE_ASSET_URL, BACK_ASSET_URL, POOL_ASSET_URL])
   })
 
   it('resolves stored Automerge image sources to their local render URLs', () => {

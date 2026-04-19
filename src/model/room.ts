@@ -1,4 +1,4 @@
-import type { Board, Card, Deck, GameObject, Id, Plane, PlayerId, RoomDoc, SpriteSpec, Transform2D } from './types'
+import type { Board, Card, Deck, GameObject, Id, Plane, PlayerId, Pool, RoomDoc, SpriteSpec, Transform2D } from './types'
 import { DEFAULT_BOARD_SIZE, DEFAULT_CARD_SIZE } from './types'
 
 const DEFAULT_FACE: SpriteSpec = {
@@ -27,6 +27,66 @@ const DEFAULT_BOARD_BACK: SpriteSpec = {
   label: 'Board Back',
   bg: '#796f5f',
   fg: '#fff6eb',
+}
+
+const DEFAULT_POOL_FACE: SpriteSpec = {
+  kind: 'label',
+  label: 'Board',
+  bg: '#d8d2c1',
+  fg: '#20262b',
+}
+
+const DEFAULT_POOL_BACK: SpriteSpec = {
+  kind: 'label',
+  label: 'Board Back',
+  bg: '#796f5f',
+  fg: '#fff6eb',
+}
+
+function poolContainerSize(tokenSize: { width: number; height: number }) {
+  const tokenMax = Math.max(tokenSize.width, tokenSize.height)
+  const diameter = Math.max(64, Math.round(tokenMax * 2.5))
+  return {
+    width: diameter,
+    height: diameter,
+  }
+}
+
+export function getPoolTokenSize(pool: Pool) {
+  const candidate = (pool as Partial<Pool>).tokenSize
+  if (
+    candidate &&
+    typeof candidate.width === 'number' &&
+    Number.isFinite(candidate.width) &&
+    candidate.width > 0 &&
+    typeof candidate.height === 'number' &&
+    Number.isFinite(candidate.height) &&
+    candidate.height > 0
+  ) {
+    return candidate
+  }
+
+  // Legacy pools stored the token footprint directly in `size`.
+  return pool.size
+}
+
+export function getPoolDisplaySize(pool: Pool) {
+  const candidate = (pool as Partial<Pool>).tokenSize
+  if (
+    candidate &&
+    typeof candidate.width === 'number' &&
+    Number.isFinite(candidate.width) &&
+    candidate.width > 0 &&
+    typeof candidate.height === 'number' &&
+    Number.isFinite(candidate.height) &&
+    candidate.height > 0
+  ) {
+    return pool.size
+  }
+
+  // Legacy pools stored token size in `size`, so render them with a derived
+  // container size even before the document is migrated.
+  return poolContainerSize(pool.size)
 }
 
 function fallbackUuid() {
@@ -107,8 +167,12 @@ export function isBoard(object: GameObject | undefined): object is Board {
   return object?.type === 'board'
 }
 
-export function isGroupSelectableObject(object: GameObject | undefined): object is Card | Deck | Board {
-  return isCard(object) || isDeck(object) || isBoard(object)
+export function isPool(object: GameObject | undefined): object is Pool {
+  return object?.type === 'pool'
+}
+
+export function isGroupSelectableObject(object: GameObject | undefined): object is Card | Deck | Board | Pool {
+  return isCard(object) || isDeck(object) || isBoard(object) || isPool(object)
 }
 
 export function getTransform(room: RoomDoc, id: Id) {
@@ -165,6 +229,46 @@ export function createBoard(name = 'Board'): Board {
     face: { ...DEFAULT_BOARD_FACE, label: name },
     back: { ...DEFAULT_BOARD_BACK },
   }
+}
+
+export function createPool(name = 'Board'): Pool {
+  const tokenSize = { ...DEFAULT_BOARD_SIZE }
+  return {
+    id: createObjectId('pool'),
+    type: 'pool',
+    name,
+    parentId: null,
+    locked: false,
+    meta: {
+      faceUp: true,
+    },
+    size: poolContainerSize(tokenSize),
+    tokenSize,
+    face: { ...DEFAULT_POOL_FACE, label: name },
+    back: { ...DEFAULT_POOL_BACK },
+  }
+}
+
+export function convertBoardToPool(room: RoomDoc, boardId: Id) {
+  const board = room.objects[boardId]
+  if (!isBoard(board)) {
+    return undefined
+  }
+
+  const pool: Pool = {
+    id: board.id,
+    type: 'pool',
+    name: board.name,
+    parentId: board.parentId,
+    locked: board.locked,
+    meta: { ...board.meta },
+    size: poolContainerSize(board.size),
+    tokenSize: { ...board.size },
+    face: cloneSpriteSpec(board.face),
+    back: cloneSpriteSpec(board.back),
+  }
+  room.objects[boardId] = pool
+  return boardId
 }
 
 function setDeckSizeFromCard(deck: Deck, card: Card) {
@@ -312,6 +416,13 @@ export function createBoardOnPlane(room: RoomDoc, planeId: Id, transform: Transf
   room.objects[board.id] = board
   placeObjectOnPlane(room, board.id, planeId, transform)
   return board.id
+}
+
+export function createPoolOnPlane(room: RoomDoc, planeId: Id, transform: Transform2D, name?: string) {
+  const pool = createPool(name)
+  room.objects[pool.id] = pool
+  placeObjectOnPlane(room, pool.id, planeId, transform)
+  return pool.id
 }
 
 interface SpriteSheetOptions {
@@ -548,6 +659,14 @@ export function flipBoard(room: RoomDoc, boardId: Id) {
   board.meta.faceUp = board.meta.faceUp === false
 }
 
+export function flipPool(room: RoomDoc, poolId: Id) {
+  const pool = room.objects[poolId]
+  if (!isPool(pool)) {
+    return
+  }
+  pool.meta.faceUp = pool.meta.faceUp === false
+}
+
 export function isCardFaceUp(card: Card) {
   return card.meta.faceUp !== false
 }
@@ -564,6 +683,65 @@ export function canSeeCardFace(card: Card, playerId?: PlayerId) {
 
 export function isBoardFaceUp(board: Board) {
   return board.meta.faceUp !== false
+}
+
+export function isPoolFaceUp(pool: Pool) {
+  return pool.meta.faceUp !== false
+}
+
+function cloneSpriteSpec(spec: SpriteSpec): SpriteSpec {
+  if (spec.crop) {
+    return {
+      ...spec,
+      crop: { ...spec.crop },
+    }
+  }
+
+  return { ...spec }
+}
+
+export function createBoardFromPool(room: RoomDoc, poolId: Id, transform: Transform2D) {
+  const pool = room.objects[poolId]
+  if (!isPool(pool) || !pool.parentId) {
+    return undefined
+  }
+
+  const parent = room.objects[pool.parentId]
+  if (!isPlane(parent)) {
+    return undefined
+  }
+
+  const tokenSize = getPoolTokenSize(pool)
+  const board: Board = {
+    id: createObjectId('board'),
+    type: 'board',
+    name: pool.name,
+    parentId: null,
+    locked: false,
+    meta: { ...pool.meta },
+    size: { ...tokenSize },
+    face: cloneSpriteSpec(pool.face),
+    back: cloneSpriteSpec(pool.back),
+  }
+
+  room.objects[board.id] = board
+  placeObjectOnPlane(room, board.id, parent.id, transform)
+  return board.id
+}
+
+export function canReturnBoardToPool(room: RoomDoc, boardId: Id, poolId: Id) {
+  const board = room.objects[boardId]
+  const pool = room.objects[poolId]
+  return isBoard(board) && isPool(pool) && board.name === pool.name
+}
+
+export function returnBoardToPool(room: RoomDoc, boardId: Id, poolId: Id) {
+  if (!canReturnBoardToPool(room, boardId, poolId)) {
+    return false
+  }
+
+  deleteObject(room, boardId)
+  return true
 }
 
 export function shuffleDeck(room: RoomDoc, deckId: Id, random = Math.random) {
@@ -650,8 +828,8 @@ function duplicateCard(card: Card): Card {
     name: card.name,
     meta: { ...card.meta },
     size: { ...card.size },
-    face: { ...card.face },
-    back: { ...card.back },
+    face: cloneSpriteSpec(card.face),
+    back: cloneSpriteSpec(card.back),
     visibility: card.visibility === true ? true : [...card.visibility],
     parentId: null,
   }
@@ -664,8 +842,23 @@ function duplicateBoard(board: Board): Board {
     name: board.name,
     meta: { ...board.meta },
     size: { ...board.size },
-    face: { ...board.face },
-    back: { ...board.back },
+    face: cloneSpriteSpec(board.face),
+    back: cloneSpriteSpec(board.back),
+    parentId: null,
+  }
+}
+
+function duplicatePool(pool: Pool): Pool {
+  const tokenSize = getPoolTokenSize(pool)
+  return {
+    ...pool,
+    id: createObjectId('pool'),
+    name: pool.name,
+    meta: { ...pool.meta },
+    size: { ...pool.size },
+    tokenSize: { ...tokenSize },
+    face: cloneSpriteSpec(pool.face),
+    back: cloneSpriteSpec(pool.back),
     parentId: null,
   }
 }
@@ -726,6 +919,20 @@ export function duplicateObject(room: RoomDoc, objectId: Id) {
 
   if (object.type === 'board') {
     const copy = duplicateBoard(object)
+    room.objects[copy.id] = copy
+    const transform = getTransform(room, objectId)
+    if (transform && object.parentId) {
+      placeObjectOnPlane(room, copy.id, object.parentId, {
+        ...transform,
+        x: transform.x + 48,
+        y: transform.y + 48,
+      })
+    }
+    return copy.id
+  }
+
+  if (object.type === 'pool') {
+    const copy = duplicatePool(object)
     room.objects[copy.id] = copy
     const transform = getTransform(room, objectId)
     if (transform && object.parentId) {

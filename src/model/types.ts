@@ -31,7 +31,7 @@ export interface Player {
 
 export interface GameObjectBase {
   id: Id
-  type: 'plane' | 'deck' | 'card' | 'board'
+  type: 'plane' | 'deck' | 'card' | 'board' | 'pool'
   name: string
   parentId: Id | null
   locked: boolean
@@ -74,7 +74,21 @@ export interface Board extends GameObjectBase {
   back: SpriteSpec
 }
 
-export type GameObject = Plane | Deck | Card | Board
+export interface Pool extends GameObjectBase {
+  type: 'pool'
+  size: {
+    width: number
+    height: number
+  }
+  tokenSize: {
+    width: number
+    height: number
+  }
+  face: SpriteSpec
+  back: SpriteSpec
+}
+
+export type GameObject = Plane | Deck | Card | Board | Pool
 
 export interface RoomDoc {
   version: 1

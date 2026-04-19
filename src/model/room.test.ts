@@ -3,19 +3,25 @@ import {
   addCardToDeck,
   bringObjectsForward,
   canSeeCardFace,
+  canReturnBoardToPool,
+  convertBoardToPool,
+  createBoardFromPool,
   createBoardOnPlane,
   createCardOnPlane,
   createDeckOnPlane,
   createDeckFromSpriteSheetOnPlane,
+  createPoolOnPlane,
   createRoomDoc,
   drawFromDeck,
   duplicateObject,
+  getPoolDisplaySize,
   getRootPlane,
   isGroupSelectableObject,
   moveObject,
   removePlayer,
   renameOrAddPlayer,
   sendObjectsBackward,
+  returnBoardToPool,
   setTurnPlayer,
   shuffleDeck,
 } from './room'
@@ -36,10 +42,12 @@ describe('room model', () => {
     const boardId = createBoardOnPlane(room, room.rootId, { x: 0, y: 0, rotation: 0 }, 'Board')
     const cardId = createCardOnPlane(room, room.rootId, { x: 10, y: 20, rotation: 0 })
     const deckId = createDeckOnPlane(room, room.rootId, { x: 30, y: 40, rotation: 0 })
+    const poolId = createPoolOnPlane(room, room.rootId, { x: 50, y: 60, rotation: 0 }, 'Board')
 
     expect(isGroupSelectableObject(room.objects[boardId])).toBe(true)
     expect(isGroupSelectableObject(room.objects[cardId])).toBe(true)
     expect(isGroupSelectableObject(room.objects[deckId])).toBe(true)
+    expect(isGroupSelectableObject(room.objects[poolId])).toBe(true)
     expect(isGroupSelectableObject(room.objects[room.rootId])).toBe(false)
   })
 
@@ -187,14 +195,114 @@ describe('room model', () => {
     const cardId = createCardOnPlane(room, room.rootId, { x: 0, y: 0, rotation: 0 }, 'Card Name')
     const deckId = createDeckOnPlane(room, room.rootId, { x: 20, y: 20, rotation: 0 }, 'Deck Name')
     const boardId = createBoardOnPlane(room, room.rootId, { x: 40, y: 40, rotation: 0 }, 'Board Name')
+    const poolId = createPoolOnPlane(room, room.rootId, { x: 60, y: 60, rotation: 0 }, 'Pool Name')
 
-    const duplicatedIds = [cardId, deckId, boardId].map((objectId) => duplicateObject(room, objectId))
+    const duplicatedIds = [cardId, deckId, boardId, poolId].map((objectId) => duplicateObject(room, objectId))
 
-    expect(duplicatedIds).toHaveLength(3)
+    expect(duplicatedIds).toHaveLength(4)
     expect(duplicatedIds.every((objectId) => objectId)).toBe(true)
     expect(room.objects[duplicatedIds[0]!].name).toBe('Card Name')
     expect(room.objects[duplicatedIds[1]!].name).toBe('Deck Name')
     expect(room.objects[duplicatedIds[2]!].name).toBe('Board Name')
+    expect(room.objects[duplicatedIds[3]!].name).toBe('Pool Name')
+  })
+
+  it('instantiates boards from pools as unlocked copies', () => {
+    const room = createRoomDoc()
+    const poolId = createPoolOnPlane(room, room.rootId, { x: 10, y: 20, rotation: 0 }, 'Meeple')
+
+    expect(room.objects[poolId].type).toBe('pool')
+    if (room.objects[poolId].type === 'pool') {
+      room.objects[poolId].locked = true
+      room.objects[poolId].tokenSize = { width: 72, height: 96 }
+      room.objects[poolId].size = { width: 220, height: 220 }
+      room.objects[poolId].face = {
+        kind: 'label',
+        label: 'Meeple',
+        bg: '#2a6f4f',
+        fg: '#f7f2db',
+      }
+    }
+
+    const boardId = createBoardFromPool(room, poolId, { x: 90, y: 110, rotation: 0 })
+    expect(boardId).toBeTruthy()
+
+    const board = boardId ? room.objects[boardId] : undefined
+    expect(board?.type).toBe('board')
+    expect(board?.locked).toBe(false)
+    expect(board?.name).toBe('Meeple')
+    expect(board?.type === 'board' ? board.size : undefined).toEqual({ width: 72, height: 96 })
+    expect(board?.type === 'board' ? board.face : undefined).toMatchObject({
+      kind: 'label',
+      label: 'Meeple',
+      bg: '#2a6f4f',
+      fg: '#f7f2db',
+    })
+  })
+
+  it('falls back to legacy pool size when tokenSize is missing', () => {
+    const room = createRoomDoc()
+    const poolId = createPoolOnPlane(room, room.rootId, { x: 10, y: 20, rotation: 0 }, 'Legacy')
+
+    expect(room.objects[poolId].type).toBe('pool')
+    if (room.objects[poolId].type === 'pool') {
+      room.objects[poolId].size = { width: 88, height: 112 }
+      delete (room.objects[poolId] as { tokenSize?: { width: number; height: number } }).tokenSize
+    }
+
+    const boardId = createBoardFromPool(room, poolId, { x: 90, y: 110, rotation: 0 })
+    expect(boardId).toBeTruthy()
+    expect(boardId ? room.objects[boardId] : undefined).toMatchObject({
+      type: 'board',
+      size: { width: 88, height: 112 },
+    })
+    expect(room.objects[poolId].type === 'pool' ? getPoolDisplaySize(room.objects[poolId]) : undefined).toEqual({
+      width: 280,
+      height: 280,
+    })
+  })
+
+  it('converts boards into pools in place', () => {
+    const room = createRoomDoc()
+    const boardId = createBoardOnPlane(room, room.rootId, { x: 40, y: 50, rotation: 0.2 }, 'Meeple')
+
+    if (room.objects[boardId].type === 'board') {
+      room.objects[boardId].size = { width: 72, height: 96 }
+    }
+
+    expect(convertBoardToPool(room, boardId)).toBe(boardId)
+    expect(room.objects[boardId]?.type).toBe('pool')
+    expect(room.objects[boardId]?.type === 'pool' ? room.objects[boardId].tokenSize : undefined).toEqual({
+      width: 72,
+      height: 96,
+    })
+    expect(room.objects[boardId]?.type === 'pool' ? room.objects[boardId].size : undefined).toEqual({
+      width: 240,
+      height: 240,
+    })
+    expect(getRootPlane(room).childOrder).toContain(boardId)
+    expect(getRootPlane(room).childTransforms[boardId]).toMatchObject({
+      x: 40,
+      y: 50,
+      rotation: 0.2,
+    })
+  })
+
+  it('returns matching boards to pools by deleting the dropped board', () => {
+    const room = createRoomDoc()
+    const poolId = createPoolOnPlane(room, room.rootId, { x: 0, y: 0, rotation: 0 }, 'Token')
+    const matchingBoardId = createBoardOnPlane(room, room.rootId, { x: 10, y: 0, rotation: 0 }, 'Token')
+    const otherBoardId = createBoardOnPlane(room, room.rootId, { x: 20, y: 0, rotation: 0 }, 'Other')
+
+    expect(canReturnBoardToPool(room, matchingBoardId, poolId)).toBe(true)
+    expect(canReturnBoardToPool(room, otherBoardId, poolId)).toBe(false)
+
+    expect(returnBoardToPool(room, matchingBoardId, poolId)).toBe(true)
+    expect(room.objects[matchingBoardId]).toBeUndefined()
+    expect(room.objects[poolId]).toBeDefined()
+
+    expect(returnBoardToPool(room, otherBoardId, poolId)).toBe(false)
+    expect(room.objects[otherBoardId]).toBeDefined()
   })
 
   it('moves a selected group forward together while preserving relative order', () => {
