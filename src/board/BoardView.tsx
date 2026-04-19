@@ -1,8 +1,9 @@
 import type { AutomergeUrl } from '@automerge/react'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { resolveImageSource, type ResolvedImageAsset } from '../model/assets'
+import { resolvePdfSource, type ResolvedPdfAsset } from '../model/pdfAssets'
 import { BOARD_WORLD_SIZE, DEFAULT_CARD_SIZE, type CameraState, type Id, type RoomDoc, type SpriteSpec, type Transform2D } from '../model/types'
-import { canSeeCardFace, getPoolDisplaySize, getPoolRemainingTokens, getPoolTokenSize, getRootPlane, getTransform, isBoard, isBoardFaceUp, isCard, isDeck, isGroupSelectableObject, isPool, isPoolFaceUp } from '../model/room'
+import { canSeeCardFace, getPoolDisplaySize, getPoolRemainingTokens, getPoolTokenSize, getRootPlane, getTransform, isBoard, isBoardFaceUp, isBook, isCard, isDeck, isGroupSelectableObject, isPool, isPoolFaceUp } from '../model/room'
 import { releasePanVelocity } from './panMomentum'
 import {
   bindBoardInputRecorder,
@@ -10,12 +11,14 @@ import {
   recordBoardInputRecorderSelection,
   recordBoardInputRecorderViewport,
 } from '../debug/inputRecorder'
+import { usePdfPageImage } from '../pdf/render'
 
 interface BoardViewProps {
   room: RoomDoc
   roomUrl: string
   imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>
-  dropImageError?: string
+  pdfAssets: ReadonlyMap<AutomergeUrl, ResolvedPdfAsset>
+  dropImportError?: string
   ephemeralTransforms?: Partial<Record<Id, Transform2D>>
   selectionMode: 'normal' | 'group'
   selectedId?: Id
@@ -46,8 +49,9 @@ interface BoardViewProps {
   onFlipPool: (poolId: Id) => void
   onFlipDeck: (deckId: Id) => void
   onDrawDeck: (deckId: Id) => void
-  onDropImageFileAt: (files: File[], point: { x: number; y: number }) => void
+  onDropFileAt: (files: File[], point: { x: number; y: number }) => void
   onShuffleDeck: (deckId: Id) => void
+  onOpenBook: (bookId: Id) => void
   onOpenSelectionPanel: () => void
 }
 
@@ -109,7 +113,7 @@ interface QuickAction {
   id: string
   label: string
   onClick: () => void
-  icon?: 'flip' | 'more'
+  icon?: 'flip' | 'more' | 'view'
   text?: string
 }
 
@@ -373,7 +377,7 @@ function clientToLocal(root: HTMLDivElement | null, clientX: number, clientY: nu
 
 function isMovableObjectType(room: RoomDoc, objectId: Id) {
   const object = room.objects[objectId]
-  return Boolean(isCard(object) || isDeck(object) || isBoard(object) || isPool(object))
+  return Boolean(isCard(object) || isDeck(object) || isBoard(object) || isPool(object) || isBook(object))
 }
 
 function isMultiselectObjectType(room: RoomDoc, objectId: Id) {
@@ -382,7 +386,7 @@ function isMultiselectObjectType(room: RoomDoc, objectId: Id) {
 
 function objectDimensions(room: RoomDoc, objectId: Id) {
   const object = room.objects[objectId]
-  if (isCard(object) || isBoard(object)) {
+  if (isCard(object) || isBoard(object) || isBook(object)) {
     return object.size
   }
   if (isPool(object)) {
@@ -561,8 +565,8 @@ function hasFileTransfer(dataTransfer: DataTransfer) {
   return [...dataTransfer.types].includes('Files')
 }
 
-function imageFilesFromTransfer(dataTransfer: DataTransfer) {
-  const imageFiles: File[] = []
+function importFilesFromTransfer(dataTransfer: DataTransfer) {
+  const importFiles: File[] = []
 
   for (const item of dataTransfer.items) {
     if (item.kind !== 'file') {
@@ -570,16 +574,18 @@ function imageFilesFromTransfer(dataTransfer: DataTransfer) {
     }
 
     const file = item.getAsFile()
-    if (file?.type.startsWith('image/')) {
-      imageFiles.push(file)
+    if (file && (file.type.startsWith('image/') || file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))) {
+      importFiles.push(file)
     }
   }
 
-  if (imageFiles.length > 0) {
-    return imageFiles
+  if (importFiles.length > 0) {
+    return importFiles
   }
 
-  return [...dataTransfer.files].filter((file) => file.type.startsWith('image/'))
+  return [...dataTransfer.files].filter((file) => {
+    return file.type.startsWith('image/') || file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
+  })
 }
 
 function objectIdAtClientPoint(clientX: number, clientY: number) {
@@ -621,6 +627,15 @@ function MoreQuickActionIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" fill="none">
       <path d="M6 12h.01M12 12h.01M18 12h.01" />
+    </svg>
+  )
+}
+
+function ViewQuickActionIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none">
+      <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
+      <circle cx="12" cy="12" r="3" />
     </svg>
   )
 }
@@ -1841,10 +1856,67 @@ interface BoardObjectContentProps {
   room: RoomDoc
   currentPlayerId: string | undefined
   imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>
+  pdfAssets: ReadonlyMap<AutomergeUrl, ResolvedPdfAsset>
   size: Size
   constrainedEffects: boolean
   canInstantiatePool: boolean
   onInstantiatePoolBoard: (event: ReactPointerEvent<HTMLDivElement>, poolId: Id) => void
+}
+
+interface BookObjectProps {
+  bookId: Id
+  room: RoomDoc
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>
+  pdfAssets: ReadonlyMap<AutomergeUrl, ResolvedPdfAsset>
+  size: Size
+}
+
+function BookObject({ bookId, room, imageAssets, pdfAssets, size }: BookObjectProps) {
+  const candidate = room.objects[bookId]
+  const book = isBook(candidate) ? candidate : undefined
+  const pdfSource = resolvePdfSource(book?.pdfUrl, pdfAssets)
+  const { imageUrl, loading, error } = usePdfPageImage(pdfSource?.renderUrl, book?.currentPage ?? 1, size, {
+    qualityBoost: 2.5,
+    maxDimension: 2048,
+  })
+  if (!book) {
+    return null
+  }
+  const previewSpec: SpriteSpec = imageUrl
+    ? {
+        kind: 'image-url',
+        url: imageUrl,
+        fit: 'contain',
+        bg: '#f5f0e4',
+      }
+    : {
+        kind: 'label',
+        label: loading
+          ? 'Loading PDF...'
+          : error
+            ? 'PDF Error'
+            : pdfSource
+              ? book.name
+              : 'Missing PDF',
+        bg: '#f5f0e4',
+        fg: '#22303a',
+      }
+
+  return (
+    <div className="board-book-shell">
+      <BoardSurface
+        spec={previewSpec}
+        fallbackLabel={book.name}
+        size={size}
+        imageAssets={imageAssets}
+        rounded={false}
+        className="board-book-surface"
+      />
+      <div className="board-book-page-badge">
+        {book.currentPage}/{Math.max(book.currentPage, book.pageCount)}
+      </div>
+    </div>
+  )
 }
 
 function BoardObjectContent({
@@ -1852,6 +1924,7 @@ function BoardObjectContent({
   room,
   currentPlayerId,
   imageAssets,
+  pdfAssets,
   size,
   constrainedEffects,
   canInstantiatePool,
@@ -1907,6 +1980,18 @@ function BoardObjectContent({
     )
   }
 
+  if (isBook(object)) {
+    return (
+      <BookObject
+        bookId={objectId}
+        room={room}
+        imageAssets={imageAssets}
+        pdfAssets={pdfAssets}
+        size={size}
+      />
+    )
+  }
+
   return null
 }
 
@@ -1918,6 +2003,9 @@ const MemoBoardObjectContent = memo(BoardObjectContent, (prevProps, nextProps) =
     return false
   }
   if (prevProps.imageAssets !== nextProps.imageAssets) {
+    return false
+  }
+  if (prevProps.pdfAssets !== nextProps.pdfAssets) {
     return false
   }
   if (prevProps.constrainedEffects !== nextProps.constrainedEffects) {
@@ -2142,7 +2230,8 @@ export function BoardView({
   room,
   roomUrl,
   imageAssets,
-  dropImageError,
+  pdfAssets,
+  dropImportError,
   ephemeralTransforms = {},
   selectionMode,
   selectedId,
@@ -2170,8 +2259,9 @@ export function BoardView({
   onFlipPool,
   onFlipDeck: _onFlipDeck,
   onDrawDeck: _onDrawDeck,
-  onDropImageFileAt,
+  onDropFileAt,
   onShuffleDeck,
+  onOpenBook,
   onOpenSelectionPanel,
 }: BoardViewProps) {
   void _onFlipDeck
@@ -3520,11 +3610,14 @@ export function BoardView({
     }
 
     const object = room.objects[selectedId]
-    if (!object || !canEdit) {
+    if (!object) {
       return []
     }
 
     if (object.type === 'card') {
+      if (!canEdit) {
+        return []
+      }
       return [
         { id: 'flip', label: 'Flip', icon: 'flip', onClick: () => onFlipCard(object.id) },
         { id: 'more', label: 'More actions', icon: 'more', onClick: onOpenSelectionPanel },
@@ -3532,6 +3625,9 @@ export function BoardView({
     }
 
     if (object.type === 'deck') {
+      if (!canEdit) {
+        return []
+      }
       return [
         { id: 'shuffle', label: 'Shuffle', text: 'Shuffle', onClick: () => onShuffleDeck(object.id) },
         { id: 'more', label: 'More actions', icon: 'more', onClick: onOpenSelectionPanel },
@@ -3539,6 +3635,9 @@ export function BoardView({
     }
 
     if (object.type === 'board') {
+      if (!canEdit) {
+        return []
+      }
       return [
         { id: 'flip', label: 'Flip', icon: 'flip', onClick: () => onFlipBoard(object.id) },
         { id: 'more', label: 'More actions', icon: 'more', onClick: onOpenSelectionPanel },
@@ -3546,14 +3645,24 @@ export function BoardView({
     }
 
     if (object.type === 'pool') {
+      if (!canEdit) {
+        return []
+      }
       return [
         { id: 'flip', label: 'Flip', icon: 'flip', onClick: () => onFlipPool(object.id) },
         { id: 'more', label: 'More actions', icon: 'more', onClick: onOpenSelectionPanel },
       ]
     }
 
+    if (object.type === 'book') {
+      return [
+        { id: 'view', label: 'Open PDF', icon: 'view', onClick: () => onOpenBook(object.id) },
+        { id: 'more', label: 'More actions', icon: 'more', onClick: onOpenSelectionPanel },
+      ]
+    }
+
     return []
-  }, [canEdit, onFlipBoard, onFlipCard, onFlipPool, onOpenSelectionPanel, onShuffleDeck, room.objects, selectedId, selectionMode])
+  }, [canEdit, onFlipBoard, onFlipCard, onFlipPool, onOpenBook, onOpenSelectionPanel, onShuffleDeck, room.objects, selectedId, selectionMode])
   hasQuickActionsRef.current = quickActions.length > 0
 
   const root = getRootPlane(room)
@@ -4055,7 +4164,7 @@ export function BoardView({
     }
 
     event.preventDefault()
-    const files = imageFilesFromTransfer(event.dataTransfer)
+    const files = importFilesFromTransfer(event.dataTransfer)
     resetDropTarget()
     if (files.length === 0) {
       return
@@ -4066,7 +4175,7 @@ export function BoardView({
       return
     }
 
-    onDropImageFileAt(files, screenToLogical(viewportSize, cameraRef.current, localPoint))
+    onDropFileAt(files, screenToLogical(viewportSize, cameraRef.current, localPoint))
   }
 
   const objectElements = useMemo(
@@ -4146,6 +4255,7 @@ export function BoardView({
               room={room}
               currentPlayerId={currentPlayerId}
               imageAssets={imageAssets}
+              pdfAssets={pdfAssets}
               size={worldSize}
               constrainedEffects={constrainedEffects}
               canInstantiatePool={canEdit && selectionMode === 'normal'}
@@ -4153,7 +4263,7 @@ export function BoardView({
             />
             {selectionStrokeWidth > 0 && !usesCardOutlineSelection && !usesPoolOutlineSelection && (!boardSelectionSpec || !usesAlphaBoardSelection) ? (
               <div
-                className={`board-object-selection ${object.type === 'board' ? 'is-square' : 'is-rounded'}`}
+                className={`board-object-selection ${object.type === 'board' || object.type === 'book' ? 'is-square' : 'is-rounded'}`}
               />
             ) : null}
             {showsRotateHandle ? (
@@ -4178,6 +4288,7 @@ export function BoardView({
       handleRotatePointerDown,
       hoverDropTargetId,
       imageAssets,
+      pdfAssets,
       objectElementsZoomDependency,
       room,
       selectedId,
@@ -4209,10 +4320,10 @@ export function BoardView({
         </div>
       </div>
       {isImageDropTarget ? (
-        <div className="board-drop-overlay">Drop image to create board</div>
+        <div className="board-drop-overlay">Drop image or PDF to import</div>
       ) : null}
-      {dropImageError ? (
-        <div className="board-drop-error" role="status">{dropImageError}</div>
+      {dropImportError ? (
+        <div className="board-drop-error" role="status">{dropImportError}</div>
       ) : null}
       {prewarmPercent !== undefined ? (
         <div aria-hidden="true" className="board-asset-progress">
@@ -4247,6 +4358,8 @@ export function BoardView({
             >
               {action.icon === 'flip'
                 ? <FlipQuickActionIcon />
+                : action.icon === 'view'
+                  ? <ViewQuickActionIcon />
                 : action.icon === 'more'
                   ? <MoreQuickActionIcon />
                   : action.text ?? action.label}

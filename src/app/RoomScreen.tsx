@@ -13,6 +13,13 @@ import {
   useState,
   type DragEvent as ReactDragEvent,
 } from 'react'
+import {
+  PDFViewer,
+  ScrollPlugin,
+  ZoomMode,
+  type PluginRegistry,
+  type ScrollCapability,
+} from '@embedpdf/react-pdf-viewer'
 import { BoardView } from '../board/BoardView'
 import { syncTurnBadge } from './badge'
 import { applyRoomEphemeralMessage, isRoomEphemeralMessage, type RemoteDragSession } from '../model/ephemeral'
@@ -34,6 +41,7 @@ import {
   canSeeCardFace,
   createBoardFromPool,
   createBoardOnPlane,
+  createBookOnPlane,
   createCardOnPlane,
   createDeckOnPlane,
   createDeckFromSpriteSheetOnPlane,
@@ -50,6 +58,7 @@ import {
   getPoolRemainingTokens,
   getRootPlane,
   isBoard,
+  isBook,
   isCard,
   isDeck,
   isGroupSelectableObject,
@@ -74,8 +83,17 @@ import {
   useResolvedImageAssets,
   type ResolvedImageAsset,
 } from '../model/assets'
-import type { Board, CameraState, Card, GameObject, Id, Pool, RoomDoc, SpriteSpec, Transform2D } from '../model/types'
+import {
+  collectRoomPdfAssetUrls,
+  createOrReusePdfAsset,
+  loadStoredPdfAsset,
+  resolvePdfSource,
+  useResolvedPdfAssets,
+  type ResolvedPdfAsset,
+} from '../model/pdfAssets'
+import type { Board, Book, CameraState, Card, GameObject, Id, Pool, RoomDoc, SpriteSpec, Transform2D } from '../model/types'
 import { DEFAULT_BOARD_SIZE, DEFAULT_CARD_SIZE } from '../model/types'
+import { inspectPdfSource } from '../pdf/render'
 import {
   boardSizeFromDimensions,
   boardSizeFromHeight,
@@ -240,6 +258,16 @@ function boardNameFromImageFile(file: File) {
   return nameWithoutExtension || trimmedName
 }
 
+function bookNameFromPdfFile(file: File) {
+  const trimmedName = file.name.trim()
+  if (!trimmedName) {
+    return undefined
+  }
+
+  const nameWithoutExtension = trimmedName.replace(/\.pdf$/i, '').trim()
+  return nameWithoutExtension || trimmedName
+}
+
 function cardSizeForAspect(aspect: number) {
   const safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : DEFAULT_CARD_SIZE.width / DEFAULT_CARD_SIZE.height
   const targetArea = DEFAULT_CARD_SIZE.width * DEFAULT_CARD_SIZE.height
@@ -323,6 +351,36 @@ function formatAssetSummary(asset?: ResolvedImageAsset) {
   }
 
   return details.join(' · ')
+}
+
+function formatPdfAssetSummary(asset?: ResolvedPdfAsset) {
+  if (!asset) {
+    return 'Loading stored PDF...'
+  }
+
+  return [asset.mimeType, formatFileSize(asset.sizeBytes)].join(' · ')
+}
+
+async function loadPdfSourceInfo(
+  url: string,
+  pdfAssets: ReadonlyMap<AutomergeUrl, ResolvedPdfAsset>,
+) {
+  const source = resolvePdfSource(url, pdfAssets)
+  if (source?.renderUrl) {
+    return inspectPdfSource(source.renderUrl)
+  }
+
+  const storedAsset = await loadStoredPdfAsset(url)
+  if (!storedAsset) {
+    throw new Error('PDF source unavailable')
+  }
+
+  const objectUrl = URL.createObjectURL(new Blob([Uint8Array.from(storedAsset.bytes)], { type: storedAsset.mimeType || 'application/pdf' }))
+  try {
+    return await inspectPdfSource(objectUrl)
+  } finally {
+    URL.revokeObjectURL(objectUrl)
+  }
 }
 
 function ImageSourceInput({
@@ -551,6 +609,362 @@ function ImageSourceInput({
   )
 }
 
+function PdfSourceInput({
+  label,
+  value,
+  disabled,
+  placeholder,
+  existingAssetUrls,
+  pdfAssets,
+  onChange,
+}: {
+  label: string
+  value: string
+  disabled: boolean
+  placeholder: string
+  existingAssetUrls: Array<string | undefined>
+  pdfAssets: ReadonlyMap<AutomergeUrl, ResolvedPdfAsset>
+  onChange: (next: string) => void
+}) {
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const dragDepthRef = useRef(0)
+  const [uploadError, setUploadError] = useState('')
+  const [isUploading, setIsUploading] = useState(false)
+  const [isDropTarget, setIsDropTarget] = useState(false)
+  const source = resolvePdfSource(value, pdfAssets)
+  const storedAsset = source?.asset
+
+  function hasFileTransfer(dataTransfer: DataTransfer) {
+    return [...dataTransfer.types].includes('Files')
+  }
+
+  function pdfFileFromTransfer(dataTransfer: DataTransfer) {
+    for (const item of dataTransfer.items) {
+      if (item.kind !== 'file') {
+        continue
+      }
+      const file = item.getAsFile()
+      if (file && (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))) {
+        return file
+      }
+    }
+
+    return [...dataTransfer.files].find((file) => file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))
+  }
+
+  async function uploadFile(file: File) {
+    if (!(file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))) {
+      setUploadError('Please choose a PDF file.')
+      return
+    }
+
+    setIsUploading(true)
+    try {
+      const { url } = await createOrReusePdfAsset(file, existingAssetUrls)
+      onChange(url)
+      setUploadError('')
+    } catch {
+      setUploadError('Could not import that PDF into the room.')
+    } finally {
+      setIsUploading(false)
+    }
+  }
+
+  function resetDropTarget() {
+    dragDepthRef.current = 0
+    setIsDropTarget(false)
+  }
+
+  function handleUploadDragEnter(event: ReactDragEvent<HTMLButtonElement>) {
+    if (disabled || isUploading) {
+      return
+    }
+
+    if (!hasFileTransfer(event.dataTransfer)) {
+      return
+    }
+
+    event.preventDefault()
+    dragDepthRef.current += 1
+    setIsDropTarget(true)
+  }
+
+  function handleUploadDragOver(event: ReactDragEvent<HTMLButtonElement>) {
+    if (disabled || isUploading) {
+      return
+    }
+
+    if (!hasFileTransfer(event.dataTransfer)) {
+      return
+    }
+
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+    if (!isDropTarget) {
+      setIsDropTarget(true)
+    }
+  }
+
+  function handleUploadDragLeave(event: ReactDragEvent<HTMLButtonElement>) {
+    if (disabled || isUploading) {
+      return
+    }
+
+    if (!hasFileTransfer(event.dataTransfer)) {
+      return
+    }
+
+    event.preventDefault()
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+    if (dragDepthRef.current === 0) {
+      setIsDropTarget(false)
+    }
+  }
+
+  function handleUploadDrop(event: ReactDragEvent<HTMLButtonElement>) {
+    if (disabled || isUploading) {
+      return
+    }
+
+    if (!hasFileTransfer(event.dataTransfer)) {
+      return
+    }
+
+    event.preventDefault()
+    const file = pdfFileFromTransfer(event.dataTransfer)
+    resetDropTarget()
+
+    if (!file) {
+      setUploadError('Please drop a PDF file.')
+      return
+    }
+
+    void uploadFile(file)
+  }
+
+  return (
+    <>
+      <label className="field">
+        <span>{label}</span>
+        {source?.isStored ? (
+          <div className="image-source-card">
+            <div className="image-source-preview image-source-placeholder pdf-source-preview">PDF</div>
+            <div className="image-source-copy">
+              <strong>{storedAsset?.name ?? 'Stored PDF'}</strong>
+              <small>{formatPdfAssetSummary(storedAsset)}</small>
+            </div>
+          </div>
+        ) : (
+          <input
+            disabled={disabled || isUploading}
+            type="url"
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            placeholder={placeholder}
+          />
+        )}
+      </label>
+
+      <div className="button-row">
+        <button
+          className={`upload-drop-button ${isDropTarget ? 'is-drop-target' : ''}`}
+          disabled={disabled || isUploading}
+          onClick={() => fileInputRef.current?.click()}
+          onDragEnter={handleUploadDragEnter}
+          onDragOver={handleUploadDragOver}
+          onDragLeave={handleUploadDragLeave}
+          onDrop={handleUploadDrop}
+        >
+          {isUploading
+            ? 'Uploading...'
+            : isDropTarget
+              ? 'Drop PDF to Upload'
+              : source?.isStored
+                ? 'Replace PDF'
+                : 'Upload Into Room'}
+        </button>
+        {value ? (
+          <button disabled={disabled || isUploading} onClick={() => onChange('')}>
+            Clear PDF
+          </button>
+        ) : null}
+      </div>
+
+      <input
+        ref={fileInputRef}
+        hidden
+        accept="application/pdf,.pdf"
+        disabled={disabled || isUploading}
+        type="file"
+        onChange={(event) => {
+          const file = event.target.files?.[0]
+          event.target.value = ''
+          if (!file) {
+            return
+          }
+          void uploadFile(file)
+        }}
+      />
+      <p className="field-note">
+        Drag a PDF onto the upload button or choose a file.
+      </p>
+      {uploadError ? <p className="inline-error">{uploadError}</p> : null}
+    </>
+  )
+}
+
+function BookViewerModal({
+  book,
+  pdfAssets,
+  onClose,
+}: {
+  book: Book
+  pdfAssets: ReadonlyMap<AutomergeUrl, ResolvedPdfAsset>
+  onClose: (nextPage: number, pageCount: number) => void
+}) {
+  const pdfSource = resolvePdfSource(book.pdfUrl, pdfAssets)
+  const pdfRenderUrl = pdfSource?.renderUrl
+  const currentPageRef = useRef(Math.max(1, book.currentPage))
+  const totalPagesRef = useRef(Math.max(1, book.pageCount))
+  const [viewerRegistry, setViewerRegistry] = useState<PluginRegistry | null>(null)
+
+  const viewerConfig = useMemo(() => {
+    if (!pdfRenderUrl) {
+      return undefined
+    }
+
+    return {
+      src: pdfRenderUrl,
+      tabBar: 'never',
+      theme: {
+        preference: 'light' as const,
+        light: {
+          accent: {
+            primary: '#2563eb',
+          },
+        },
+      },
+      zoom: {
+        defaultZoomLevel: ZoomMode.FitWidth,
+      },
+      disabledCategories: [
+        'annotation',
+        'redaction',
+        'signature',
+      ],
+    }
+  }, [pdfRenderUrl])
+
+  const closeViewer = useCallback(() => {
+    if (viewerRegistry) {
+      const scrollPlugin = viewerRegistry.getPlugin<ScrollPlugin>(ScrollPlugin.id)
+      const scroll = scrollPlugin?.provides() as ScrollCapability | undefined
+      if (scroll) {
+        const currentPage = scroll.getCurrentPage()
+        const totalPages = scroll.getTotalPages()
+        if (currentPage > 0) {
+          currentPageRef.current = currentPage
+        }
+        if (totalPages > 0) {
+          totalPagesRef.current = totalPages
+        }
+      }
+    }
+
+    onClose(currentPageRef.current, totalPagesRef.current)
+  }, [onClose, viewerRegistry])
+
+  useEffect(() => {
+    currentPageRef.current = Math.max(1, book.currentPage)
+  }, [book.currentPage])
+
+  useEffect(() => {
+    totalPagesRef.current = Math.max(1, book.pageCount)
+  }, [book.pageCount])
+
+  useEffect(() => {
+    if (!viewerRegistry) {
+      return
+    }
+
+    const scrollPlugin = viewerRegistry.getPlugin<ScrollPlugin>(ScrollPlugin.id)
+    const scroll = scrollPlugin?.provides() as ScrollCapability | undefined
+    if (!scroll) {
+      return
+    }
+
+    const initialPage = Math.max(1, book.currentPage)
+    const restoreInitialPage = (totalPages = scroll.getTotalPages()) => {
+      const boundedTotalPages = Math.max(1, totalPages || totalPagesRef.current)
+      const nextPage = Math.max(1, Math.min(initialPage, boundedTotalPages))
+      currentPageRef.current = nextPage
+      totalPagesRef.current = boundedTotalPages
+      scroll.scrollToPage({
+        pageNumber: nextPage,
+        behavior: 'instant',
+      })
+    }
+
+    const timeoutIds = initialPage > 1
+      ? [
+          window.setTimeout(() => restoreInitialPage(), 0),
+          window.setTimeout(() => restoreInitialPage(), 150),
+          window.setTimeout(() => restoreInitialPage(), 500),
+        ]
+      : []
+
+    const unsubscribePageChange = scroll.onPageChange(({ pageNumber, totalPages }) => {
+      currentPageRef.current = Math.max(1, pageNumber)
+      totalPagesRef.current = Math.max(1, totalPages)
+    })
+
+    const unsubscribeLayoutReady = scroll.onLayoutReady(({ totalPages }) => {
+      restoreInitialPage(totalPages)
+    })
+
+    return () => {
+      timeoutIds.forEach((timeoutId) => window.clearTimeout(timeoutId))
+      unsubscribePageChange()
+      unsubscribeLayoutReady()
+    }
+  }, [book.currentPage, viewerRegistry])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        closeViewer()
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [closeViewer])
+
+  return (
+    <div className="modal-scrim" onClick={closeViewer}>
+      <section aria-modal="true" className="modal-card book-viewer-modal" role="dialog" onClick={(event) => event.stopPropagation()}>
+        <button aria-label="Close viewer" className="panel-close" onClick={closeViewer} title="Close viewer" />
+        <div className="book-viewer-shell">
+          {viewerConfig ? (
+            <PDFViewer
+              key={pdfRenderUrl}
+              className="book-viewer-embed"
+              config={viewerConfig}
+              onReady={setViewerRegistry}
+              style={{ width: '100%', height: '100%' }}
+            />
+          ) : (
+            <div className="book-viewer-empty">
+              Could not find this PDF.
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  )
+}
+
 interface SheetDeckDraft {
   name: string
   faceUrl: string
@@ -569,8 +983,13 @@ interface BoardDraft {
   backUrl: string
 }
 
+interface BookDraft {
+  name: string
+  pdfUrl: string
+}
+
 type RightPanelMode = 'turn' | 'selection'
-type CreationMode = 'board' | 'deck-sheet'
+type CreationMode = 'board' | 'book' | 'deck-sheet'
 type SelectionMode = 'normal' | 'group'
 
 function defaultSheetDeckDraft(): SheetDeckDraft {
@@ -592,6 +1011,13 @@ function defaultBoardDraft(): BoardDraft {
     name: '',
     faceUrl: '',
     backUrl: '',
+  }
+}
+
+function defaultBookDraft(): BookDraft {
+  return {
+    name: '',
+    pdfUrl: '',
   }
 }
 
@@ -953,11 +1379,6 @@ function PoolRemainingEditor({
   const [limited, setLimited] = useState(() => Number.isFinite(remainingTokens))
   const [draft, setDraft] = useState(() => (Number.isFinite(remainingTokens) ? String(Math.floor(remainingTokens)) : defaultLimitedDraft))
 
-  useEffect(() => {
-    setLimited(Number.isFinite(remainingTokens))
-    setDraft(Number.isFinite(remainingTokens) ? String(Math.floor(remainingTokens)) : defaultLimitedDraft)
-  }, [remainingTokens])
-
   function commitLimitedValue() {
     const parsed = parseNumericExpression(draft)
     if (parsed === undefined || !Number.isFinite(parsed)) {
@@ -1045,10 +1466,13 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   const cameraCommitTimeoutRef = useRef<number | undefined>(undefined)
   const [allowSelectLocked, setAllowSelectLocked] = useState(false)
   const [boardDraft, setBoardDraft] = useState<BoardDraft>(() => defaultBoardDraft())
+  const [bookDraft, setBookDraft] = useState<BookDraft>(() => defaultBookDraft())
   const [boardDraftError, setBoardDraftError] = useState('')
+  const [bookDraftError, setBookDraftError] = useState('')
   const [boardDropError, setBoardDropError] = useState('')
   const [sheetDeckDraft, setSheetDeckDraft] = useState<SheetDeckDraft>(() => defaultSheetDeckDraft())
   const [sheetDeckError, setSheetDeckError] = useState('')
+  const [openBookViewerId, setOpenBookViewerId] = useState<string>()
   const [ephemeralTransforms, setEphemeralTransforms] = useState<Record<Id, Transform2D>>({})
   const groupLockedInputRef = useRef<HTMLInputElement>(null)
   const spawnCountRef = useRef(0)
@@ -1068,7 +1492,13 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     [boardDraft.backUrl, boardDraft.faceUrl, room, sheetDeckDraft.backUrl, sheetDeckDraft.faceUrl],
   )
   const resolvedImageAssets = useResolvedImageAssets(imageAssetUrls)
+  const pdfAssetUrls = useMemo(
+    () => collectRoomPdfAssetUrls(room, [bookDraft.pdfUrl]),
+    [bookDraft.pdfUrl, room],
+  )
+  const resolvedPdfAssets = useResolvedPdfAssets(pdfAssetUrls)
   const selectedObject = selectionMode === 'normal' && selectedId ? room.objects[selectedId] : undefined
+  const viewerBook = openBookViewerId ? room.objects[openBookViewerId] : undefined
   const selectedGroupObjects = useMemo(
     () =>
       selectionMode === 'group'
@@ -1658,6 +2088,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   function openCreationFlow(mode: CreationMode) {
     setIsAddMenuOpen(false)
     setBoardDraftError('')
+    setBookDraftError('')
     setSheetDeckError('')
     setCreationMode(mode)
   }
@@ -1665,6 +2096,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   function closeCreationFlow() {
     setCreationMode(undefined)
     setBoardDraftError('')
+    setBookDraftError('')
     setSheetDeckError('')
   }
 
@@ -1755,7 +2187,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     setIsAddMenuOpen(false)
   }
 
-function createBoardHere() {
+  function createBoardHere() {
     const offset = spawnCountRef.current++
     let createdBoardId: string | undefined
     mutate((draft) => {
@@ -1768,6 +2200,10 @@ function createBoardHere() {
       setCreationMode(undefined)
     }
     setIsAddMenuOpen(false)
+  }
+
+  function openBookViewer(bookId: string) {
+    setOpenBookViewerId(bookId)
   }
 
   async function createBoardFromImageSource({
@@ -1845,6 +2281,73 @@ function createBoardHere() {
     return createdBoardId
   }
 
+  async function createBookFromPdfSource({
+    pdfUrl,
+    name,
+    transform,
+    locked = true,
+    onError,
+  }: {
+    pdfUrl: string
+    name?: string
+    transform: Transform2D
+    locked?: boolean
+    onError?: (message: string) => void
+  }) {
+    const trimmedPdfUrl = pdfUrl.trim()
+    if (!trimmedPdfUrl) {
+      onError?.('A PDF file or PDF URL is required.')
+      return undefined
+    }
+
+    let pageCount = 1
+    let size: { width: number; height: number } = { width: 240, height: 320 }
+    try {
+      const info = await loadPdfSourceInfo(trimmedPdfUrl, resolvedPdfAssets)
+      pageCount = info.pageCount
+      size = boardSizeFromImageDimensions({
+        width: info.width,
+        height: info.height,
+      })
+    } catch {
+      onError?.('Could not load the PDF to determine its page count and size.')
+      return undefined
+    }
+
+    let createdBookId: string | undefined
+    mutate((draft) => {
+      createdBookId = createBookOnPlane(
+        draft,
+        draft.rootId,
+        transform,
+        name?.trim() || undefined,
+      )
+
+      if (!createdBookId) {
+        return
+      }
+
+      const createdBook = draft.objects[createdBookId]
+      if (!isBook(createdBook)) {
+        return
+      }
+
+      createdBook.locked = locked
+      createdBook.size = size
+      createdBook.meta.aspectRatio = size.width / size.height
+      createdBook.pdfUrl = trimmedPdfUrl
+      createdBook.currentPage = 1
+      createdBook.pageCount = pageCount
+    })
+
+    if (!createdBookId) {
+      onError?.('Could not create the book from that PDF.')
+      return undefined
+    }
+
+    return createdBookId
+  }
+
   async function createBoardFromImage() {
     const offset = spawnCountRef.current++
     const createdBoardId = await createBoardFromImageSource({
@@ -1867,44 +2370,88 @@ function createBoardHere() {
     setCreationMode(undefined)
   }
 
-  async function handleDropImageFileAt(files: File[], point: { x: number; y: number }) {
+  async function createBookFromPdf() {
+    const offset = spawnCountRef.current++
+    const createdBookId = await createBookFromPdfSource({
+      pdfUrl: bookDraft.pdfUrl,
+      name: bookDraft.name,
+      transform: nextSpawnTransform(cameraRef.current, offset),
+      onError: setBookDraftError,
+    })
+
+    if (!createdBookId) {
+      return
+    }
+
+    setBookDraft(defaultBookDraft())
+    setBookDraftError('')
+    setBoardDropError('')
+    updateSelection(createdBookId)
+    setRightPanelMode('selection')
+    setCreationMode(undefined)
+  }
+
+  async function handleDropImportFileAt(files: File[], point: { x: number; y: number }) {
     setBoardDropError('')
 
     try {
-      const createdBoardIds: string[] = []
-      const reusableAssetUrls = [...imageAssetUrls]
+      const createdObjectIds: string[] = []
+      const reusableImageAssetUrls = [...imageAssetUrls]
+      const reusablePdfAssetUrls = [...pdfAssetUrls]
 
       for (const [index, file] of files.entries()) {
-        const { url } = await createOrReuseImageAsset(file, reusableAssetUrls)
-        reusableAssetUrls.push(url)
-        const createdBoardId = await createBoardFromImageSource({
-          faceUrl: url,
-          name: boardNameFromImageFile(file),
-          transform: {
-            x: point.x + index * 36,
-            y: point.y + index * 36,
-            rotation: 0,
-          },
-          locked: false,
-          onError: setBoardDropError,
-        })
+        const transform = {
+          x: point.x + index * 36,
+          y: point.y + index * 36,
+          rotation: 0,
+        }
 
-        if (createdBoardId) {
-          createdBoardIds.push(createdBoardId)
+        if (file.type.startsWith('image/')) {
+          const { url } = await createOrReuseImageAsset(file, reusableImageAssetUrls)
+          reusableImageAssetUrls.push(url)
+          const createdBoardId = await createBoardFromImageSource({
+            faceUrl: url,
+            name: boardNameFromImageFile(file),
+            transform,
+            locked: false,
+            onError: setBoardDropError,
+          })
+
+          if (createdBoardId) {
+            createdObjectIds.push(createdBoardId)
+          }
+          continue
+        }
+
+        if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+          const { url } = await createOrReusePdfAsset(file, reusablePdfAssetUrls)
+          reusablePdfAssetUrls.push(url)
+          const createdBookId = await createBookFromPdfSource({
+            pdfUrl: url,
+            name: bookNameFromPdfFile(file),
+            transform,
+            locked: false,
+            onError: setBoardDropError,
+          })
+
+          if (createdBookId) {
+            createdObjectIds.push(createdBookId)
+          }
         }
       }
 
-      const createdBoardId = createdBoardIds.at(-1)
-      if (!createdBoardId) {
+      const createdObjectId = createdObjectIds.at(-1)
+      if (!createdObjectId) {
         return
       }
 
       setBoardDraftError('')
-      updateSelection(createdBoardId)
+      setBookDraftError('')
+      updateSelection(createdObjectId)
       setRightPanelMode('selection')
       setCreationMode(undefined)
     } catch {
-      setBoardDropError('Could not import that image into the room.')
+      setBoardDropError('Could not import those files into the room.')
     }
   }
 
@@ -2034,7 +2581,8 @@ function createBoardHere() {
           room={room}
           roomUrl={roomUrl}
           imageAssets={resolvedImageAssets}
-          dropImageError={boardDropError}
+          pdfAssets={resolvedPdfAssets}
+          dropImportError={boardDropError}
           ephemeralTransforms={ephemeralTransforms}
           selectionMode={selectionMode}
           selectedId={boardPrimarySelectedId}
@@ -2135,14 +2683,15 @@ function createBoardHere() {
               drawFromDeck(draft, deckId)
             })
           }
-          onDropImageFileAt={(files, point) => {
-            void handleDropImageFileAt(files, point)
+          onDropFileAt={(files, point) => {
+            void handleDropImportFileAt(files, point)
           }}
           onShuffleDeck={(deckId) =>
             mutate((draft) => {
               shuffleDeck(draft, deckId)
             })
           }
+          onOpenBook={openBookViewer}
           onOpenSelectionPanel={openSelectionPanel}
         />
       </main>
@@ -2591,6 +3140,101 @@ function createBoardHere() {
                 </>
               ) : null}
 
+              {isBook(selectedObject) ? (
+                <>
+                  <div className="button-row">
+                    <button onClick={() => openBookViewer(selectedObject.id)}>
+                      Open PDF
+                    </button>
+                  </div>
+
+                  <div className="stats-card">
+                    <span>Page</span>
+                    <strong>{selectedObject.currentPage} / {Math.max(1, selectedObject.pageCount)}</strong>
+                  </div>
+
+                  <BoardSizeEditor
+                    key={selectedObject.id}
+                    width={selectedObject.size.width}
+                    height={selectedObject.size.height}
+                    disabled={!canEdit}
+                    onCommitWidth={(width) => {
+                      const aspectRatio =
+                        typeof selectedObject.meta.aspectRatio === 'number' && selectedObject.meta.aspectRatio > 0
+                          ? selectedObject.meta.aspectRatio
+                          : selectedObject.size.width / Math.max(selectedObject.size.height, 1)
+                      mutate((draft) => {
+                        const book = draft.objects[selectedObject.id]
+                        if (isBook(book)) {
+                          book.size = boardSizeFromWidth(width, aspectRatio)
+                        }
+                      })
+                    }}
+                    onCommitHeight={(height) => {
+                      const aspectRatio =
+                        typeof selectedObject.meta.aspectRatio === 'number' && selectedObject.meta.aspectRatio > 0
+                          ? selectedObject.meta.aspectRatio
+                          : selectedObject.size.width / Math.max(selectedObject.size.height, 1)
+                      mutate((draft) => {
+                        const book = draft.objects[selectedObject.id]
+                        if (isBook(book)) {
+                          book.size = boardSizeFromHeight(height, aspectRatio)
+                        }
+                      })
+                    }}
+                  />
+
+                  <PdfSourceInput
+                    label="PDF"
+                    value={selectedObject.pdfUrl}
+                    disabled={!canEdit}
+                    placeholder="https://example.com/rules.pdf"
+                    existingAssetUrls={pdfAssetUrls}
+                    pdfAssets={resolvedPdfAssets}
+                    onChange={(pdfUrl) => {
+                      const trimmedPdfUrl = pdfUrl.trim()
+                      if (!trimmedPdfUrl) {
+                        mutate((draft) => {
+                          const book = draft.objects[selectedObject.id]
+                          if (isBook(book)) {
+                            book.pdfUrl = ''
+                            book.currentPage = 1
+                            book.pageCount = 1
+                          }
+                        })
+                        return
+                      }
+
+                      void loadPdfSourceInfo(trimmedPdfUrl, resolvedPdfAssets)
+                        .then((info) => {
+                          mutate((draft) => {
+                            const book = draft.objects[selectedObject.id]
+                            if (isBook(book)) {
+                              book.pdfUrl = trimmedPdfUrl
+                              book.currentPage = 1
+                              book.pageCount = info.pageCount
+                              book.size = boardSizeFromImageDimensions({
+                                width: info.width,
+                                height: info.height,
+                              })
+                              book.meta.aspectRatio = book.size.width / book.size.height
+                            }
+                          })
+                        })
+                        .catch(() => {
+                          mutate((draft) => {
+                            const book = draft.objects[selectedObject.id]
+                            if (isBook(book)) {
+                              book.pdfUrl = trimmedPdfUrl
+                              book.currentPage = 1
+                            }
+                          })
+                        })
+                    }}
+                  />
+                </>
+              ) : null}
+
               {isPool(selectedObject) ? (
                 <>
                   <div className="button-row">
@@ -2635,7 +3279,7 @@ function createBoardHere() {
                   />
 
                   <PoolRemainingEditor
-                    key={`${selectedObject.id}:remaining`}
+                    key={`${selectedObject.id}:remaining:${Number.isFinite(getPoolRemainingTokens(selectedObject)) ? getPoolRemainingTokens(selectedObject) : 'inf'}`}
                     remainingTokens={getPoolRemainingTokens(selectedObject)}
                     disabled={!canEdit}
                     onCommit={(remainingTokens) =>
@@ -2813,6 +3457,7 @@ function createBoardHere() {
                       <h4>Imports</h4>
                       <div className="action-grid">
                         <button onClick={() => openCreationFlow('board')}>Board From Image</button>
+                        <button onClick={() => openCreationFlow('book')}>Book From PDF</button>
                         <button onClick={() => openCreationFlow('deck-sheet')}>Deck From Sheet</button>
                       </div>
                     </section>
@@ -2847,7 +3492,13 @@ function createBoardHere() {
               <div className="inspector-toolbar">
                 <div>
                   <p className="eyebrow">Create</p>
-                  <h2>{creationMode === 'board' ? 'Board From Image' : 'Deck From Sprite Sheet'}</h2>
+                  <h2>
+                    {creationMode === 'board'
+                      ? 'Board From Image'
+                      : creationMode === 'book'
+                        ? 'Book From PDF'
+                        : 'Deck From Sprite Sheet'}
+                  </h2>
                 </div>
                 <button aria-label="Close creation flow" className="panel-close" onClick={closeCreationFlow} title="Close creation flow" />
               </div>
@@ -2912,6 +3563,49 @@ function createBoardHere() {
                     </button>
                   </div>
                   {boardDraftError ? <p className="inline-error">{boardDraftError}</p> : null}
+                </div>
+              ) : creationMode === 'book' ? (
+                <div className="creation-flow">
+                  <label className="field">
+                    <span>Book Name</span>
+                    <input
+                      disabled={!canEdit}
+                      value={bookDraft.name}
+                      onChange={(event) =>
+                        setBookDraft((current) => ({
+                          ...current,
+                          name: event.target.value,
+                        }))
+                      }
+                      placeholder="Book"
+                    />
+                  </label>
+
+                  <PdfSourceInput
+                    label="PDF"
+                    value={bookDraft.pdfUrl}
+                    disabled={!canEdit}
+                    placeholder="https://example.com/rules.pdf"
+                    existingAssetUrls={pdfAssetUrls}
+                    pdfAssets={resolvedPdfAssets}
+                    onChange={(pdfUrl) =>
+                      setBookDraft((current) => ({
+                        ...current,
+                        pdfUrl,
+                      }))
+                    }
+                  />
+
+                  <p className="field-note">
+                    Upload a PDF into the room or paste a URL. The book starts on page 1 and uses the first page as its board cover.
+                  </p>
+
+                  <div className="button-row">
+                    <button disabled={!canEdit} onClick={() => void createBookFromPdf()}>
+                      Create Book From PDF
+                    </button>
+                  </div>
+                  {bookDraftError ? <p className="inline-error">{bookDraftError}</p> : null}
                 </div>
               ) : (
                 <div className="creation-flow">
@@ -3068,6 +3762,26 @@ function createBoardHere() {
               )}
             </section>
           </div>
+        ) : null}
+
+        {isBook(viewerBook) ? (
+          <BookViewerModal
+            key={`${viewerBook.id}:${viewerBook.currentPage}`}
+            book={viewerBook}
+            pdfAssets={resolvedPdfAssets}
+            onClose={(nextPage, pageCount) => {
+              mutate((draft) => {
+                const book = draft.objects[viewerBook.id]
+                if (!isBook(book)) {
+                  return
+                }
+
+                book.currentPage = Math.max(1, Math.min(nextPage, Math.max(1, pageCount)))
+                book.pageCount = Math.max(1, pageCount)
+              })
+              setOpenBookViewerId(undefined)
+            }}
+          />
         ) : null}
       </div>
     </div>

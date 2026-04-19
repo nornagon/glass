@@ -31,7 +31,7 @@ export interface Player {
 
 export interface GameObjectBase {
   id: Id
-  type: 'plane' | 'deck' | 'card' | 'board' | 'pool'
+  type: 'plane' | 'deck' | 'card' | 'board' | 'pool' | 'book'
   name: string
   parentId: Id | null
   locked: boolean
@@ -89,7 +89,18 @@ export interface Pool extends GameObjectBase {
   back: SpriteSpec
 }
 
-export type GameObject = Plane | Deck | Card | Board | Pool
+export interface Book extends GameObjectBase {
+  type: 'book'
+  size: {
+    width: number
+    height: number
+  }
+  pdfUrl: string
+  currentPage: number
+  pageCount: number
+}
+
+export type GameObject = Plane | Deck | Card | Board | Pool | Book
 
 export interface RoomDoc {
   version: 1

@@ -1,4 +1,4 @@
-import type { Board, Card, Deck, GameObject, Id, Plane, PlayerId, Pool, RoomDoc, SpriteSpec, Transform2D } from './types'
+import type { Board, Book, Card, Deck, GameObject, Id, Plane, PlayerId, Pool, RoomDoc, SpriteSpec, Transform2D } from './types'
 import { DEFAULT_BOARD_SIZE, DEFAULT_CARD_SIZE } from './types'
 
 const DEFAULT_FACE: SpriteSpec = {
@@ -42,6 +42,11 @@ const DEFAULT_POOL_BACK: SpriteSpec = {
   bg: '#796f5f',
   fg: '#fff6eb',
 }
+
+const DEFAULT_BOOK_SIZE = {
+  width: 240,
+  height: 320,
+} as const
 
 function poolContainerSize(tokenSize: { width: number; height: number }) {
   const tokenMax = Math.max(tokenSize.width, tokenSize.height)
@@ -184,8 +189,12 @@ export function isPool(object: GameObject | undefined): object is Pool {
   return object?.type === 'pool'
 }
 
-export function isGroupSelectableObject(object: GameObject | undefined): object is Card | Deck | Board | Pool {
-  return isCard(object) || isDeck(object) || isBoard(object) || isPool(object)
+export function isBook(object: GameObject | undefined): object is Book {
+  return object?.type === 'book'
+}
+
+export function isGroupSelectableObject(object: GameObject | undefined): object is Card | Deck | Board | Pool | Book {
+  return isCard(object) || isDeck(object) || isBoard(object) || isPool(object) || isBook(object)
 }
 
 export function getTransform(room: RoomDoc, id: Id) {
@@ -259,6 +268,23 @@ export function createPool(name = 'Board'): Pool {
     tokenSize,
     face: { ...DEFAULT_POOL_FACE, label: name },
     back: { ...DEFAULT_POOL_BACK },
+  }
+}
+
+export function createBook(name = 'Book'): Book {
+  return {
+    id: createObjectId('book'),
+    type: 'book',
+    name,
+    parentId: null,
+    locked: true,
+    meta: {
+      aspectRatio: DEFAULT_BOOK_SIZE.width / DEFAULT_BOOK_SIZE.height,
+    },
+    size: { ...DEFAULT_BOOK_SIZE },
+    pdfUrl: '',
+    currentPage: 1,
+    pageCount: 1,
   }
 }
 
@@ -436,6 +462,13 @@ export function createPoolOnPlane(room: RoomDoc, planeId: Id, transform: Transfo
   room.objects[pool.id] = pool
   placeObjectOnPlane(room, pool.id, planeId, transform)
   return pool.id
+}
+
+export function createBookOnPlane(room: RoomDoc, planeId: Id, transform: Transform2D, name?: string) {
+  const book = createBook(name)
+  room.objects[book.id] = book
+  placeObjectOnPlane(room, book.id, planeId, transform)
+  return book.id
 }
 
 interface SpriteSheetOptions {
@@ -898,6 +931,17 @@ function duplicatePool(pool: Pool): Pool {
   return copy
 }
 
+function duplicateBook(book: Book): Book {
+  return {
+    ...book,
+    id: createObjectId('book'),
+    name: book.name,
+    meta: { ...book.meta },
+    size: { ...book.size },
+    parentId: null,
+  }
+}
+
 function duplicateDeck(deck: Deck): Deck {
   return {
     ...deck,
@@ -978,6 +1022,22 @@ export function duplicateObject(room: RoomDoc, objectId: Id, options?: Duplicate
 
   if (object.type === 'pool') {
     const copy = duplicatePool(object)
+    room.objects[copy.id] = copy
+    const transform = getTransform(room, objectId)
+    if (transform && object.parentId) {
+      placeObjectOnPlane(room, copy.id, object.parentId, {
+        ...(options?.transform ?? {
+          ...transform,
+          x: transform.x + 48,
+          y: transform.y + 48,
+        }),
+      })
+    }
+    return copy.id
+  }
+
+  if (object.type === 'book') {
+    const copy = duplicateBook(object)
     room.objects[copy.id] = copy
     const transform = getTransform(room, objectId)
     if (transform && object.parentId) {

@@ -588,6 +588,35 @@ textarea {
   box-shadow: none;
 }
 
+.board-book-shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.board-book-surface {
+  border-radius: 10px;
+  box-shadow:
+    inset 0 0 0 1px rgba(71, 55, 33, 0.12),
+    0 12px 24px rgba(20, 13, 6, 0.18);
+}
+
+.board-book-page-badge {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  min-width: 3.25rem;
+  padding: 0.28rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(20, 24, 29, 0.82);
+  color: #fff4e2;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-align: center;
+  letter-spacing: 0.02em;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.22);
+}
+
 .board-object-board {
   filter: drop-shadow(0 1.5px 4px rgba(0, 0, 0, 0.58));
 }
@@ -1381,6 +1410,73 @@ textarea {
   }
 }
 
+.book-viewer-modal {
+  --panel-inset: 0;
+  width: min(calc(100vw - 2rem), 96rem);
+  height: min(calc(100svh - 2rem), 64rem);
+  max-height: min(calc(100svh - 2rem), 64rem);
+  overflow: hidden;
+  padding: 0;
+  gap: 0;
+  background: #dbe4ee;
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.4);
+}
+
+.book-viewer-shell {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: linear-gradient(180deg, #eef3f8, #dbe4ee);
+}
+
+.book-viewer-embed {
+  width: 100%;
+  height: 100%;
+}
+
+.book-viewer-embed > * {
+  width: 100%;
+  height: 100%;
+}
+
+.book-viewer-empty {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  padding: 2rem;
+  color: rgba(31, 41, 55, 0.82);
+  text-align: center;
+}
+
+.book-viewer-modal .panel-close {
+  top: 0.85rem;
+  right: 0.85rem;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 999px;
+  background: rgba(15, 23, 31, 0.72);
+  color: #f8fbff;
+  backdrop-filter: blur(16px);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.22);
+  opacity: 1;
+  z-index: 2;
+}
+
+.book-viewer-modal .panel-close::before,
+.book-viewer-modal .panel-close::after {
+  width: 0.95rem;
+  height: 2px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .book-viewer-modal .panel-close:hover:enabled {
+    transform: none;
+    background: rgba(15, 23, 31, 0.84);
+  }
+}
+
 .section-header {
   display: flex;
   justify-content: space-between;
@@ -1684,6 +1780,12 @@ textarea {
   text-align: center;
 }
 
+.pdf-source-preview {
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .image-source-copy {
   min-width: 0;
   display: flex;
@@ -1894,8 +1996,8 @@ button,
 
   .topbar button {
     padding: 0.48rem 0.8rem;
-    font-size: 0.82rem;
-  }
+  font-size: 0.82rem;
+}
 
   .topbar-title,
   .topbar-action-button,
@@ -2071,6 +2173,19 @@ button,
     max-height: min(44rem, calc(100svh - 1.5rem));
     border-radius: 24px;
     padding: var(--panel-inset) var(--panel-inset) calc(env(safe-area-inset-bottom) + var(--panel-inset));
+  }
+
+  .book-viewer-modal {
+    width: min(100%, calc(100vw - 1.5rem));
+    height: min(100%, calc(100svh - 1.5rem));
+    max-height: min(100%, calc(100svh - 1.5rem));
+  }
+
+  .book-viewer-modal .panel-close {
+    top: 0.7rem;
+    right: 0.7rem;
+    width: 2.3rem;
+    height: 2.3rem;
   }
 
   .section-header {
