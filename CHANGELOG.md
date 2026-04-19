@@ -2,6 +2,7 @@
 
 ## 2026-04-19
 
+- Fixed a bad merge in the PDF book work that corrupted board and pool shadow CSS and left the book inspector pointing at a missing size editor component.
 - Made card width and height editable from the inspector.
 - Reduced Safari background-grid jitter while panning by snapping the grid layer to screen pixels, and fixed box shadows on boards to respect their border radius again.
 - Fixed transparent board and pool image shadows so alpha-based drop shadows render from an unclipped wrapper again instead of getting boxed into the sprite bounds.

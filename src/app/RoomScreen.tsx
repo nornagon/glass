@@ -3199,7 +3199,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                     <strong>{selectedObject.currentPage} / {Math.max(1, selectedObject.pageCount)}</strong>
                   </div>
 
-                  <BoardSizeEditor
+                  <DimensionEditor
                     key={selectedObject.id}
                     width={selectedObject.size.width}
                     height={selectedObject.size.height}

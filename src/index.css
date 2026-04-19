@@ -609,6 +609,9 @@ textarea {
 }
 
 .board-object-board > .board-surface-shadow-frame.surface-shadow-pixel {
+  filter: drop-shadow(0 1.5px 4px rgba(0, 0, 0, 0.58));
+}
+
 .board-book-shell {
   position: relative;
   width: 100%;
@@ -636,10 +639,6 @@ textarea {
   text-align: center;
   letter-spacing: 0.02em;
   box-shadow: 0 8px 18px rgba(0, 0, 0, 0.22);
-}
-
-.board-object-board {
-  filter: drop-shadow(0 1.5px 4px rgba(0, 0, 0, 0.58));
 }
 
 .board-object-pool {
