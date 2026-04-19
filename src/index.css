@@ -636,6 +636,24 @@ textarea {
   box-shadow: none;
 }
 
+.board-pool-count {
+  position: absolute;
+  right: calc(-0.65rem + 10px);
+  bottom: calc(-0.8rem + 10px);
+  min-width: 2rem;
+  padding: 0.28rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(12, 22, 29, 0.92);
+  border: 1px solid rgba(255, 237, 208, 0.18);
+  color: #fff6ea;
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1;
+  text-align: center;
+  box-shadow: 0 12px 20px rgba(0, 0, 0, 0.2);
+  pointer-events: none;
+}
+
 .board-sprite-frame {
   position: absolute;
   inset: 0;

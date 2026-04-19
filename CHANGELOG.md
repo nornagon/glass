@@ -2,6 +2,7 @@
 
 ## 2026-04-18
 
+- Added optional finite pool supply tracking with a limited-supply inspector toggle, on-board remaining-count display, and low-supply copy hiding.
 - Make imported image boards keep their native size above a 32px minimum while preserving aspect ratio.
 - Added a multiselect `...` tray action that opens a compact bottom-right selection panel for shared actions like forward/back, duplicate, lock, and delete.
 - Fixed multiselect so clicking an already selected object deselects it, while dragging still moves the whole selected group.

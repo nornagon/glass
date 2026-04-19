@@ -11,6 +11,7 @@ import {
   createDeckOnPlane,
   createDeckFromSpriteSheetOnPlane,
   createPoolOnPlane,
+  getPoolRemainingTokens,
   createRoomDoc,
   drawFromDeck,
   duplicateObject,
@@ -238,6 +239,26 @@ describe('room model', () => {
       bg: '#2a6f4f',
       fg: '#f7f2db',
     })
+    expect(room.objects[poolId].type === 'pool' ? getPoolRemainingTokens(room.objects[poolId]) : undefined).toBe(Infinity)
+  })
+
+  it('decrements tracked pool counts when instantiating boards', () => {
+    const room = createRoomDoc()
+    const poolId = createPoolOnPlane(room, room.rootId, { x: 10, y: 20, rotation: 0 }, 'Meeple')
+
+    expect(room.objects[poolId].type).toBe('pool')
+    if (room.objects[poolId].type === 'pool') {
+      room.objects[poolId].remainingTokens = 2
+    }
+
+    const firstBoardId = createBoardFromPool(room, poolId, { x: 90, y: 110, rotation: 0 })
+    const secondBoardId = createBoardFromPool(room, poolId, { x: 120, y: 110, rotation: 0 })
+    const thirdBoardId = createBoardFromPool(room, poolId, { x: 150, y: 110, rotation: 0 })
+
+    expect(firstBoardId).toBeTruthy()
+    expect(secondBoardId).toBeTruthy()
+    expect(thirdBoardId).toBeUndefined()
+    expect(room.objects[poolId].type === 'pool' ? room.objects[poolId].remainingTokens : undefined).toBe(0)
   })
 
   it('falls back to legacy pool size when tokenSize is missing', () => {
@@ -303,6 +324,20 @@ describe('room model', () => {
 
     expect(returnBoardToPool(room, otherBoardId, poolId)).toBe(false)
     expect(room.objects[otherBoardId]).toBeDefined()
+  })
+
+  it('increments tracked pool counts when boards return', () => {
+    const room = createRoomDoc()
+    const poolId = createPoolOnPlane(room, room.rootId, { x: 0, y: 0, rotation: 0 }, 'Token')
+    const matchingBoardId = createBoardOnPlane(room, room.rootId, { x: 10, y: 0, rotation: 0 }, 'Token')
+
+    expect(room.objects[poolId].type).toBe('pool')
+    if (room.objects[poolId].type === 'pool') {
+      room.objects[poolId].remainingTokens = 0
+    }
+
+    expect(returnBoardToPool(room, matchingBoardId, poolId)).toBe(true)
+    expect(room.objects[poolId].type === 'pool' ? room.objects[poolId].remainingTokens : undefined).toBe(1)
   })
 
   it('moves a selected group forward together while preserving relative order', () => {

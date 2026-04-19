@@ -84,6 +84,7 @@ export interface Pool extends GameObjectBase {
     width: number
     height: number
   }
+  remainingTokens?: number
   face: SpriteSpec
   back: SpriteSpec
 }

@@ -2,7 +2,7 @@ import type { AutomergeUrl } from '@automerge/react'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { resolveImageSource, type ResolvedImageAsset } from '../model/assets'
 import { BOARD_WORLD_SIZE, DEFAULT_CARD_SIZE, type CameraState, type Id, type RoomDoc, type SpriteSpec, type Transform2D } from '../model/types'
-import { canSeeCardFace, getPoolDisplaySize, getPoolTokenSize, getRootPlane, getTransform, isBoard, isBoardFaceUp, isCard, isDeck, isGroupSelectableObject, isPool, isPoolFaceUp } from '../model/room'
+import { canSeeCardFace, getPoolDisplaySize, getPoolRemainingTokens, getPoolTokenSize, getRootPlane, getTransform, isBoard, isBoardFaceUp, isCard, isDeck, isGroupSelectableObject, isPool, isPoolFaceUp } from '../model/room'
 import { releasePanVelocity } from './panMomentum'
 import {
   bindBoardInputRecorder,
@@ -1727,6 +1727,7 @@ function PoolObject({ poolId, room, imageAssets, interactive, onInstantiate }: P
 
   const visibleSpec = isPoolFaceUp(pool) ? pool.face : pool.back
   const tokenSize = getPoolTokenSize(pool)
+  const remainingTokens = getPoolRemainingTokens(pool)
   const clusterCenterX = 50
   const ringCenterY = 48
   const frontTokenY = 50
@@ -1762,12 +1763,24 @@ function PoolObject({ poolId, room, imageAssets, interactive, onInstantiate }: P
       }
     }),
   ]
+  const maxVisibleCopies = Number.isFinite(remainingTokens)
+    ? Math.max(0, Math.min(7, Math.floor(remainingTokens)))
+    : decorativeCopies.length
+  const hiddenCopies = decorativeCopies.length - maxVisibleCopies
+  const hiddenCopyKeys = new Set(
+    [...decorativeCopies]
+      .sort((a, b) => b.zIndex - a.zIndex)
+      .slice(0, hiddenCopies)
+      .map((copy) => copy.key),
+  )
+  const visibleCopies = decorativeCopies.filter((copy) => !hiddenCopyKeys.has(copy.key))
+  const remainingLabel = Number.isFinite(remainingTokens) ? String(Math.floor(remainingTokens)) : undefined
 
   return (
     <div className="board-pool-shell">
       <div className="board-pool-outline" />
       <div className="board-pool-copy-cloud">
-        {decorativeCopies.map((copy) => (
+        {visibleCopies.map((copy) => (
           <div
             key={copy.key}
             className="board-pool-copy"
@@ -1795,6 +1808,7 @@ function PoolObject({ poolId, room, imageAssets, interactive, onInstantiate }: P
           </div>
         ))}
       </div>
+      {remainingLabel ? <div className="board-pool-count">{remainingLabel}</div> : null}
     </div>
   )
 }

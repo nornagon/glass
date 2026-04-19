@@ -39,6 +39,7 @@ import {
   duplicateObject,
   flipCard,
   formatRoomTitle,
+  getPoolRemainingTokens,
   getRootPlane,
   isBoard,
   isCard,
@@ -892,6 +893,89 @@ function BoardSizeEditor({
           />
         </label>
       </div>
+    </section>
+  )
+}
+
+function PoolRemainingEditor({
+  remainingTokens,
+  disabled,
+  onCommit,
+}: {
+  remainingTokens: number
+  disabled: boolean
+  onCommit: (remainingTokens: number | undefined) => void
+}) {
+  const defaultLimitedDraft = '7'
+  const [limited, setLimited] = useState(() => Number.isFinite(remainingTokens))
+  const [draft, setDraft] = useState(() => (Number.isFinite(remainingTokens) ? String(Math.floor(remainingTokens)) : defaultLimitedDraft))
+
+  useEffect(() => {
+    setLimited(Number.isFinite(remainingTokens))
+    setDraft(Number.isFinite(remainingTokens) ? String(Math.floor(remainingTokens)) : defaultLimitedDraft)
+  }, [remainingTokens])
+
+  function commitLimitedValue() {
+    const parsed = parseNumericExpression(draft)
+    if (parsed === undefined || !Number.isFinite(parsed)) {
+      setDraft(Number.isFinite(remainingTokens) ? String(Math.floor(remainingTokens)) : defaultLimitedDraft)
+      return
+    }
+
+    const nextRemainingTokens = Math.max(0, Math.floor(parsed))
+    setDraft(String(nextRemainingTokens))
+    onCommit(nextRemainingTokens)
+  }
+
+  return (
+    <section className="inspector-group">
+      <h4>Supply</h4>
+      <label className="toggle-row">
+        <span>Limited Supply</span>
+        <input
+          disabled={disabled}
+          type="checkbox"
+          checked={limited}
+          onChange={(event) => {
+            const nextLimited = event.target.checked
+            setLimited(nextLimited)
+            if (!nextLimited) {
+              onCommit(undefined)
+              return
+            }
+
+            const parsed = parseNumericExpression(draft)
+            const nextRemainingTokens =
+              parsed !== undefined && Number.isFinite(parsed)
+                ? Math.max(0, Math.floor(parsed))
+                : Number.isFinite(remainingTokens)
+                  ? Math.floor(remainingTokens)
+                  : 7
+            setDraft(String(nextRemainingTokens))
+            onCommit(nextRemainingTokens)
+          }}
+        />
+      </label>
+      {limited ? (
+        <label className="field">
+          <span>Tokens Left</span>
+          <input
+            disabled={disabled}
+            type="text"
+            inputMode="numeric"
+            autoComplete="off"
+            spellCheck={false}
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onBlur={commitLimitedValue}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.currentTarget.blur()
+              }
+            }}
+          />
+        </label>
+      ) : null}
     </section>
   )
 }
@@ -2445,6 +2529,26 @@ function createBoardHere() {
                         }
                       })
                     }}
+                  />
+
+                  <PoolRemainingEditor
+                    key={`${selectedObject.id}:remaining`}
+                    remainingTokens={getPoolRemainingTokens(selectedObject)}
+                    disabled={!canEdit}
+                    onCommit={(remainingTokens) =>
+                      mutate((draft) => {
+                        const pool = draft.objects[selectedObject.id]
+                        if (!isPool(pool)) {
+                          return
+                        }
+
+                        if (remainingTokens === undefined) {
+                          delete pool.remainingTokens
+                        } else {
+                          pool.remainingTokens = remainingTokens
+                        }
+                      })
+                    }
                   />
 
                   <SpriteEditor

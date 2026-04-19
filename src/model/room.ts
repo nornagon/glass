@@ -52,6 +52,15 @@ function poolContainerSize(tokenSize: { width: number; height: number }) {
   }
 }
 
+function finitePoolRemainingTokens(pool: Pool) {
+  const candidate = (pool as Partial<Pool>).remainingTokens
+  if (typeof candidate !== 'number' || !Number.isFinite(candidate) || candidate < 0) {
+    return undefined
+  }
+
+  return Math.floor(candidate)
+}
+
 export function getPoolTokenSize(pool: Pool) {
   const candidate = (pool as Partial<Pool>).tokenSize
   if (
@@ -87,6 +96,10 @@ export function getPoolDisplaySize(pool: Pool) {
   // Legacy pools stored token size in `size`, so render them with a derived
   // container size even before the document is migrated.
   return poolContainerSize(pool.size)
+}
+
+export function getPoolRemainingTokens(pool: Pool) {
+  return finitePoolRemainingTokens(pool) ?? Number.POSITIVE_INFINITY
 }
 
 function fallbackUuid() {
@@ -711,6 +724,11 @@ export function createBoardFromPool(room: RoomDoc, poolId: Id, transform: Transf
     return undefined
   }
 
+  const remainingTokens = getPoolRemainingTokens(pool)
+  if (remainingTokens <= 0) {
+    return undefined
+  }
+
   const tokenSize = getPoolTokenSize(pool)
   const board: Board = {
     id: createObjectId('board'),
@@ -726,6 +744,9 @@ export function createBoardFromPool(room: RoomDoc, poolId: Id, transform: Transf
 
   room.objects[board.id] = board
   placeObjectOnPlane(room, board.id, parent.id, transform)
+  if (Number.isFinite(remainingTokens)) {
+    pool.remainingTokens = remainingTokens - 1
+  }
   return board.id
 }
 
@@ -740,7 +761,12 @@ export function returnBoardToPool(room: RoomDoc, boardId: Id, poolId: Id) {
     return false
   }
 
+  const pool = room.objects[poolId]
+  const remainingTokens = isPool(pool) ? getPoolRemainingTokens(pool) : Number.POSITIVE_INFINITY
   deleteObject(room, boardId)
+  if (isPool(pool) && Number.isFinite(remainingTokens)) {
+    pool.remainingTokens = remainingTokens + 1
+  }
   return true
 }
 
@@ -850,7 +876,8 @@ function duplicateBoard(board: Board): Board {
 
 function duplicatePool(pool: Pool): Pool {
   const tokenSize = getPoolTokenSize(pool)
-  return {
+  const remainingTokens = finitePoolRemainingTokens(pool)
+  const copy: Pool = {
     ...pool,
     id: createObjectId('pool'),
     name: pool.name,
@@ -861,6 +888,14 @@ function duplicatePool(pool: Pool): Pool {
     back: cloneSpriteSpec(pool.back),
     parentId: null,
   }
+
+  if (remainingTokens === undefined) {
+    delete (copy as Partial<Pool>).remainingTokens
+  } else {
+    copy.remainingTokens = remainingTokens
+  }
+
+  return copy
 }
 
 function duplicateDeck(deck: Deck): Deck {
