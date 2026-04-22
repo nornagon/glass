@@ -1,6 +1,7 @@
-import { isValidAutomergeUrl, type AutomergeUrl, useDocuments } from '@automerge/react'
-import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
-import { repo } from './repo'
+import { isValidAutomergeUrl, type AutomergeUrl } from '@automerge/react'
+import { useEffect, useRef, useState } from 'react'
+import { loadCachedResourceDoc, saveCachedResourceDoc } from './resourceCache'
+import { resourceRepo } from './repo'
 import type { RoomDoc, SpriteSpec } from './types'
 
 export interface ImageAssetDoc {
@@ -37,6 +38,13 @@ export interface ResolvedImageSource {
 
 function blobPartFromBytes(bytes: Uint8Array) {
   return Uint8Array.from(bytes)
+}
+
+function cloneImageAssetDoc(assetDoc: ImageAssetDoc): ImageAssetDoc {
+  return {
+    ...assetDoc,
+    bytes: Uint8Array.from(assetDoc.bytes),
+  }
 }
 
 function isFinitePositiveNumber(value: unknown): value is number {
@@ -97,6 +105,14 @@ export function asAutomergeUrl(value: string | undefined) {
 
 export function collectAutomergeUrls(values: Array<string | undefined>) {
   return [...new Set(values.map(asAutomergeUrl).filter((value): value is AutomergeUrl => Boolean(value)))]
+}
+
+function collectAutomergeUrlState(values: Array<string | undefined>) {
+  const assetUrls = collectAutomergeUrls(values)
+  return {
+    key: assetUrls.join('\0'),
+    assetUrls,
+  }
 }
 
 export function collectRoomImageAssetUrls(room: RoomDoc, extraUrls: Array<string | undefined> = []) {
@@ -187,9 +203,37 @@ export async function loadStoredImageAsset(url: string) {
     return undefined
   }
 
-  const handle = await repo.find<ImageAssetDoc>(assetUrl)
-  const doc = handle.doc()
-  return isImageAssetDoc(doc) ? doc : undefined
+  const cachedAsset = await loadCachedResourceDoc(assetUrl)
+  if (cachedAsset && isImageAssetDoc(cachedAsset)) {
+    return cloneImageAssetDoc(cachedAsset)
+  }
+
+  const progress = resourceRepo.findWithProgress<ImageAssetDoc>(assetUrl)
+  const handle = progress.handle
+  try {
+    if (!handle.isReady() && !handle.isUnavailable()) {
+      if ('untilReady' in progress) {
+        await progress.untilReady(['ready', 'unavailable'])
+      } else {
+        await handle.whenReady(['ready', 'unavailable'])
+      }
+    }
+
+    if (!handle.isReady()) {
+      return undefined
+    }
+
+    const doc = handle.doc()
+    if (!isImageAssetDoc(doc)) {
+      return undefined
+    }
+
+    const assetDoc = cloneImageAssetDoc(doc)
+    await saveCachedResourceDoc(assetUrl, assetDoc).catch(() => undefined)
+    return assetDoc
+  } finally {
+    await resourceRepo.removeFromCache(handle.documentId).catch(() => undefined)
+  }
 }
 
 export async function findMatchingStoredImageAssetUrl(
@@ -225,7 +269,8 @@ export async function createOrReuseImageAsset(file: File, candidateUrls: Array<s
     }
   }
 
-  const handle = repo.create<ImageAssetDoc>(assetDoc)
+  const handle = resourceRepo.create<ImageAssetDoc>(assetDoc)
+  await saveCachedResourceDoc(handle.url, assetDoc).catch(() => undefined)
   return {
     url: handle.url,
     reused: false as const,
@@ -249,74 +294,101 @@ export async function loadStoredImageDimensions(url: string) {
 }
 
 export function useResolvedImageAssets(urls: Array<string | undefined>) {
-  const assetUrls = useMemo(() => collectAutomergeUrls(urls), [urls])
-  const [assetDocs] = useDocuments<ImageAssetDoc>(assetUrls, { suspense: false })
+  const [{ assetUrls, key: assetUrlsKey }, setAssetUrlState] = useState(() => collectAutomergeUrlState(urls))
   const objectUrlRef = useRef(new Map<AutomergeUrl, { signature: string; objectUrl: string }>())
   const [resolvedAssets, setResolvedAssets] = useState<ReadonlyMap<AutomergeUrl, ResolvedImageAsset>>(new Map())
-  const commitResolvedAssets = useEffectEvent((nextResolvedAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>) => {
-    setResolvedAssets(nextResolvedAssets)
-  })
+  const loadVersionRef = useRef(0)
 
   useEffect(() => {
-    const nextResolvedAssets = new Map<AutomergeUrl, ResolvedImageAsset>()
-    const liveUrls = new Set(assetUrls)
+    const nextAssetUrlState = collectAutomergeUrlState(urls)
+    if (nextAssetUrlState.key !== assetUrlsKey) {
+      // We intentionally stabilize the URL set so asset loads are keyed by URL contents, not caller array identity.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setAssetUrlState(nextAssetUrlState)
+    }
+  }, [assetUrlsKey, urls])
 
-    for (const assetUrl of assetUrls) {
-      const assetDoc = assetDocs.get(assetUrl)
-      if (!assetDoc || !isImageAssetDoc(assetDoc)) {
-        continue
+  useEffect(() => {
+    const loadVersion = loadVersionRef.current + 1
+    loadVersionRef.current = loadVersion
+    let cancelled = false
+
+    void Promise.all(
+      assetUrls.map(async (assetUrl) => {
+        try {
+          return [assetUrl, await loadStoredImageAsset(assetUrl)] as const
+        } catch {
+          return [assetUrl, undefined] as const
+        }
+      }),
+    ).then((loadedAssets) => {
+      if (cancelled || loadVersionRef.current !== loadVersion) {
+        return
       }
 
-      const signature = [
-        assetDoc.contentHash ?? '',
-        assetDoc.name,
-        assetDoc.mimeType,
-        assetDoc.sizeBytes,
-        assetDoc.width ?? 0,
-        assetDoc.height ?? 0,
-      ].join(':')
-      const currentObjectUrl = objectUrlRef.current.get(assetUrl)
+      const nextResolvedAssets = new Map<AutomergeUrl, ResolvedImageAsset>()
+      const liveUrls = new Set(assetUrls)
 
-      if (!currentObjectUrl || currentObjectUrl.signature !== signature) {
-        if (currentObjectUrl) {
-          URL.revokeObjectURL(currentObjectUrl.objectUrl)
+      for (const [assetUrl, assetDoc] of loadedAssets) {
+        if (!assetDoc) {
+          continue
         }
 
-        objectUrlRef.current.set(assetUrl, {
+        const signature = [
+          assetDoc.contentHash ?? '',
+          assetDoc.name,
+          assetDoc.mimeType,
+          assetDoc.sizeBytes,
+          assetDoc.width ?? 0,
+          assetDoc.height ?? 0,
+        ].join(':')
+        const currentObjectUrl = objectUrlRef.current.get(assetUrl)
+
+        if (!currentObjectUrl || currentObjectUrl.signature !== signature) {
+          if (currentObjectUrl) {
+            URL.revokeObjectURL(currentObjectUrl.objectUrl)
+          }
+
+          objectUrlRef.current.set(assetUrl, {
+            signature,
+            objectUrl: URL.createObjectURL(
+              new Blob([blobPartFromBytes(assetDoc.bytes)], { type: assetDoc.mimeType || 'application/octet-stream' }),
+            ),
+          })
+        }
+
+        const objectUrl = objectUrlRef.current.get(assetUrl)
+        if (!objectUrl) {
+          continue
+        }
+
+        nextResolvedAssets.set(assetUrl, {
+          url: assetUrl,
+          objectUrl: objectUrl.objectUrl,
           signature,
-          objectUrl: URL.createObjectURL(
-            new Blob([blobPartFromBytes(assetDoc.bytes)], { type: assetDoc.mimeType || 'application/octet-stream' }),
-          ),
+          name: assetDoc.name,
+          mimeType: assetDoc.mimeType,
+          sizeBytes: assetDoc.sizeBytes,
+          contentHash: assetDoc.contentHash,
+          width: assetDoc.width,
+          height: assetDoc.height,
         })
       }
 
-      const objectUrl = objectUrlRef.current.get(assetUrl)
-      if (!objectUrl) {
-        continue
+      for (const [assetUrl, currentObjectUrl] of objectUrlRef.current) {
+        if (!liveUrls.has(assetUrl) || !nextResolvedAssets.has(assetUrl)) {
+          URL.revokeObjectURL(currentObjectUrl.objectUrl)
+          objectUrlRef.current.delete(assetUrl)
+        }
       }
 
-      nextResolvedAssets.set(assetUrl, {
-        url: assetUrl,
-        objectUrl: objectUrl.objectUrl,
-        signature,
-        name: assetDoc.name,
-        mimeType: assetDoc.mimeType,
-        sizeBytes: assetDoc.sizeBytes,
-        contentHash: assetDoc.contentHash,
-        width: assetDoc.width,
-        height: assetDoc.height,
-      })
-    }
+      setResolvedAssets(nextResolvedAssets)
+    })
 
-    for (const [assetUrl, currentObjectUrl] of objectUrlRef.current) {
-      if (!liveUrls.has(assetUrl) || !nextResolvedAssets.has(assetUrl)) {
-        URL.revokeObjectURL(currentObjectUrl.objectUrl)
-        objectUrlRef.current.delete(assetUrl)
-      }
+    return () => {
+      cancelled = true
     }
-
-    commitResolvedAssets(nextResolvedAssets)
-  }, [assetDocs, assetUrls])
+  }, [assetUrls])
 
   useEffect(
     () => () => {

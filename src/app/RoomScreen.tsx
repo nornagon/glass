@@ -221,6 +221,22 @@ function loadImageDimensions(url: string) {
   })
 }
 
+function isLikelyMobileSafari() {
+  if (typeof navigator === 'undefined') {
+    return false
+  }
+
+  const userAgent = navigator.userAgent
+  const vendor = navigator.vendor ?? ''
+  const isAppleWebKit = vendor.includes('Apple') && userAgent.includes('WebKit')
+  const isOtherIosBrowser = /CriOS|FxiOS|EdgiOS|OPiOS|DuckDuckGo|GSA/.test(userAgent)
+  const isTouchAppleDevice =
+    navigator.maxTouchPoints > 1 &&
+    (/iP(hone|ad|od)/.test(userAgent) || userAgent.includes('Macintosh'))
+
+  return isAppleWebKit && !isOtherIosBrowser && isTouchAppleDevice
+}
+
 async function loadImageSourceDimensions(
   url: string,
   imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
@@ -874,6 +890,7 @@ function BookViewerModal({
   const currentPageRef = useRef(Math.max(1, book.currentPage))
   const totalPagesRef = useRef(Math.max(1, book.pageCount))
   const [viewerRegistry, setViewerRegistry] = useState<PluginRegistry | null>(null)
+  const constrainedViewerMode = useMemo(() => isLikelyMobileSafari(), [])
 
   const viewerConfig = useMemo(() => {
     if (!pdfRenderUrl) {
@@ -894,6 +911,15 @@ function BookViewerModal({
       zoom: {
         defaultZoomLevel: ZoomMode.FitWidth,
       },
+      scroll: {
+        defaultBufferSize: constrainedViewerMode ? 0 : 2,
+      },
+      thumbnails: {
+        buffer: constrainedViewerMode ? 0 : 2,
+      },
+      tiling: {
+        extraRings: constrainedViewerMode ? 0 : 1,
+      },
       disabledCategories: [
         'annotation',
         'form',
@@ -902,7 +928,7 @@ function BookViewerModal({
         'signature',
       ],
     }
-  }, [pdfRenderUrl])
+  }, [constrainedViewerMode, pdfRenderUrl])
 
   const closeViewer = useCallback(async () => {
     if (viewerRegistry) {

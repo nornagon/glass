@@ -1,6 +1,7 @@
-import { isValidAutomergeUrl, type AutomergeUrl, useDocuments } from '@automerge/react'
-import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
-import { repo } from './repo'
+import { isValidAutomergeUrl, type AutomergeUrl } from '@automerge/react'
+import { useEffect, useRef, useState } from 'react'
+import { loadCachedResourceDoc, saveCachedResourceDoc } from './resourceCache'
+import { resourceRepo } from './repo'
 import type { RoomDoc } from './types'
 
 export interface PdfAssetDoc {
@@ -41,6 +42,13 @@ function bytesToArrayBuffer(bytes: Uint8Array) {
 
 function blobPartFromBytes(bytes: Uint8Array) {
   return bytesToArrayBuffer(bytes)
+}
+
+function clonePdfAssetDoc(assetDoc: PdfAssetDoc): PdfAssetDoc {
+  return {
+    ...assetDoc,
+    bytes: Uint8Array.from(assetDoc.bytes),
+  }
 }
 
 function isFinitePositiveNumber(value: unknown): value is number {
@@ -97,6 +105,14 @@ export function asAutomergeUrl(value: string | undefined) {
 
 export function collectAutomergeUrls(values: Array<string | undefined>) {
   return [...new Set(values.map(asAutomergeUrl).filter((value): value is AutomergeUrl => Boolean(value)))]
+}
+
+function collectAutomergeUrlState(values: Array<string | undefined>) {
+  const assetUrls = collectAutomergeUrls(values)
+  return {
+    key: assetUrls.join('\0'),
+    assetUrls,
+  }
 }
 
 export function collectRoomPdfAssetUrls(room: RoomDoc, extraUrls: Array<string | undefined> = []) {
@@ -163,9 +179,37 @@ export async function loadStoredPdfAsset(url: string) {
     return undefined
   }
 
-  const handle = await repo.find<PdfAssetDoc>(assetUrl)
-  const doc = handle.doc()
-  return isPdfAssetDoc(doc) ? doc : undefined
+  const cachedAsset = await loadCachedResourceDoc(assetUrl)
+  if (cachedAsset && isPdfAssetDoc(cachedAsset)) {
+    return clonePdfAssetDoc(cachedAsset)
+  }
+
+  const progress = resourceRepo.findWithProgress<PdfAssetDoc>(assetUrl)
+  const handle = progress.handle
+  try {
+    if (!handle.isReady() && !handle.isUnavailable()) {
+      if ('untilReady' in progress) {
+        await progress.untilReady(['ready', 'unavailable'])
+      } else {
+        await handle.whenReady(['ready', 'unavailable'])
+      }
+    }
+
+    if (!handle.isReady()) {
+      return undefined
+    }
+
+    const doc = handle.doc()
+    if (!isPdfAssetDoc(doc)) {
+      return undefined
+    }
+
+    const assetDoc = clonePdfAssetDoc(doc)
+    await saveCachedResourceDoc(assetUrl, assetDoc).catch(() => undefined)
+    return assetDoc
+  } finally {
+    await resourceRepo.removeFromCache(handle.documentId).catch(() => undefined)
+  }
 }
 
 export async function findMatchingStoredPdfAssetUrl(
@@ -201,7 +245,8 @@ export async function createOrReusePdfAsset(file: File, candidateUrls: Array<str
     }
   }
 
-  const handle = repo.create<PdfAssetDoc>(assetDoc)
+  const handle = resourceRepo.create<PdfAssetDoc>(assetDoc)
+  await saveCachedResourceDoc(handle.url, assetDoc).catch(() => undefined)
   return {
     url: handle.url,
     reused: false as const,
@@ -209,70 +254,97 @@ export async function createOrReusePdfAsset(file: File, candidateUrls: Array<str
 }
 
 export function useResolvedPdfAssets(urls: Array<string | undefined>) {
-  const assetUrls = useMemo(() => collectAutomergeUrls(urls), [urls])
-  const [assetDocs] = useDocuments<PdfAssetDoc>(assetUrls, { suspense: false })
+  const [{ assetUrls, key: assetUrlsKey }, setAssetUrlState] = useState(() => collectAutomergeUrlState(urls))
   const objectUrlRef = useRef(new Map<AutomergeUrl, { signature: string; objectUrl: string }>())
   const [resolvedAssets, setResolvedAssets] = useState<ReadonlyMap<AutomergeUrl, ResolvedPdfAsset>>(new Map())
-  const commitResolvedAssets = useEffectEvent((nextResolvedAssets: ReadonlyMap<AutomergeUrl, ResolvedPdfAsset>) => {
-    setResolvedAssets(nextResolvedAssets)
-  })
+  const loadVersionRef = useRef(0)
 
   useEffect(() => {
-    const nextResolvedAssets = new Map<AutomergeUrl, ResolvedPdfAsset>()
-    const liveUrls = new Set(assetUrls)
+    const nextAssetUrlState = collectAutomergeUrlState(urls)
+    if (nextAssetUrlState.key !== assetUrlsKey) {
+      // We intentionally stabilize the URL set so asset loads are keyed by URL contents, not caller array identity.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setAssetUrlState(nextAssetUrlState)
+    }
+  }, [assetUrlsKey, urls])
 
-    for (const assetUrl of assetUrls) {
-      const assetDoc = assetDocs.get(assetUrl)
-      if (!assetDoc || !isPdfAssetDoc(assetDoc)) {
-        continue
+  useEffect(() => {
+    const loadVersion = loadVersionRef.current + 1
+    loadVersionRef.current = loadVersion
+    let cancelled = false
+
+    void Promise.all(
+      assetUrls.map(async (assetUrl) => {
+        try {
+          return [assetUrl, await loadStoredPdfAsset(assetUrl)] as const
+        } catch {
+          return [assetUrl, undefined] as const
+        }
+      }),
+    ).then((loadedAssets) => {
+      if (cancelled || loadVersionRef.current !== loadVersion) {
+        return
       }
 
-      const signature = [
-        assetDoc.contentHash ?? '',
-        assetDoc.name,
-        assetDoc.mimeType,
-        assetDoc.sizeBytes,
-      ].join(':')
-      const currentObjectUrl = objectUrlRef.current.get(assetUrl)
+      const nextResolvedAssets = new Map<AutomergeUrl, ResolvedPdfAsset>()
+      const liveUrls = new Set(assetUrls)
 
-      if (!currentObjectUrl || currentObjectUrl.signature !== signature) {
-        if (currentObjectUrl) {
-          URL.revokeObjectURL(currentObjectUrl.objectUrl)
+      for (const [assetUrl, assetDoc] of loadedAssets) {
+        if (!assetDoc) {
+          continue
         }
 
-        objectUrlRef.current.set(assetUrl, {
+        const signature = [
+          assetDoc.contentHash ?? '',
+          assetDoc.name,
+          assetDoc.mimeType,
+          assetDoc.sizeBytes,
+        ].join(':')
+        const currentObjectUrl = objectUrlRef.current.get(assetUrl)
+
+        if (!currentObjectUrl || currentObjectUrl.signature !== signature) {
+          if (currentObjectUrl) {
+            URL.revokeObjectURL(currentObjectUrl.objectUrl)
+          }
+
+          objectUrlRef.current.set(assetUrl, {
+            signature,
+            objectUrl: URL.createObjectURL(
+              new Blob([blobPartFromBytes(assetDoc.bytes)], { type: assetDoc.mimeType || 'application/pdf' }),
+            ),
+          })
+        }
+
+        const objectUrl = objectUrlRef.current.get(assetUrl)
+        if (!objectUrl) {
+          continue
+        }
+
+        nextResolvedAssets.set(assetUrl, {
+          url: assetUrl,
+          objectUrl: objectUrl.objectUrl,
           signature,
-          objectUrl: URL.createObjectURL(
-            new Blob([blobPartFromBytes(assetDoc.bytes)], { type: assetDoc.mimeType || 'application/pdf' }),
-          ),
+          name: assetDoc.name,
+          mimeType: assetDoc.mimeType,
+          sizeBytes: assetDoc.sizeBytes,
+          contentHash: assetDoc.contentHash,
         })
       }
 
-      const objectUrl = objectUrlRef.current.get(assetUrl)
-      if (!objectUrl) {
-        continue
+      for (const [assetUrl, currentObjectUrl] of objectUrlRef.current) {
+        if (!liveUrls.has(assetUrl) || !nextResolvedAssets.has(assetUrl)) {
+          URL.revokeObjectURL(currentObjectUrl.objectUrl)
+          objectUrlRef.current.delete(assetUrl)
+        }
       }
 
-      nextResolvedAssets.set(assetUrl, {
-        url: assetUrl,
-        objectUrl: objectUrl.objectUrl,
-        signature,
-        name: assetDoc.name,
-        mimeType: assetDoc.mimeType,
-        sizeBytes: assetDoc.sizeBytes,
-        contentHash: assetDoc.contentHash,
-      })
-    }
+      setResolvedAssets(nextResolvedAssets)
+    })
 
-    for (const [assetUrl, currentObjectUrl] of objectUrlRef.current) {
-      if (!liveUrls.has(assetUrl) || !nextResolvedAssets.has(assetUrl)) {
-        URL.revokeObjectURL(currentObjectUrl.objectUrl)
-        objectUrlRef.current.delete(assetUrl)
-      }
+    return () => {
+      cancelled = true
     }
-
-    commitResolvedAssets(nextResolvedAssets)
-  }, [assetDocs, assetUrls])
+  }, [assetUrls])
 
   useEffect(
     () => () => {

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-04-22
+
+- Moved room resource docs onto a network-only Automerge repo, added a dedicated IndexedDB asset cache for image and PDF payloads, and taught asset loads to prefer the local cache before touching Automerge again.
+- Fixed the board view's pool-object hook ordering so React no longer crashes when a pool copy resolves to a missing board.
+- Reduced EmbedPDF page preloading on Mobile Safari by shrinking the viewer's scroll, thumbnail, and tile buffers when opening large PDF books.
+
 ## 2026-04-19
 
 - Fixed a bad merge in the PDF book work that corrupted board and pool shadow CSS and left the book inspector pointing at a missing size editor component.

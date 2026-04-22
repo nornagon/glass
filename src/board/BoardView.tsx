@@ -1907,12 +1907,12 @@ interface PoolObjectProps {
 
 function PoolObject({ poolId, room, imageAssets, interactive, onInstantiate }: PoolObjectProps) {
   const pool = room.objects[poolId]
+  const visibleSpec: SpriteSpec = isPool(pool) ? (isPoolFaceUp(pool) ? pool.face : pool.back) : { kind: 'label' }
+  const shadowMode = useBoardSurfaceShadowMode(visibleSpec, imageAssets, isPool(pool))
   if (!isPool(pool)) {
     return null
   }
 
-  const visibleSpec = isPoolFaceUp(pool) ? pool.face : pool.back
-  const shadowMode = useBoardSurfaceShadowMode(visibleSpec, imageAssets, true)
   const tokenSize = getPoolTokenSize(pool)
   const remainingTokens = getPoolRemainingTokens(pool)
   const clusterCenterX = 50

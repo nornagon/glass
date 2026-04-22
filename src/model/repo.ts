@@ -8,13 +8,23 @@ import {
 } from '@automerge/react'
 
 const ROOM_HASH_PREFIX = '#room='
+const REPO_STORAGE_NAMESPACE = 'glass'
+const REPO_STORAGE_COLLECTION = 'rooms'
+const REPO_SYNC_SERVER_URL = 'wss://sync.automerge.org'
 
 export const repo = new Repo({
   network: [
     new BroadcastChannelNetworkAdapter(),
-    new WebSocketClientAdapter('wss://sync.automerge.org'),
+    new WebSocketClientAdapter(REPO_SYNC_SERVER_URL),
   ],
-  storage: new IndexedDBStorageAdapter('glass', 'rooms'),
+  storage: new IndexedDBStorageAdapter(REPO_STORAGE_NAMESPACE, REPO_STORAGE_COLLECTION),
+})
+
+export const resourceRepo = new Repo({
+  network: [
+    new BroadcastChannelNetworkAdapter(),
+    new WebSocketClientAdapter(REPO_SYNC_SERVER_URL),
+  ],
 })
 
 export function parseRoomUrlFromHash(hash = window.location.hash) {
