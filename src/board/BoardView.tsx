@@ -144,6 +144,7 @@ const ALPHA_OUTLINE_MIN_SAMPLES = 12
 const ALPHA_OUTLINE_MAX_SAMPLES = 64
 const PREPARED_SPRITE_MAX_DIMENSION = 4096
 const PREPARED_SPRITE_MOBILE_SAFARI_MAX_DIMENSION = 2048
+const ENABLE_PREPARED_SPRITE_PREWARM = false
 const PREPARED_SPRITE_PREWARM_INITIAL_DELAY_MS = 500
 const PREPARED_SPRITE_PREWARM_QUIET_MS = 400
 const PREPARED_SPRITE_PREWARM_FALLBACK_DELAY_MS = 80
@@ -2968,6 +2969,10 @@ export function BoardView({
     if (typeof window === 'undefined') {
       return
     }
+    if (!ENABLE_PREPARED_SPRITE_PREWARM) {
+      setPrewarmProgress(null)
+      return
+    }
 
     const tasks = Object.values(room.objects).flatMap((object) => {
       if (isCard(object)) {
@@ -3192,7 +3197,7 @@ export function BoardView({
     }
   }, [constrainedEffects, currentPlayerId, imageAssets, room.objects])
 
-  const prewarmPercent = prewarmProgress
+  const prewarmPercent = ENABLE_PREPARED_SPRITE_PREWARM && prewarmProgress
     ? Math.round((prewarmProgress.completed / prewarmProgress.total) * 100)
     : undefined
 

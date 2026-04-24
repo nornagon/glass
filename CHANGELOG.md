@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-04-24
+
+- Disabled prepared-surface prewarming so large image rooms no longer spend idle time building sprite surfaces ahead of demand.
+- Pinned the workspace package manager metadata to `pnpm@10.11.1`.
+
 ## 2026-04-22
 
 - Moved room resource docs onto a network-only Automerge repo, added a dedicated IndexedDB asset cache for image and PDF payloads, and taught asset loads to prefer the local cache before touching Automerge again.
