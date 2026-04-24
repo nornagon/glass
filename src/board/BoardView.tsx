@@ -315,6 +315,14 @@ function snapScreenCoordinate(value: number) {
   return Math.round(value * devicePixelRatio) / devicePixelRatio
 }
 
+function viewportSizeFromElement(element: Element): Size {
+  const rect = element.getBoundingClientRect()
+  return {
+    width: Math.max(1, Math.round(rect.width)),
+    height: Math.max(1, Math.round(rect.height)),
+  }
+}
+
 function boardGridScreenStyle(viewport: Size, camera: CameraState): CSSProperties {
   const surfaceScreenSize = Math.max(1, BOARD_WORLD_SIZE * camera.zoom)
   const gridSize = Math.max(1, 160 * camera.zoom)
@@ -2938,11 +2946,19 @@ export function BoardView({
     recordBoardInputRecorderViewport(viewportSize)
   }, [viewportSize])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const host = hostRef.current
     if (!host) {
       return
     }
+
+    const updateViewportSize = (nextViewport: Size) => {
+      setViewportSize((current) =>
+        current.width === nextViewport.width && current.height === nextViewport.height ? current : nextViewport,
+      )
+    }
+
+    updateViewportSize(viewportSizeFromElement(host))
 
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0]
@@ -2950,13 +2966,10 @@ export function BoardView({
         return
       }
 
-      const nextViewport = {
+      updateViewportSize({
         width: Math.max(1, Math.round(entry.contentRect.width)),
         height: Math.max(1, Math.round(entry.contentRect.height)),
-      }
-      setViewportSize((current) =>
-        current.width === nextViewport.width && current.height === nextViewport.height ? current : nextViewport,
-      )
+      })
     })
 
     observer.observe(host)

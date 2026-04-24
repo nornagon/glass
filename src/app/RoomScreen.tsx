@@ -2291,6 +2291,14 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   }
 
   function openBookViewer(bookId: string) {
+    if (bookViewerMemoryGuardEnabled) {
+      const timeoutId = cameraCommitTimeoutRef.current
+      if (timeoutId !== undefined) {
+        window.clearTimeout(timeoutId)
+        cameraCommitTimeoutRef.current = undefined
+      }
+      flushCameraState(cameraRef.current)
+    }
     setOpenBookViewerId(bookId)
   }
 

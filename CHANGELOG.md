@@ -2,6 +2,7 @@
 
 ## 2026-04-24
 
+- Fixed board camera bounce on initial load and after closing the PDF viewer by synchronizing viewport measurement before the first board paint.
 - Unmounted the board behind the PDF viewer on Mobile Safari to reduce WebContent memory pressure while zooming large PDFs.
 - Disabled prepared-surface prewarming so large image rooms no longer spend idle time building sprite surfaces ahead of demand.
 - Pinned the workspace package manager metadata to `pnpm@10.11.1`.
