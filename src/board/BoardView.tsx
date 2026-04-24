@@ -129,6 +129,7 @@ const TAP_GRACE_DISTANCE = 10
 const TOUCH_LONG_PRESS_MS = 360
 const MIN_ZOOM_SCALE = 0.2
 const MAX_ZOOM_SCALE = 2.5
+const BOARD_GRID_SPACING = 160
 const PAN_CLAMP_MARGIN = 640
 const PAN_MOMENTUM_DECAY = 6.5
 const PAN_MOMENTUM_CUTOFF_SCREEN_VELOCITY = 10
@@ -315,15 +316,6 @@ function snapScreenCoordinate(value: number) {
   return Math.round(value * devicePixelRatio) / devicePixelRatio
 }
 
-function repeatingBackgroundOffset(value: number, size: number) {
-  if (!Number.isFinite(value) || !Number.isFinite(size) || size <= 0) {
-    return 0
-  }
-
-  const offset = ((value % size) + size) % size
-  return offset === size ? 0 : offset
-}
-
 function viewportSizeFromElement(element: Element): Size {
   const rect = element.getBoundingClientRect()
   return {
@@ -332,37 +324,81 @@ function viewportSizeFromElement(element: Element): Size {
   }
 }
 
-function boardGridScreenStyle(viewport: Size, camera: CameraState): CSSProperties {
-  const surfaceScreenSize = Math.max(1, BOARD_WORLD_SIZE * camera.zoom)
-  const gridSize = Math.max(1, 160 * camera.zoom)
+function boardGridSurfaceScreenRect(viewport: Size, camera: CameraState) {
+  const size = Math.max(1, BOARD_WORLD_SIZE * camera.zoom)
   const topLeft = logicalToScreen(viewport, camera, {
     x: -BOARD_WORLD_SIZE / 2,
     y: -BOARD_WORLD_SIZE / 2,
   })
-  const originOffset = surfaceScreenSize / 2
-  const snappedLeft = snapScreenCoordinate(topLeft.x)
-  const snappedTop = snapScreenCoordinate(topLeft.y)
-  const backgroundOffsetX = repeatingBackgroundOffset(originOffset + (topLeft.x - snappedLeft), gridSize)
-  const backgroundOffsetY = repeatingBackgroundOffset(originOffset + (topLeft.y - snappedTop), gridSize)
-
   return {
-    left: `${snappedLeft}px`,
-    top: `${snappedTop}px`,
-    width: `${surfaceScreenSize}px`,
-    height: `${surfaceScreenSize}px`,
-    backgroundPosition: `${backgroundOffsetX}px ${backgroundOffsetY}px`,
-    backgroundSize: `${gridSize}px ${gridSize}px, ${gridSize}px ${gridSize}px`,
+    left: snapScreenCoordinate(topLeft.x),
+    top: snapScreenCoordinate(topLeft.y),
+    size,
   }
 }
 
-function applyBoardGridScreenStyle(boardGrid: HTMLDivElement, viewport: Size, camera: CameraState) {
-  const style = boardGridScreenStyle(viewport, camera)
-  boardGrid.style.left = String(style.left ?? '')
-  boardGrid.style.top = String(style.top ?? '')
-  boardGrid.style.width = String(style.width ?? '')
-  boardGrid.style.height = String(style.height ?? '')
-  boardGrid.style.backgroundPosition = String(style.backgroundPosition ?? '')
-  boardGrid.style.backgroundSize = String(style.backgroundSize ?? '')
+function applyBoardGridShadowStyle(boardGridShadow: HTMLDivElement, viewport: Size, camera: CameraState) {
+  const { left, top, size } = boardGridSurfaceScreenRect(viewport, camera)
+  boardGridShadow.style.left = `${left}px`
+  boardGridShadow.style.top = `${top}px`
+  boardGridShadow.style.width = `${size}px`
+  boardGridShadow.style.height = `${size}px`
+}
+
+function drawBoardGridCanvas(canvas: HTMLCanvasElement, viewport: Size, camera: CameraState) {
+  const context = canvas.getContext('2d')
+  if (!context) {
+    return
+  }
+
+  const devicePixelRatio = typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1
+  const pixelWidth = Math.max(1, Math.round(viewport.width * devicePixelRatio))
+  const pixelHeight = Math.max(1, Math.round(viewport.height * devicePixelRatio))
+  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+    canvas.width = pixelWidth
+    canvas.height = pixelHeight
+  }
+
+  context.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0)
+  context.clearRect(0, 0, viewport.width, viewport.height)
+
+  const { left: snappedLeft, top: snappedTop, size: surfaceScreenSize } = boardGridSurfaceScreenRect(viewport, camera)
+  const surfaceRight = snappedLeft + surfaceScreenSize
+  const surfaceBottom = snappedTop + surfaceScreenSize
+
+  const visibleLeft = Math.max(0, snappedLeft)
+  const visibleTop = Math.max(0, snappedTop)
+  const visibleRight = Math.min(viewport.width, surfaceRight)
+  const visibleBottom = Math.min(viewport.height, surfaceBottom)
+  const visibleWidth = visibleRight - visibleLeft
+  const visibleHeight = visibleBottom - visibleTop
+  if (visibleWidth <= 0 || visibleHeight <= 0) {
+    return
+  }
+
+  context.fillStyle = '#1f544f'
+  context.fillRect(visibleLeft, visibleTop, visibleWidth, visibleHeight)
+
+  context.fillStyle = 'rgba(45, 108, 100, 0.68)'
+  const minWorldX = Math.max(-BOARD_WORLD_SIZE / 2, camera.centerX - viewport.width / (2 * camera.zoom))
+  const maxWorldX = Math.min(BOARD_WORLD_SIZE / 2, camera.centerX + viewport.width / (2 * camera.zoom))
+  const minWorldY = Math.max(-BOARD_WORLD_SIZE / 2, camera.centerY - viewport.height / (2 * camera.zoom))
+  const maxWorldY = Math.min(BOARD_WORLD_SIZE / 2, camera.centerY + viewport.height / (2 * camera.zoom))
+  const firstGridX = Math.ceil(minWorldX / BOARD_GRID_SPACING) * BOARD_GRID_SPACING
+  const firstGridY = Math.ceil(minWorldY / BOARD_GRID_SPACING) * BOARD_GRID_SPACING
+
+  for (let x = firstGridX; x <= maxWorldX; x += BOARD_GRID_SPACING) {
+    const screenX = snapScreenCoordinate(logicalToScreen(viewport, camera, { x, y: 0 }).x)
+    if (screenX >= visibleLeft - 1 && screenX <= visibleRight) {
+      context.fillRect(screenX, visibleTop, 1, visibleHeight)
+    }
+  }
+  for (let y = firstGridY; y <= maxWorldY; y += BOARD_GRID_SPACING) {
+    const screenY = snapScreenCoordinate(logicalToScreen(viewport, camera, { x: 0, y }).y)
+    if (screenY >= visibleTop - 1 && screenY <= visibleBottom) {
+      context.fillRect(visibleLeft, screenY, visibleWidth, 1)
+    }
+  }
 }
 
 function cameraForAnchor(
@@ -2449,7 +2485,8 @@ export function BoardView({
   const rootRef = useRef<HTMLDivElement>(null)
   const hostRef = useRef<HTMLDivElement>(null)
   const boardWorldRef = useRef<HTMLDivElement>(null)
-  const boardGridRef = useRef<HTMLDivElement>(null)
+  const boardGridShadowRef = useRef<HTMLDivElement>(null)
+  const boardGridRef = useRef<HTMLCanvasElement>(null)
   const quickActionsRef = useRef<HTMLDivElement>(null)
   const roomRef = useRef(room)
   const cameraRef = useRef(clampCamera(initialCamera))
@@ -2613,6 +2650,7 @@ export function BoardView({
 
   const applyCameraToBoardWorld = useCallback((nextCamera: CameraState) => {
     const boardWorld = boardWorldRef.current
+    const boardGridShadow = boardGridShadowRef.current
     const boardGrid = boardGridRef.current
     if (!boardWorld) {
       return
@@ -2621,9 +2659,11 @@ export function BoardView({
     const { x: translateX, y: translateY } = cameraTranslation(viewportSize, nextCamera)
     boardWorld.style.transform = `translate3d(${translateX}px, ${translateY}px, 0) scale(${nextCamera.zoom})`
     boardWorld.style.setProperty('--board-zoom', `${nextCamera.zoom}`)
+    if (boardGridShadow) {
+      applyBoardGridShadowStyle(boardGridShadow, viewportSize, nextCamera)
+    }
     if (boardGrid) {
-      applyBoardGridScreenStyle(boardGrid, viewportSize, nextCamera)
-      boardGrid.style.setProperty('--board-zoom', `${nextCamera.zoom}`)
+      drawBoardGridCanvas(boardGrid, viewportSize, nextCamera)
     }
     applyQuickActionsPosition(nextCamera)
   }, [applyQuickActionsPosition, viewportSize])
@@ -3953,11 +3993,6 @@ export function BoardView({
     }
   }, [])
 
-  const boardGridStyle = useMemo<CSSProperties>(
-    () => boardGridScreenStyle(viewportSize, camera),
-    [camera, viewportSize],
-  )
-
   const handleRootPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if ((event.target as HTMLElement | null)?.closest('[data-board-ui]')) {
       return
@@ -4523,7 +4558,8 @@ export function BoardView({
         onPointerDown={handleRootPointerDown}
       >
         <div className="board-backdrop" />
-        <div className="board-grid" ref={boardGridRef} style={boardGridStyle} />
+        <div className="board-grid-shadow" ref={boardGridShadowRef} aria-hidden="true" />
+        <canvas className="board-grid" ref={boardGridRef} aria-hidden="true" />
         <div className="board-world" ref={boardWorldRef} style={boardWorldStyle}>
           <div className="board-objects">{objectElements}</div>
         </div>

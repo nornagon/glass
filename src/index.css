@@ -455,6 +455,7 @@ textarea {
 
 .board-world,
 .board-backdrop,
+.board-grid-shadow,
 .board-grid,
 .board-objects {
   position: absolute;
@@ -469,19 +470,21 @@ textarea {
   height: 0;
 }
 
-.board-grid {
+.board-grid-shadow {
   pointer-events: none;
-  overflow: hidden;
-  background-color: #1f544f;
-  background-image:
-    linear-gradient(rgba(45, 108, 100, 0.68) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(45, 108, 100, 0.68) 1px, transparent 1px);
-  background-repeat: repeat;
-  background-size: 160px 160px, 160px 160px;
+  background: transparent;
   box-shadow:
     0 0 0 1px rgba(255, 243, 221, 0.05),
     0 0 36px rgba(6, 13, 18, 0.28),
     0 22px 72px rgba(3, 8, 12, 0.34);
+}
+
+.board-grid {
+  pointer-events: none;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: 100%;
 }
 
 .board-backdrop {

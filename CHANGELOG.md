@@ -2,6 +2,7 @@
 
 ## 2026-04-24
 
+- Moved the board grid off animated CSS backgrounds and into a canvas layer while keeping the board surface shadow in CSS, reducing Safari zoom jitter.
 - Fixed pool token drag-out placement so spawned boards stay under the dragged token instead of jumping down and right.
 - Fixed board camera bounce on initial load and after closing the PDF viewer by synchronizing viewport measurement before the first board paint.
 - Unmounted the board behind the PDF viewer on Mobile Safari to reduce WebContent memory pressure while zooming large PDFs.
