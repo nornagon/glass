@@ -315,6 +315,15 @@ function snapScreenCoordinate(value: number) {
   return Math.round(value * devicePixelRatio) / devicePixelRatio
 }
 
+function repeatingBackgroundOffset(value: number, size: number) {
+  if (!Number.isFinite(value) || !Number.isFinite(size) || size <= 0) {
+    return 0
+  }
+
+  const offset = ((value % size) + size) % size
+  return offset === size ? 0 : offset
+}
+
 function viewportSizeFromElement(element: Element): Size {
   const rect = element.getBoundingClientRect()
   return {
@@ -333,13 +342,15 @@ function boardGridScreenStyle(viewport: Size, camera: CameraState): CSSPropertie
   const originOffset = surfaceScreenSize / 2
   const snappedLeft = snapScreenCoordinate(topLeft.x)
   const snappedTop = snapScreenCoordinate(topLeft.y)
+  const backgroundOffsetX = repeatingBackgroundOffset(originOffset + (topLeft.x - snappedLeft), gridSize)
+  const backgroundOffsetY = repeatingBackgroundOffset(originOffset + (topLeft.y - snappedTop), gridSize)
 
   return {
     left: `${snappedLeft}px`,
     top: `${snappedTop}px`,
     width: `${surfaceScreenSize}px`,
     height: `${surfaceScreenSize}px`,
-    backgroundPosition: `${originOffset + (topLeft.x - snappedLeft)}px ${originOffset + (topLeft.y - snappedTop)}px`,
+    backgroundPosition: `${backgroundOffsetX}px ${backgroundOffsetY}px`,
     backgroundSize: `${gridSize}px ${gridSize}px, ${gridSize}px ${gridSize}px`,
   }
 }
@@ -2876,10 +2887,9 @@ export function BoardView({
     startTransform: Transform2D,
     enableLongPressMove: boolean,
   ) => {
-    const worldPoint = screenToLogical(viewportSize, cameraRef.current, startPoint)
     const dragOutTransform = {
-      x: worldPoint.x,
-      y: worldPoint.y,
+      x: startTransform.x,
+      y: startTransform.y,
       rotation: 0,
     }
 
@@ -2898,7 +2908,26 @@ export function BoardView({
       enableLongPressMove,
       dragOutTransform,
     )
-  }, [beginPendingTouchPress, viewportSize])
+  }, [beginPendingTouchPress])
+
+  const transformForElementCenter = useCallback((element: Element) => {
+    const rect = element.getBoundingClientRect()
+    const localCenter = clientToLocal(
+      rootRef.current,
+      rect.left + rect.width / 2,
+      rect.top + rect.height / 2,
+    )
+    if (!localCenter) {
+      return undefined
+    }
+
+    const worldCenter = screenToLogical(viewportSize, cameraRef.current, localCenter)
+    return {
+      x: worldCenter.x,
+      y: worldCenter.y,
+      rotation: 0,
+    }
+  }, [viewportSize])
 
   useEffect(() => {
     onCameraChange(camera)
@@ -4012,7 +4041,8 @@ export function BoardView({
       return
     }
 
-    const startedOnPoolCopy = Boolean((event.target as HTMLElement | null)?.closest('[data-board-ui="pool-copy"]'))
+    const poolCopyElement = (event.target as HTMLElement | null)?.closest('[data-board-ui="pool-copy"]')
+    const startedOnPoolCopy = Boolean(poolCopyElement)
 
     if (isTouchPointer) {
       event.preventDefault()
@@ -4149,7 +4179,8 @@ export function BoardView({
         return
       }
 
-      armPoolCopyDragOut(objectId, event.pointerId, localPoint, { ...currentTransform }, true)
+      const poolCopyTransform = poolCopyElement ? transformForElementCenter(poolCopyElement) : undefined
+      armPoolCopyDragOut(objectId, event.pointerId, localPoint, poolCopyTransform ?? { ...currentTransform }, true)
       return
     }
 
@@ -4231,6 +4262,7 @@ export function BoardView({
     startDuplicateDrag,
     startDrag,
     stopCameraMomentum,
+    transformForElementCenter,
     beginCameraPointer,
     cancelTouchObjectInteraction,
     markPrewarmInteraction,
@@ -4281,12 +4313,12 @@ export function BoardView({
     markPrewarmInteraction()
     stopCameraMomentum()
     resetPointerPanState()
-    const worldPoint = screenToLogical(viewportSize, cameraRef.current, localPoint)
-    armPoolCopyDragOut(poolId, event.pointerId, localPoint, {
-      x: worldPoint.x,
-      y: worldPoint.y,
-      rotation: 0,
-    }, false)
+    const copyTransform = transformForElementCenter(event.currentTarget)
+    if (!copyTransform) {
+      return
+    }
+
+    armPoolCopyDragOut(poolId, event.pointerId, localPoint, copyTransform, false)
   }, [
     armPoolCopyDragOut,
     canEdit,
@@ -4295,7 +4327,7 @@ export function BoardView({
     room,
     selectionMode,
     stopCameraMomentum,
-    viewportSize,
+    transformForElementCenter,
   ])
 
   function resetDropTarget() {
