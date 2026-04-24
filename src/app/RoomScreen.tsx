@@ -1585,6 +1585,8 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   const resolvedPdfAssets = useResolvedPdfAssets(pdfAssetUrls)
   const selectedObject = selectionMode === 'normal' && selectedId ? room.objects[selectedId] : undefined
   const viewerBook = openBookViewerId ? room.objects[openBookViewerId] : undefined
+  const bookViewerMemoryGuardEnabled = useMemo(() => isLikelyMobileSafari(), [])
+  const shouldUnmountBoardForBookViewer = bookViewerMemoryGuardEnabled && isBook(viewerBook)
   const selectedGroupObjects = useMemo(
     () =>
       selectionMode === 'group'
@@ -2765,7 +2767,8 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   return (
     <div className="app-shell">
       <main className="board-shell">
-        <BoardView
+        {shouldUnmountBoardForBookViewer ? null : (
+          <BoardView
           key={roomUrl}
           room={room}
           roomUrl={roomUrl}
@@ -2882,7 +2885,8 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
           }
           onOpenBook={openBookViewer}
           onOpenSelectionPanel={openSelectionPanel}
-        />
+          />
+        )}
       </main>
 
       <div className="overlay-layer">
