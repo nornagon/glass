@@ -2,6 +2,7 @@
 
 ## 2026-04-25
 
+- Added a card flip animation that lifts, turns with perspective, and drops smoothly without triggering when dragging cards out of decks.
 - Tightened deck drag-out performance by specializing top-card lifts and prewarming prepared surfaces for the cards most likely to appear next.
 - Rendered rotation handles in the top board overlay with quick actions so they stay above cards and boards.
 

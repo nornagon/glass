@@ -2,7 +2,7 @@ import type { AutomergeUrl } from '@automerge/react'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { resolveImageSource, type ResolvedImageAsset, type ResolvedImageSource } from '../model/assets'
 import { resolvePdfSource, type ResolvedPdfAsset } from '../model/pdfAssets'
-import { BOARD_WORLD_SIZE, DEFAULT_CARD_SIZE, type CameraState, type Id, type RoomDoc, type SpriteSpec, type Transform2D } from '../model/types'
+import { BOARD_WORLD_SIZE, DEFAULT_CARD_SIZE, type CameraState, type Card, type Id, type RoomDoc, type SpriteSpec, type Transform2D } from '../model/types'
 import { canSeeCardFace, getPoolDisplaySize, getPoolRemainingTokens, getPoolTokenSize, getRootPlane, getTransform, isBoard, isBoardFaceUp, isBook, isCard, isDeck, isGroupSelectableObject, isPool, isPoolFaceUp } from '../model/room'
 import { releasePanVelocity } from './panMomentum'
 import { ShuffleIcon } from '../ShuffleIcon'
@@ -1873,9 +1873,65 @@ function CardObject({ cardId, room, currentPlayerId, imageAssets, size, constrai
     return null
   }
 
+  return (
+    <CardObjectBody
+      card={card}
+      currentPlayerId={currentPlayerId}
+      imageAssets={imageAssets}
+      size={size}
+      constrainedEffects={constrainedEffects}
+    />
+  )
+}
+
+interface CardObjectBodyProps {
+  card: Card
+  currentPlayerId: string | undefined
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>
+  size: Size
+  constrainedEffects: boolean
+}
+
+function CardObjectBody({ card, currentPlayerId, imageAssets, size, constrainedEffects }: CardObjectBodyProps) {
+  const previousFaceVisibleRef = useRef<boolean | undefined>(undefined)
+  const flipAnimationTimeoutRef = useRef<number | undefined>(undefined)
+  const shellRef = useRef<HTMLDivElement | null>(null)
+  const flipRef = useRef<HTMLDivElement | null>(null)
   const faceVisible = canSeeCardFace(card, currentPlayerId)
   const visibleSpec = faceVisible ? card.face : card.back
   const visibleFallbackLabel = faceVisible ? card.name : 'Back'
+
+  useLayoutEffect(() => {
+    const previousFaceVisible = previousFaceVisibleRef.current
+    previousFaceVisibleRef.current = faceVisible
+    if (previousFaceVisible === undefined || previousFaceVisible === faceVisible || constrainedEffects) {
+      return
+    }
+
+    const shell = shellRef.current
+    const flip = flipRef.current
+    if (!shell || !flip) {
+      return
+    }
+
+    window.clearTimeout(flipAnimationTimeoutRef.current)
+    shell.classList.remove('is-lifting-to-front', 'is-lifting-to-back')
+    flip.classList.remove('is-flipping-to-front', 'is-flipping-to-back')
+    void shell.offsetWidth
+    shell.classList.add(faceVisible ? 'is-lifting-to-front' : 'is-lifting-to-back')
+    flip.classList.add(faceVisible ? 'is-flipping-to-front' : 'is-flipping-to-back')
+    flipAnimationTimeoutRef.current = window.setTimeout(() => {
+      shell.classList.remove('is-lifting-to-front', 'is-lifting-to-back')
+      flip.classList.remove('is-flipping-to-front', 'is-flipping-to-back')
+      flipAnimationTimeoutRef.current = undefined
+    }, 520)
+
+    return () => {
+      window.clearTimeout(flipAnimationTimeoutRef.current)
+      shell.classList.remove('is-lifting-to-front', 'is-lifting-to-back')
+      flip.classList.remove('is-flipping-to-front', 'is-flipping-to-back')
+    }
+  }, [constrainedEffects, faceVisible])
 
   if (constrainedEffects) {
     return (
@@ -1892,8 +1948,8 @@ function CardObject({ cardId, room, currentPlayerId, imageAssets, size, constrai
   }
 
   return (
-    <div className="board-card-shell">
-      <div className={`board-card-flip ${faceVisible ? 'is-face-visible' : 'is-back-visible'}`}>
+    <div className="board-card-shell" ref={shellRef}>
+      <div className={`board-card-flip ${faceVisible ? 'is-face-visible' : 'is-back-visible'}`} ref={flipRef}>
         <div className="board-card-face board-card-front">
           <BoardSurface
             spec={card.face}
