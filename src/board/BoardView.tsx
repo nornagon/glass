@@ -1,6 +1,6 @@
 import type { AutomergeUrl } from '@automerge/react'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import { resolveImageSource, type ResolvedImageAsset } from '../model/assets'
+import { resolveImageSource, type ResolvedImageAsset, type ResolvedImageSource } from '../model/assets'
 import { resolvePdfSource, type ResolvedPdfAsset } from '../model/pdfAssets'
 import { BOARD_WORLD_SIZE, DEFAULT_CARD_SIZE, type CameraState, type Id, type RoomDoc, type SpriteSpec, type Transform2D } from '../model/types'
 import { canSeeCardFace, getPoolDisplaySize, getPoolRemainingTokens, getPoolTokenSize, getRootPlane, getTransform, isBoard, isBoardFaceUp, isBook, isCard, isDeck, isGroupSelectableObject, isPool, isPoolFaceUp } from '../model/room'
@@ -65,6 +65,17 @@ interface Size {
   height: number
 }
 
+type PrewarmReason = 'deck-top' | 'deck-next' | 'deck-release'
+
+interface PreparedSurfacePrewarmTask {
+  imageUrl: string
+  source: ResolvedImageSource | undefined
+  spec: SpriteSpec
+  size: Size
+  taskKey: string
+  reason: PrewarmReason
+}
+
 interface DragState {
   id: Id
   pointerId: number
@@ -76,6 +87,7 @@ interface DragState {
   raisedToFront: boolean
   spawnedFromPool?: boolean
   selectOnMove?: boolean
+  prewarmDeckOnReleaseTasks?: PreparedSurfacePrewarmTask[]
   groupMembers?: Array<{ id: Id; startTransform: Transform2D }>
 }
 
@@ -1797,6 +1809,11 @@ function BoardSurface({
     fitWorldHeight,
     intrinsicSize,
   )
+  const preparedImageStyle: CSSProperties = {
+    width: '100%',
+    height: '100%',
+    opacity: preparedSurfaceUrl ? 1 : 0,
+  }
 
   return (
     <div
@@ -1827,11 +1844,7 @@ function BoardSurface({
                 loading="eager"
                 fetchPriority="high"
                 data-board-sprite-stage={stage}
-                style={{
-                  width: '100%',
-                  height: '100%',
-                  opacity: preparedSurfaceUrl ? 1 : 0,
-                }}
+                style={preparedImageStyle}
               />
             </div>
           </div>
@@ -2708,6 +2721,117 @@ export function BoardView({
     prewarmPauseUntilRef.current = performance.now() + PREPARED_SPRITE_PREWARM_QUIET_MS
   }, [])
 
+  const hasActivePrewarmBlockingInteraction = useCallback(() => (
+    dragRef.current !== null ||
+    pendingTouchPressRef.current !== null ||
+    lassoRef.current !== null ||
+    cameraPointersRef.current.size > 0
+  ), [])
+
+  const isPrewarmPaused = useCallback(() => (
+    prewarmPauseUntilRef.current > performance.now() || hasActivePrewarmBlockingInteraction()
+  ), [hasActivePrewarmBlockingInteraction])
+
+  const createPrewarmTask = useCallback((
+    card: { size: Size },
+    spec: SpriteSpec,
+    reason: PrewarmReason,
+    seenTaskKeys?: Set<string>,
+  ): PreparedSurfacePrewarmTask | undefined => {
+    if (spec.kind !== 'image-url' || !spec.url) {
+      return undefined
+    }
+
+    const source = resolveImageSource(spec.url, imageAssets)
+    const imageUrl = source?.renderUrl
+    if (!imageUrl) {
+      return undefined
+    }
+
+    const crop = normalizeCrop(spec.crop)
+    const taskKey = [
+      imageUrl,
+      card.size.width,
+      card.size.height,
+      spec.fit ?? 'cover',
+      crop.x.toFixed(4),
+      crop.y.toFixed(4),
+      crop.width.toFixed(4),
+      crop.height.toFixed(4),
+    ].join('|')
+    if (seenTaskKeys?.has(taskKey) || completedPrewarmTaskKeysRef.current.has(taskKey)) {
+      return undefined
+    }
+
+    seenTaskKeys?.add(taskKey)
+    return {
+      imageUrl,
+      source,
+      spec,
+      size: { ...card.size },
+      taskKey,
+      reason,
+    }
+  }, [imageAssets])
+
+  const runPrewarmTask = useCallback(async (
+    task: PreparedSurfacePrewarmTask,
+    shouldPause?: () => boolean,
+  ) => {
+    if (completedPrewarmTaskKeysRef.current.has(task.taskKey)) {
+      return 'done'
+    }
+    if (shouldPause?.()) {
+      return 'paused'
+    }
+
+    const crop = normalizeCrop(task.spec.crop)
+    console.log('[glass] prewarming deck card surface', {
+      reason: task.reason,
+      imageUrl: task.imageUrl,
+      size: task.size,
+      crop,
+    })
+    const intrinsicSize = task.source?.asset?.width && task.source.asset.height
+      ? {
+        width: task.source.asset.width,
+        height: task.source.asset.height,
+      }
+      : await loadSourceImageElement(task.imageUrl)
+        .then((image) => {
+          if (image.naturalWidth <= 0 || image.naturalHeight <= 0) {
+            return undefined
+          }
+
+          const size = {
+            width: image.naturalWidth,
+            height: image.naturalHeight,
+          }
+          intrinsicImageSizeCache.set(task.imageUrl, size)
+          return size
+        })
+        .catch(() => undefined)
+    if (!intrinsicSize) {
+      return 'done'
+    }
+    if (shouldPause?.()) {
+      return 'paused'
+    }
+
+    const { fitWidth, fitHeight } = computeSurfaceFit(crop, task.size, intrinsicSize, task.spec.fit ?? 'cover')
+    const preparedUrl = await requestPreparedSpriteSurface(
+      task.imageUrl,
+      crop,
+      task.size.width * fitWidth,
+      task.size.height * fitHeight,
+      intrinsicSize,
+    )
+    if (typeof preparedUrl === 'string') {
+      completedPrewarmTaskKeysRef.current.add(task.taskKey)
+    }
+    return 'done'
+  }, [])
+
   const scheduleCameraRenderSync = useCallback(() => {
     if (cameraRenderSyncTimeoutRef.current !== null) {
       window.clearTimeout(cameraRenderSyncTimeoutRef.current)
@@ -2868,7 +2992,7 @@ export function BoardView({
     mode: DragState['mode'],
     startPoint: Point,
     startTransform: Transform2D,
-    options?: Pick<DragState, 'spawnedFromPool' | 'selectOnMove' | 'moved'>,
+    options?: Partial<Pick<DragState, 'spawnedFromPool' | 'selectOnMove' | 'moved' | 'raisedToFront' | 'prewarmDeckOnReleaseTasks'>>,
     groupMembers?: DragState['groupMembers'],
   ) => {
     tapCandidateRef.current = null
@@ -2881,9 +3005,10 @@ export function BoardView({
       startTransform: { ...startTransform },
       currentPoint: startPoint,
       moved: options?.moved ?? false,
-      raisedToFront: false,
+      raisedToFront: options?.raisedToFront ?? false,
       spawnedFromPool: options?.spawnedFromPool,
       selectOnMove: options?.selectOnMove,
+      prewarmDeckOnReleaseTasks: options?.prewarmDeckOnReleaseTasks,
       groupMembers,
     }
   }, [viewportSize])
@@ -3086,43 +3211,22 @@ export function BoardView({
 
     const seenTaskKeys = new Set<string>()
     const queue = Object.values(room.objects).flatMap((object) => {
-      if (!isDeck(object) || object.childIds.length < 2) {
+      if (!isDeck(object) || object.childIds.length === 0) {
         return []
       }
 
-      const nextCard = room.objects[object.childIds[object.childIds.length - 2]]
-      if (!isCard(nextCard)) {
-        return []
-      }
+      const topCard = room.objects[object.childIds[object.childIds.length - 1]]
+      const nextCard = object.childIds.length >= 2
+        ? room.objects[object.childIds[object.childIds.length - 2]]
+        : undefined
+      const tasks = [
+        isCard(topCard) ? createPrewarmTask(topCard, topCard.face, 'deck-top', seenTaskKeys) : undefined,
+        isCard(topCard) ? createPrewarmTask(topCard, topCard.back, 'deck-top', seenTaskKeys) : undefined,
+        isCard(nextCard) ? createPrewarmTask(nextCard, nextCard.face, 'deck-next', seenTaskKeys) : undefined,
+        isCard(nextCard) ? createPrewarmTask(nextCard, nextCard.back, 'deck-next', seenTaskKeys) : undefined,
+      ]
 
-      const spec = canSeeCardFace(nextCard, currentPlayerId) ? nextCard.face : nextCard.back
-      if (spec.kind !== 'image-url' || !spec.url) {
-        return []
-      }
-
-      const source = resolveImageSource(spec.url, imageAssets)
-      const imageUrl = source?.renderUrl
-      if (!imageUrl) {
-        return []
-      }
-
-      const crop = normalizeCrop(spec.crop)
-      const taskKey = [
-        imageUrl,
-        nextCard.size.width,
-        nextCard.size.height,
-        spec.fit ?? 'cover',
-        crop.x.toFixed(4),
-        crop.y.toFixed(4),
-        crop.width.toFixed(4),
-        crop.height.toFixed(4),
-      ].join('|')
-      if (seenTaskKeys.has(taskKey) || completedPrewarmTaskKeysRef.current.has(taskKey)) {
-        return []
-      }
-
-      seenTaskKeys.add(taskKey)
-      return [{ imageUrl, source, spec, size: nextCard.size, taskKey }]
+      return tasks.filter((task): task is NonNullable<typeof task> => Boolean(task))
     })
 
     if (queue.length === 0) {
@@ -3134,14 +3238,6 @@ export function BoardView({
     let timeoutId: ReturnType<typeof globalThis.setTimeout> | undefined
     let nextTaskIndex = 0
 
-    const markTaskComplete = (taskKey: string) => {
-      if (cancelled) {
-        return
-      }
-
-      completedPrewarmTaskKeysRef.current.add(taskKey)
-    }
-
     const runNextTask = async () => {
       const task = queue[nextTaskIndex]
       nextTaskIndex += 1
@@ -3149,43 +3245,13 @@ export function BoardView({
         return
       }
 
-      const intrinsicSize = task.source?.asset?.width && task.source.asset.height
-        ? {
-          width: task.source.asset.width,
-          height: task.source.asset.height,
-        }
-        : await loadSourceImageElement(task.imageUrl)
-          .then((image) => {
-            if (image.naturalWidth <= 0 || image.naturalHeight <= 0) {
-              return undefined
-            }
-
-            const size = {
-              width: image.naturalWidth,
-              height: image.naturalHeight,
-            }
-            intrinsicImageSizeCache.set(task.imageUrl, size)
-            return size
-          })
-          .catch(() => undefined)
-      if (!intrinsicSize || cancelled) {
+      if (cancelled) {
         return
       }
-      if (prewarmPauseUntilRef.current > performance.now()) {
+      const result = await runPrewarmTask(task, () => cancelled || isPrewarmPaused())
+      if (result === 'paused') {
         nextTaskIndex -= 1
-        return
       }
-
-      const crop = normalizeCrop(task.spec.crop)
-      const { fitWidth, fitHeight } = computeSurfaceFit(crop, task.size, intrinsicSize, task.spec.fit ?? 'cover')
-      await requestPreparedSpriteSurface(
-        task.imageUrl,
-        crop,
-        task.size.width * fitWidth,
-        task.size.height * fitHeight,
-        intrinsicSize,
-      )
-      markTaskComplete(task.taskKey)
     }
 
     const scheduleNextTask = (delayMs = 0) => {
@@ -3202,11 +3268,15 @@ export function BoardView({
       }
 
       const quietDelayMs = Math.max(0, prewarmPauseUntilRef.current - performance.now())
-      if (quietDelayMs > 0) {
+      const interactionDelayMs = hasActivePrewarmBlockingInteraction()
+        ? PREPARED_SPRITE_PREWARM_FALLBACK_DELAY_MS
+        : 0
+      const pauseDelayMs = Math.max(quietDelayMs, interactionDelayMs)
+      if (pauseDelayMs > 0) {
         timeoutId = globalThis.setTimeout(() => {
           timeoutId = undefined
           scheduleNextTask()
-        }, quietDelayMs)
+        }, pauseDelayMs)
         return
       }
 
@@ -3214,7 +3284,7 @@ export function BoardView({
         idleCallbackId = window.requestIdleCallback(async (deadline) => {
           idleCallbackId = undefined
           if (
-            prewarmPauseUntilRef.current > performance.now() ||
+            isPrewarmPaused() ||
             deadline.timeRemaining() < PREPARED_SPRITE_PREWARM_MIN_IDLE_MS
           ) {
             scheduleNextTask(PREPARED_SPRITE_PREWARM_FALLBACK_DELAY_MS)
@@ -3226,7 +3296,7 @@ export function BoardView({
             !cancelled &&
             nextTaskIndex < queue.length &&
             tasksRun < PREPARED_SPRITE_PREWARM_MAX_TASKS_PER_IDLE &&
-            prewarmPauseUntilRef.current <= performance.now() &&
+            !isPrewarmPaused() &&
             deadline.timeRemaining() >= PREPARED_SPRITE_PREWARM_MIN_IDLE_MS
           ) {
             await runNextTask()
@@ -3239,7 +3309,7 @@ export function BoardView({
 
       timeoutId = globalThis.setTimeout(async () => {
         timeoutId = undefined
-        if (prewarmPauseUntilRef.current > performance.now()) {
+        if (isPrewarmPaused()) {
           scheduleNextTask()
           return
         }
@@ -3259,7 +3329,7 @@ export function BoardView({
         globalThis.clearTimeout(timeoutId)
       }
     }
-  }, [currentPlayerId, imageAssets, room.objects])
+  }, [createPrewarmTask, hasActivePrewarmBlockingInteraction, isPrewarmPaused, room.objects, runPrewarmTask])
 
   useEffect(() => {
     const host = hostRef.current
@@ -3333,6 +3403,8 @@ export function BoardView({
         return
       }
 
+      markPrewarmInteraction()
+
       const activeLasso = lassoRef.current
       if (activeLasso && activeLasso.pointerId === event.pointerId) {
         const lastPoint = activeLasso.points[activeLasso.points.length - 1]
@@ -3355,10 +3427,22 @@ export function BoardView({
           clearPendingTouchPress()
 
           if (pendingTouchPress.moveAction === 'deck-drag-out') {
+            const deck = roomRef.current.objects[pendingTouchPress.objectId]
+            const releasePrewarmCardId = isDeck(deck) && deck.childIds.length >= 3
+              ? deck.childIds[deck.childIds.length - 3]
+              : undefined
+            const releasePrewarmCard = releasePrewarmCardId
+              ? roomRef.current.objects[releasePrewarmCardId]
+              : undefined
+            const releasePrewarmTasks = isCard(releasePrewarmCard)
+              ? [
+                  createPrewarmTask(releasePrewarmCard, releasePrewarmCard.face, 'deck-release'),
+                  createPrewarmTask(releasePrewarmCard, releasePrewarmCard.back, 'deck-release'),
+                ].filter((task): task is PreparedSurfacePrewarmTask => Boolean(task))
+              : []
             const liftedCardId = onLiftTopCardFromDeck(pendingTouchPress.objectId)
             const dragId = liftedCardId ?? pendingTouchPress.objectId
             if (liftedCardId) {
-              onBringObjectToFront(liftedCardId)
               onSelect(liftedCardId)
             }
 
@@ -3368,6 +3452,12 @@ export function BoardView({
               'move',
               pendingTouchPress.startPoint,
               pendingTouchPress.startTransform,
+              liftedCardId
+                ? {
+                    raisedToFront: true,
+                    prewarmDeckOnReleaseTasks: releasePrewarmTasks.length > 0 ? releasePrewarmTasks : undefined,
+                  }
+                : undefined,
             )
           } else if (pendingTouchPress.moveAction === 'pool-drag-out') {
             const dragOutTransform = pendingTouchPress.dragOutTransform ?? pendingTouchPress.startTransform
@@ -3626,6 +3716,13 @@ export function BoardView({
       const activeDrag = dragRef.current
       if (activeDrag && activeDrag.pointerId === event.pointerId) {
         dragRef.current = null
+
+        if (activeDrag.prewarmDeckOnReleaseTasks) {
+          for (const task of activeDrag.prewarmDeckOnReleaseTasks) {
+            void runPrewarmTask(task)
+          }
+        }
+
         setHoverDropTargetId(undefined)
 
         const nextPreviewTransforms = previewTransformsRef.current
@@ -3803,6 +3900,8 @@ export function BoardView({
     startCameraMomentum,
     stopCameraMomentum,
     markPrewarmInteraction,
+    createPrewarmTask,
+    runPrewarmTask,
   ])
 
   useEffect(

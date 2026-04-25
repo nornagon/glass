@@ -343,6 +343,12 @@ function removeFromDeck(deck: Deck, childId: Id) {
   deck.childIds = deck.childIds.filter((id) => id !== childId)
 }
 
+function moveKnownDeckCardToPlane(card: Card, plane: Plane, transform: Transform2D) {
+  card.parentId = plane.id
+  plane.childTransforms[card.id] = transform
+  plane.childOrder.push(card.id)
+}
+
 export function detachObject(room: RoomDoc, objectId: Id) {
   const object = room.objects[objectId]
   if (!object?.parentId) {
@@ -845,10 +851,15 @@ export function liftTopCardFromDeck(room: RoomDoc, deckId: Id) {
   }
 
   const cardId = deck.childIds[deck.childIds.length - 1]
-  deck.childIds.pop()
+  const card = room.objects[cardId]
+  if (!isCard(card)) {
+    return undefined
+  }
+
+  deck.childIds.splice(deck.childIds.length - 1, 1)
 
   const baseTransform = parent.childTransforms[deck.id] ?? { x: 0, y: 0, rotation: 0 }
-  placeObjectOnPlane(room, cardId, parent.id, {
+  moveKnownDeckCardToPlane(card, parent, {
     x: baseTransform.x,
     y: baseTransform.y,
     rotation: baseTransform.rotation,
@@ -869,10 +880,15 @@ export function drawFromDeck(room: RoomDoc, deckId: Id) {
   }
 
   const cardId = deck.childIds[deck.childIds.length - 1]
-  deck.childIds.pop()
+  const card = room.objects[cardId]
+  if (!isCard(card)) {
+    return
+  }
+
+  deck.childIds.splice(deck.childIds.length - 1, 1)
 
   const baseTransform = parent.childTransforms[deck.id] ?? { x: 0, y: 0, rotation: 0 }
-  placeObjectOnPlane(room, cardId, parent.id, {
+  moveKnownDeckCardToPlane(card, parent, {
     x: baseTransform.x + 140,
     y: baseTransform.y + 20,
     rotation: 0,
