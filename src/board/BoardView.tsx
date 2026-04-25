@@ -146,6 +146,7 @@ const PREPARED_SPRITE_PREWARM_FALLBACK_DELAY_MS = 80
 const PREPARED_SPRITE_PREWARM_MIN_IDLE_MS = 12
 const PREPARED_SPRITE_PREWARM_MAX_TASKS_PER_IDLE = 2
 const SURFACE_SHADOW_ALPHA_THRESHOLD = 250
+const ROTATE_HANDLE_TOP_OFFSET_PX = 38
 
 const intrinsicImageSizeCache = new Map<string, Size | null>()
 const resolvedSourceImageElementCache = new Map<string, HTMLImageElement>()
@@ -302,6 +303,24 @@ function logicalToScreen(viewport: Size, camera: CameraState, point: Point): Poi
   return {
     x: viewport.width / 2 + (point.x - camera.centerX) * camera.zoom,
     y: viewport.height / 2 + (point.y - camera.centerY) * camera.zoom,
+  }
+}
+
+function rotateHandleScreenPoint(
+  viewport: Size,
+  camera: CameraState,
+  transform: Transform2D,
+  worldSize: Size,
+): Point {
+  const screenPoint = logicalToScreen(viewport, camera, {
+    x: transform.x,
+    y: transform.y,
+  })
+  const offset = worldSize.height * camera.zoom / 2 + ROTATE_HANDLE_TOP_OFFSET_PX
+
+  return {
+    x: screenPoint.x + Math.sin(transform.rotation) * offset,
+    y: screenPoint.y - Math.cos(transform.rotation) * offset,
   }
 }
 
@@ -2481,6 +2500,7 @@ export function BoardView({
   const boardWorldRef = useRef<HTMLDivElement>(null)
   const boardGridShadowRef = useRef<HTMLDivElement>(null)
   const boardGridRef = useRef<HTMLCanvasElement>(null)
+  const rotateHandleRef = useRef<HTMLButtonElement>(null)
   const quickActionsRef = useRef<HTMLDivElement>(null)
   const roomRef = useRef(room)
   const cameraRef = useRef(clampCamera(initialCamera))
@@ -2517,6 +2537,7 @@ export function BoardView({
   )
   const completedPrewarmTaskKeysRef = useRef(new Set<string>())
   const hasActiveAlphaSelectionRef = useRef(false)
+  const hasRotateHandleRef = useRef(false)
   const hasQuickActionsRef = useRef(false)
   const selectedWorldObjectRef = useRef<{ transform: Transform2D; worldSize: Size } | undefined>(undefined)
   const pointerPanStateRef = useRef<{
@@ -2626,6 +2647,23 @@ export function BoardView({
     )
   }, [])
 
+  const applyRotateHandlePosition = useCallback((nextCamera: CameraState) => {
+    const rotateHandle = rotateHandleRef.current
+    const selectedObject = selectedWorldObjectRef.current
+    if (!rotateHandle || !selectedObject || !hasRotateHandleRef.current) {
+      return
+    }
+
+    const screenPoint = rotateHandleScreenPoint(
+      viewportSize,
+      nextCamera,
+      selectedObject.transform,
+      selectedObject.worldSize,
+    )
+    rotateHandle.style.left = `${screenPoint.x}px`
+    rotateHandle.style.top = `${screenPoint.y}px`
+  }, [viewportSize])
+
   const applyQuickActionsPosition = useCallback((nextCamera: CameraState) => {
     const quickActions = quickActionsRef.current
     const selectedObject = selectedWorldObjectRef.current
@@ -2658,8 +2696,9 @@ export function BoardView({
     if (boardGrid) {
       drawBoardGridCanvas(boardGrid, viewportSize, nextCamera)
     }
+    applyRotateHandlePosition(nextCamera)
     applyQuickActionsPosition(nextCamera)
-  }, [applyQuickActionsPosition, viewportSize])
+  }, [applyQuickActionsPosition, applyRotateHandlePosition, viewportSize])
 
   const markPrewarmInteraction = useCallback(() => {
     if (typeof performance === 'undefined') {
@@ -3875,6 +3914,19 @@ export function BoardView({
     [selectedId, worldObjects],
   )
 
+  const selectedRotateHandleObject = useMemo(() => {
+    if (selectionMode !== 'normal' || !selectedId || !selectedWorldObject || !canEdit) {
+      return undefined
+    }
+
+    const object = room.objects[selectedId]
+    if (!object || object.locked || isPool(object)) {
+      return undefined
+    }
+
+    return selectedWorldObject
+  }, [canEdit, room.objects, selectedId, selectedWorldObject, selectionMode])
+
   const hasActiveAlphaSelection = useMemo(() => {
     const candidateIds = selectionMode === 'group' ? selectedIds : selectedId ? [selectedId] : []
     return candidateIds.some((objectId) => {
@@ -3915,11 +3967,30 @@ export function BoardView({
       top: `${screenPoint.y - selectedWorldObject.worldSize.height * cameraRef.current.zoom / 2 - 24}px`,
     }
   }, [quickActions.length, selectedWorldObject, viewportSize])
+  const rotateHandlePosition = useMemo(() => {
+    if (!selectedRotateHandleObject) {
+      return undefined
+    }
+
+    const screenPoint = rotateHandleScreenPoint(
+      viewportSize,
+      cameraRef.current,
+      selectedRotateHandleObject.transform,
+      selectedRotateHandleObject.worldSize,
+    )
+
+    return {
+      left: `${screenPoint.x}px`,
+      top: `${screenPoint.y}px`,
+    }
+  }, [selectedRotateHandleObject, viewportSize])
   selectedWorldObjectRef.current = selectedWorldObject
+  hasRotateHandleRef.current = Boolean(selectedRotateHandleObject)
 
   useLayoutEffect(() => {
+    applyRotateHandlePosition(cameraRef.current)
     applyQuickActionsPosition(cameraRef.current)
-  }, [applyQuickActionsPosition, quickActions.length, selectedWorldObject])
+  }, [applyQuickActionsPosition, applyRotateHandlePosition, quickActions.length, selectedRotateHandleObject, selectedWorldObject])
 
   const boardWorldStyle = useMemo<CSSProperties>(() => {
     return {
@@ -4391,8 +4462,6 @@ export function BoardView({
         )
         const usesCardOutlineSelection = isCard(object) && selectionStrokeWidth > 0
         const usesPoolOutlineSelection = isPool(object) && selectionStrokeWidth > 0
-        const showsRotateHandle =
-          selectionMode === 'normal' && selectedId === objectId && canEdit && !object.locked && !isPool(object)
         const worldPosition = transform
 
         return (
@@ -4445,15 +4514,6 @@ export function BoardView({
                 className={`board-object-selection ${object.type === 'board' || object.type === 'book' ? 'is-square' : 'is-rounded'}`}
               />
             ) : null}
-            {showsRotateHandle ? (
-              <button
-                type="button"
-                className="board-rotate-handle"
-                data-board-ui="rotate-handle"
-                onPointerDown={(event) => handleRotatePointerDown(event, objectId)}
-                aria-label={`Rotate ${object.name}`}
-              />
-            ) : null}
           </div>
         )
       }),
@@ -4464,7 +4524,6 @@ export function BoardView({
       constrainedEffects,
       handleObjectPointerDown,
       handlePoolInstantiatePointerDown,
-      handleRotatePointerDown,
       hoverDropTargetId,
       imageAssets,
       pdfAssets,
@@ -4513,6 +4572,17 @@ export function BoardView({
         >
           <path d={`M ${lassoPath.map((point) => `${point.x} ${point.y}`).join(' L ')} Z`} />
         </svg>
+      ) : null}
+      {selectedId && selectedRotateHandleObject && rotateHandlePosition ? (
+        <button
+          ref={rotateHandleRef}
+          type="button"
+          className="board-rotate-handle"
+          data-board-ui="rotate-handle"
+          style={rotateHandlePosition}
+          onPointerDown={(event) => handleRotatePointerDown(event, selectedId)}
+          aria-label={`Rotate ${room.objects[selectedId]?.name ?? 'selection'}`}
+        />
       ) : null}
       {quickActions.length > 0 && quickActionsPosition ? (
         <div

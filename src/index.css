@@ -868,6 +868,7 @@ textarea {
   position: absolute;
   left: 50%;
   top: calc(-38px / var(--board-zoom, 1));
+  z-index: 4;
   width: calc(28px / var(--board-zoom, 1));
   height: calc(28px / var(--board-zoom, 1));
   padding: 0;
@@ -935,6 +936,7 @@ textarea {
 
 .quick-actions {
   position: absolute;
+  z-index: 4;
   display: flex;
   gap: 0.55rem;
   transform: translate(-50%, -130%);

@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-04-25
+
+- Rendered rotation handles in the top board overlay with quick actions so they stay above cards and boards.
+
 ## 2026-04-24
 
 - Replaced the more-actions quick action with Font Awesome's vertical ellipsis icon.
