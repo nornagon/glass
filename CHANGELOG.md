@@ -2,6 +2,7 @@
 
 ## 2026-04-24
 
+- Replaced the more-actions quick action with Font Awesome's vertical ellipsis icon.
 - Replaced the shuffle and flip action labels/icons with Font Awesome SVG icons while keeping accessible labels.
 - Moved the board grid off animated CSS backgrounds and into a canvas layer while keeping the board surface shadow in CSS, reducing Safari zoom jitter.
 - Fixed pool token drag-out placement so spawned boards stay under the dragged token instead of jumping down and right.
