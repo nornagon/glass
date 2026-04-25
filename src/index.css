@@ -974,6 +974,13 @@ textarea {
   fill: currentColor;
 }
 
+.quick-actions button.quick-action-icon svg.shuffle-icon {
+  width: 1.05rem;
+  height: 1.05rem;
+  stroke: none;
+  fill: currentColor;
+}
+
 .lasso-overlay {
   position: absolute;
   inset: 0;
@@ -1535,6 +1542,19 @@ textarea {
   flex-wrap: wrap;
 }
 
+.button-row button.icon-action-button {
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0;
+  display: grid;
+  place-items: center;
+}
+
+.button-row button.icon-action-button svg {
+  width: 1.08rem;
+  height: 1.08rem;
+}
+
 .button-row .danger {
   background: rgba(179, 66, 55, 0.24);
 }
@@ -2072,6 +2092,11 @@ button,
     height: 1.02rem;
   }
 
+  .quick-actions button.quick-action-icon svg.shuffle-icon {
+    width: 0.95rem;
+    height: 0.95rem;
+  }
+
   .inspector {
     left: 0.75rem;
     right: 0.75rem;
@@ -2223,6 +2248,17 @@ button,
   .button-row button {
     padding: 0.48rem 0.78rem;
     font-size: 0.84rem;
+  }
+
+  .button-row button.icon-action-button {
+    width: 2.25rem;
+    height: 2.25rem;
+    padding: 0;
+  }
+
+  .button-row button.icon-action-button svg {
+    width: 0.98rem;
+    height: 0.98rem;
   }
 
   .sheet-grid {

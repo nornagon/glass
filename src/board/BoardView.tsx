@@ -5,6 +5,7 @@ import { resolvePdfSource, type ResolvedPdfAsset } from '../model/pdfAssets'
 import { BOARD_WORLD_SIZE, DEFAULT_CARD_SIZE, type CameraState, type Id, type RoomDoc, type SpriteSpec, type Transform2D } from '../model/types'
 import { canSeeCardFace, getPoolDisplaySize, getPoolRemainingTokens, getPoolTokenSize, getRootPlane, getTransform, isBoard, isBoardFaceUp, isBook, isCard, isDeck, isGroupSelectableObject, isPool, isPoolFaceUp } from '../model/room'
 import { releasePanVelocity } from './panMomentum'
+import { ShuffleIcon } from '../ShuffleIcon'
 import {
   bindBoardInputRecorder,
   recordBoardInputRecorderCamera,
@@ -112,7 +113,7 @@ interface QuickAction {
   id: string
   label: string
   onClick: () => void
-  icon?: 'flip' | 'more' | 'view'
+  icon?: 'flip' | 'more' | 'shuffle' | 'view'
   text?: string
 }
 
@@ -675,9 +676,9 @@ function objectCursor(
 
 function FlipQuickActionIcon() {
   return (
-    <svg className="flip-icon" aria-hidden="true" viewBox="0 0 24 24" fill="currentColor">
-      <path d="M12 5V2L8 6l4 4V7c2.76 0 5 2.24 5 5 0 .48-.07.94-.2 1.38l1.52 1.52A7 7 0 0 0 19 12c0-3.87-3.13-7-7-7Z" />
-      <path d="M7 12c0-.48.07-.94.2-1.38L5.68 9.1A7 7 0 0 0 5 12c0 3.87 3.13 7 7 7v3l4-4-4-4v3c-2.76 0-5-2.24-5-5Z" />
+    <svg className="flip-icon" aria-hidden="true" viewBox="0 0 512 512" fill="currentColor">
+      {/* Font Awesome Free 7.2.0 by @fontawesome - https://fontawesome.com/license/free */}
+      <path d="M470.6 118.6c12.5-12.5 12.5-32.8 0-45.3l-64-64c-9.2-9.2-22.9-11.9-34.9-6.9S352 19.1 352 32l0 32-160 0C86 64 0 150 0 256 0 273.7 14.3 288 32 288s32-14.3 32-32c0-70.7 57.3-128 128-128l160 0 0 32c0 12.9 7.8 24.6 19.8 29.6s25.7 2.2 34.9-6.9l64-64zM41.4 393.4c-12.5 12.5-12.5 32.8 0 45.3l64 64c9.2 9.2 22.9 11.9 34.9 6.9S160 492.9 160 480l0-32 160 0c106 0 192-86 192-192 0-17.7-14.3-32-32-32s-32 14.3-32 32c0 70.7-57.3 128-128 128l-160 0 0-32c0-12.9-7.8-24.6-19.8-29.6s-25.7-2.2-34.9 6.9l-64 64z" />
     </svg>
   )
 }
@@ -3812,7 +3813,7 @@ export function BoardView({
         return []
       }
       return [
-        { id: 'shuffle', label: 'Shuffle', text: 'Shuffle', onClick: () => onShuffleDeck(object.id) },
+        { id: 'shuffle', label: 'Shuffle', icon: 'shuffle', onClick: () => onShuffleDeck(object.id) },
         { id: 'more', label: 'More actions', icon: 'more', onClick: onOpenSelectionPanel },
       ]
     }
@@ -4533,6 +4534,8 @@ export function BoardView({
                 ? <FlipQuickActionIcon />
                 : action.icon === 'view'
                   ? <ViewQuickActionIcon />
+                : action.icon === 'shuffle'
+                  ? <ShuffleIcon />
                 : action.icon === 'more'
                   ? <MoreQuickActionIcon />
                   : action.text ?? action.label}

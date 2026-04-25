@@ -99,6 +99,7 @@ import {
   boardSizeFromWidth,
   parseNumericExpression,
 } from './boardSizing'
+import { ShuffleIcon } from '../ShuffleIcon'
 
 const DEFAULT_CAMERA: CameraState = {
   centerX: 0,
@@ -3260,8 +3261,14 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                     <button disabled={!canEdit} onClick={() => mutate((draft) => flipDeck(draft, selectedObject.id))}>
                       Flip Deck
                     </button>
-                    <button disabled={!canEdit} onClick={() => mutate((draft) => shuffleDeck(draft, selectedObject.id))}>
-                      Shuffle
+                    <button
+                      aria-label="Shuffle"
+                      className="icon-action-button"
+                      disabled={!canEdit}
+                      onClick={() => mutate((draft) => shuffleDeck(draft, selectedObject.id))}
+                      title="Shuffle"
+                    >
+                      <ShuffleIcon />
                     </button>
                     <button disabled={!canEdit} onClick={() => mutate((draft) => drawFromDeck(draft, selectedObject.id))}>
                       Draw Top Card
