@@ -45,6 +45,8 @@ import {
   createCardOnPlane,
   createDeckOnPlane,
   createDeckFromSpriteSheetOnPlane,
+  createDieFromSpriteSheetOnPlane,
+  createDieOnPlane,
   createPlayerId,
   deleteObject,
   drawFromDeck,
@@ -53,6 +55,8 @@ import {
   duplicateObject,
   flipCard,
   formatRoomTitle,
+  getDieFaceCount,
+  getDieCurrentFaceIndex,
   getTransform,
   getPoolRemainingTokens,
   getRootPlane,
@@ -60,6 +64,7 @@ import {
   isBook,
   isCard,
   isDeck,
+  isDie,
   isGroupSelectableObject,
   isPool,
   liftTopCardFromDeck,
@@ -73,6 +78,7 @@ import {
   bringObjectForward,
   moveObject,
   removePlayer,
+  rollDie,
 } from '../model/room'
 import {
   collectRoomImageAssetUrls,
@@ -91,7 +97,7 @@ import {
   type ResolvedPdfAsset,
 } from '../model/pdfAssets'
 import type { Board, Book, CameraState, Card, GameObject, Id, Pool, RoomDoc, SpriteSpec, Transform2D } from '../model/types'
-import { DEFAULT_BOARD_SIZE, DEFAULT_CARD_SIZE } from '../model/types'
+import { DEFAULT_BOARD_SIZE, DEFAULT_CARD_SIZE, DEFAULT_DIE_SIZE } from '../model/types'
 import { inspectPdfPageSource, inspectPdfSource } from '../pdf/render'
 import {
   boardSizeFromDimensions,
@@ -301,6 +307,15 @@ function cardSizeForAspect(aspect: number) {
   return {
     width: Math.max(48, Math.round(Math.sqrt(targetArea * safeAspect))),
     height: Math.max(48, Math.round(Math.sqrt(targetArea / safeAspect))),
+  }
+}
+
+function dieSizeFromDimensions(width: number, height: number) {
+  const safeWidth = Number.isFinite(width) && width > 0 ? width : DEFAULT_DIE_SIZE.width
+  const safeHeight = Number.isFinite(height) && height > 0 ? height : DEFAULT_DIE_SIZE.height
+  return {
+    width: Math.max(32, Math.round(safeWidth)),
+    height: Math.max(32, Math.round(safeHeight)),
   }
 }
 
@@ -1072,8 +1087,16 @@ interface BookDraft {
   pdfUrl: string
 }
 
+interface DieDraft {
+  name: string
+  faceUrl: string
+  faceRows: string
+  faceCols: string
+  faceCount: string
+}
+
 type RightPanelMode = 'turn' | 'selection'
-type CreationMode = 'board' | 'book' | 'deck-sheet'
+type CreationMode = 'board' | 'book' | 'deck-sheet' | 'die-sheet'
 type SelectionMode = 'normal' | 'group'
 
 function defaultSheetDeckDraft(): SheetDeckDraft {
@@ -1102,6 +1125,16 @@ function defaultBookDraft(): BookDraft {
   return {
     name: '',
     pdfUrl: '',
+  }
+}
+
+function defaultDieDraft(): DieDraft {
+  return {
+    name: '',
+    faceUrl: '',
+    faceRows: '2',
+    faceCols: '3',
+    faceCount: '6',
   }
 }
 
@@ -1553,8 +1586,10 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   const [allowSelectLocked, setAllowSelectLocked] = useState(false)
   const [boardDraft, setBoardDraft] = useState<BoardDraft>(() => defaultBoardDraft())
   const [bookDraft, setBookDraft] = useState<BookDraft>(() => defaultBookDraft())
+  const [dieDraft, setDieDraft] = useState<DieDraft>(() => defaultDieDraft())
   const [boardDraftError, setBoardDraftError] = useState('')
   const [bookDraftError, setBookDraftError] = useState('')
+  const [dieDraftError, setDieDraftError] = useState('')
   const [boardDropError, setBoardDropError] = useState('')
   const [sheetDeckDraft, setSheetDeckDraft] = useState<SheetDeckDraft>(() => defaultSheetDeckDraft())
   const [sheetDeckError, setSheetDeckError] = useState('')
@@ -1572,10 +1607,11 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
       collectRoomImageAssetUrls(room, [
         boardDraft.faceUrl,
         boardDraft.backUrl,
+        dieDraft.faceUrl,
         sheetDeckDraft.faceUrl,
         sheetDeckDraft.backUrl,
       ]),
-    [boardDraft.backUrl, boardDraft.faceUrl, room, sheetDeckDraft.backUrl, sheetDeckDraft.faceUrl],
+    [boardDraft.backUrl, boardDraft.faceUrl, dieDraft.faceUrl, room, sheetDeckDraft.backUrl, sheetDeckDraft.faceUrl],
   )
   const resolvedImageAssets = useResolvedImageAssets(imageAssetUrls)
   const pdfAssetUrls = useMemo(
@@ -2177,6 +2213,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     setIsAddMenuOpen(false)
     setBoardDraftError('')
     setBookDraftError('')
+    setDieDraftError('')
     setSheetDeckError('')
     setCreationMode(mode)
   }
@@ -2185,6 +2222,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     setCreationMode(undefined)
     setBoardDraftError('')
     setBookDraftError('')
+    setDieDraftError('')
     setSheetDeckError('')
   }
 
@@ -2286,6 +2324,20 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
       updateSelection(createdBoardId)
       setRightPanelMode('selection')
       setCreationMode(undefined)
+    }
+    setIsAddMenuOpen(false)
+  }
+
+  function createDieHere() {
+    const offset = spawnCountRef.current++
+    let createdDieId: string | undefined
+    mutate((draft) => {
+      createdDieId = createDieOnPlane(draft, draft.rootId, nextSpawnTransform(cameraRef.current, offset))
+    })
+
+    if (createdDieId) {
+      updateSelection(createdDieId)
+      setRightPanelMode('selection')
     }
     setIsAddMenuOpen(false)
   }
@@ -2744,6 +2796,67 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     setCreationMode(undefined)
   }
 
+  async function createDieFromSheet() {
+    const faceUrl = dieDraft.faceUrl.trim()
+    if (!faceUrl) {
+      setDieDraftError('A die face sheet image or URL is required.')
+      return
+    }
+
+    const faceRows = parsePositiveInteger(dieDraft.faceRows)
+    const faceCols = parsePositiveInteger(dieDraft.faceCols)
+    if (!faceRows || !faceCols) {
+      setDieDraftError('Face rows and columns must be positive whole numbers.')
+      return
+    }
+
+    const faceCount = resolveSheetCount(dieDraft.faceCount, faceRows, faceCols)
+    if (!faceCount) {
+      setDieDraftError('Face count must be a positive whole number.')
+      return
+    }
+
+    let dieSize: { width: number; height: number } = { ...DEFAULT_DIE_SIZE }
+    try {
+      const dimensions = await loadImageSourceDimensions(faceUrl, resolvedImageAssets)
+      dieSize = dieSizeFromDimensions(dimensions.width / faceCols, dimensions.height / faceRows)
+    } catch {
+      setDieDraftError('Could not load the face sheet to determine die size.')
+      return
+    }
+
+    const offset = spawnCountRef.current++
+    let createdDieId: string | undefined
+    mutate((draft) => {
+      createdDieId = createDieFromSpriteSheetOnPlane(
+        draft,
+        draft.rootId,
+        nextSpawnTransform(cameraRef.current, offset),
+        {
+          name: dieDraft.name.trim() || undefined,
+          faces: {
+            url: faceUrl,
+            rows: faceRows,
+            cols: faceCols,
+            count: faceCount,
+          },
+          dieSize,
+        },
+      )
+    })
+
+    if (!createdDieId) {
+      setDieDraftError('Could not create a die from that sheet configuration.')
+      return
+    }
+
+    updateSelection(createdDieId)
+    setDieDraftError('')
+    setDieDraft(defaultDieDraft())
+    setRightPanelMode('selection')
+    setCreationMode(undefined)
+  }
+
   const turnPlayer = room.turnPlayerId ? room.players[room.turnPlayerId] : undefined
   const isTurnPanelOpen = rightPanelMode === 'turn'
   const isMyTurn = Boolean(currentPlayer && turnPlayer && currentPlayer.id === turnPlayer.id)
@@ -2771,6 +2884,14 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     sheetDeckDraft.backRows,
     sheetDeckDraft.backUrl,
   ])
+  const diePreviewCount = useMemo(() => {
+    const rows = parsePositiveInteger(dieDraft.faceRows)
+    const cols = parsePositiveInteger(dieDraft.faceCols)
+    if (!rows || !cols) {
+      return undefined
+    }
+    return resolveSheetCount(dieDraft.faceCount, rows, cols)
+  }, [dieDraft.faceCols, dieDraft.faceCount, dieDraft.faceRows])
 
   return (
     <div className="app-shell">
@@ -2866,6 +2987,11 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
           onFlipBoard={(boardId) =>
             mutate((draft) => {
               flipBoard(draft, boardId)
+            })
+          }
+          onRollDie={(dieId) =>
+            mutate((draft) => {
+              rollDie(draft, dieId)
             })
           }
           onFlipDeck={(deckId) =>
@@ -3551,6 +3677,86 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                 </>
               ) : null}
 
+              {isDie(selectedObject) ? (
+                <>
+                  <div className="button-row">
+                    <button disabled={!canEdit} onClick={() => mutate((draft) => void rollDie(draft, selectedObject.id))}>
+                      Roll
+                    </button>
+                  </div>
+
+                  <div className="stats-card">
+                    <span>Face</span>
+                    <strong>{getDieCurrentFaceIndex(selectedObject) + 1} / {getDieFaceCount(selectedObject)}</strong>
+                  </div>
+
+                  <label className="field">
+                    <span>Current Face</span>
+                    <select
+                      disabled={!canEdit}
+                      value={String(getDieCurrentFaceIndex(selectedObject))}
+                      onChange={(event) =>
+                        mutate((draft) => {
+                          const die = draft.objects[selectedObject.id]
+                          if (isDie(die)) {
+                            die.currentFace = Number.parseInt(event.target.value, 10) || 0
+                          }
+                        })
+                      }
+                    >
+                      {selectedObject.faces.map((_, index) => (
+                        <option key={index} value={String(index)}>
+                          Face {index + 1}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <DimensionEditor
+                    key={selectedObject.id}
+                    title="Size"
+                    width={selectedObject.size.width}
+                    height={selectedObject.size.height}
+                    disabled={!canEdit}
+                    onCommitWidth={(width) =>
+                      mutate((draft) => {
+                        const die = draft.objects[selectedObject.id]
+                        if (isDie(die)) {
+                          die.size = dieSizeFromDimensions(width, die.size.height)
+                        }
+                      })
+                    }
+                    onCommitHeight={(height) =>
+                      mutate((draft) => {
+                        const die = draft.objects[selectedObject.id]
+                        if (isDie(die)) {
+                          die.size = dieSizeFromDimensions(die.size.width, height)
+                        }
+                      })
+                    }
+                  />
+
+                  {selectedObject.faces.map((face, index) => (
+                    <SpriteEditor
+                      key={`${selectedObject.id}:face:${index}`}
+                      label={`Face ${index + 1}`}
+                      value={face}
+                      disabled={!canEdit}
+                      existingAssetUrls={imageAssetUrls}
+                      imageAssets={resolvedImageAssets}
+                      onChange={(next) =>
+                        mutate((draft) => {
+                          const die = draft.objects[selectedObject.id]
+                          if (isDie(die) && die.faces[index]) {
+                            die.faces[index] = next
+                          }
+                        })
+                      }
+                    />
+                  ))}
+                </>
+              ) : null}
+
               <ObjectEditor
                 key={`${selectedObject.id}:${JSON.stringify(selectedObject)}`}
                 object={selectedObject}
@@ -3670,6 +3876,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                         <button onClick={createCardHere}>Card</button>
                         <button onClick={createDeckHere}>Deck</button>
                         <button onClick={createBoardHere}>Board</button>
+                        <button onClick={createDieHere}>Die</button>
                       </div>
                     </section>
 
@@ -3679,6 +3886,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                         <button onClick={() => openCreationFlow('board')}>Board From Image</button>
                         <button onClick={() => openCreationFlow('book')}>Book From PDF</button>
                         <button onClick={() => openCreationFlow('deck-sheet')}>Deck From Sheet</button>
+                        <button onClick={() => openCreationFlow('die-sheet')}>Die From Sheet</button>
                       </div>
                     </section>
                   </section>
@@ -3717,7 +3925,9 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                       ? 'Board From Image'
                       : creationMode === 'book'
                         ? 'Book From PDF'
-                        : 'Deck From Sprite Sheet'}
+                        : creationMode === 'deck-sheet'
+                          ? 'Deck From Sprite Sheet'
+                          : 'Die From Sprite Sheet'}
                   </h2>
                 </div>
                 <button aria-label="Close creation flow" className="panel-close" onClick={closeCreationFlow} title="Close creation flow" />
@@ -3827,7 +4037,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                   </div>
                   {bookDraftError ? <p className="inline-error">{bookDraftError}</p> : null}
                 </div>
-              ) : (
+              ) : creationMode === 'deck-sheet' ? (
                 <div className="creation-flow">
                   <label className="field">
                     <span>Deck Name</span>
@@ -3978,6 +4188,94 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                     </button>
                   </div>
                   {sheetDeckError ? <p className="inline-error">{sheetDeckError}</p> : null}
+                </div>
+              ) : (
+                <div className="creation-flow">
+                  <label className="field">
+                    <span>Die Name</span>
+                    <input
+                      disabled={!canEdit}
+                      value={dieDraft.name}
+                      onChange={(event) =>
+                        setDieDraft((current) => ({
+                          ...current,
+                          name: event.target.value,
+                        }))
+                      }
+                      placeholder="Imported Die"
+                    />
+                  </label>
+
+                  <ImageSourceInput
+                    label="Face Sheet"
+                    value={dieDraft.faceUrl}
+                    disabled={!canEdit}
+                    placeholder="https://example.com/dice.png"
+                    existingAssetUrls={imageAssetUrls}
+                    imageAssets={resolvedImageAssets}
+                    onChange={(faceUrl) =>
+                      setDieDraft((current) => ({
+                        ...current,
+                        faceUrl,
+                      }))
+                    }
+                  />
+
+                  <div className="sheet-grid">
+                    <label className="field">
+                      <span>Rows</span>
+                      <input
+                        disabled={!canEdit}
+                        inputMode="numeric"
+                        value={dieDraft.faceRows}
+                        onChange={(event) =>
+                          setDieDraft((current) => ({
+                            ...current,
+                            faceRows: event.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Cols</span>
+                      <input
+                        disabled={!canEdit}
+                        inputMode="numeric"
+                        value={dieDraft.faceCols}
+                        onChange={(event) =>
+                          setDieDraft((current) => ({
+                            ...current,
+                            faceCols: event.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Faces</span>
+                      <input
+                        disabled={!canEdit}
+                        inputMode="numeric"
+                        value={dieDraft.faceCount}
+                        onChange={(event) =>
+                          setDieDraft((current) => ({
+                            ...current,
+                            faceCount: event.target.value,
+                          }))
+                        }
+                        placeholder={diePreviewCount ? String(diePreviewCount) : 'auto'}
+                      />
+                    </label>
+                  </div>
+                  <p className="field-note">
+                    Faces fill left to right, top to bottom. Blank face count defaults to rows × cols.
+                  </p>
+
+                  <div className="button-row">
+                    <button disabled={!canEdit} onClick={() => void createDieFromSheet()}>
+                      Create Die From Sheet
+                    </button>
+                  </div>
+                  {dieDraftError ? <p className="inline-error">{dieDraftError}</p> : null}
                 </div>
               )}
             </section>

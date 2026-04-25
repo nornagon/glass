@@ -1,5 +1,5 @@
-import type { Board, Book, Card, Deck, GameObject, Id, Plane, PlayerId, Pool, RoomDoc, SpriteSpec, Transform2D } from './types'
-import { DEFAULT_BOARD_SIZE, DEFAULT_CARD_SIZE } from './types'
+import type { Board, Book, Card, Deck, Die, GameObject, Id, Plane, PlayerId, Pool, RoomDoc, SpriteSpec, Transform2D } from './types'
+import { DEFAULT_BOARD_SIZE, DEFAULT_CARD_SIZE, DEFAULT_DIE_SIZE } from './types'
 
 const DEFAULT_FACE: SpriteSpec = {
   kind: 'label',
@@ -42,6 +42,15 @@ const DEFAULT_POOL_BACK: SpriteSpec = {
   bg: '#796f5f',
   fg: '#fff6eb',
 }
+
+const DEFAULT_DIE_FACE_COLORS = [
+  { bg: '#fff8e8', fg: '#20262b' },
+  { bg: '#f1f7ff', fg: '#1e3650' },
+  { bg: '#eef8ee', fg: '#224227' },
+  { bg: '#fff1f1', fg: '#612626' },
+  { bg: '#f7f0ff', fg: '#3b285f' },
+  { bg: '#fff7e8', fg: '#5a3a12' },
+] as const
 
 const DEFAULT_BOOK_SIZE = {
   width: 240,
@@ -193,8 +202,12 @@ export function isBook(object: GameObject | undefined): object is Book {
   return object?.type === 'book'
 }
 
-export function isGroupSelectableObject(object: GameObject | undefined): object is Card | Deck | Board | Pool | Book {
-  return isCard(object) || isDeck(object) || isBoard(object) || isPool(object) || isBook(object)
+export function isDie(object: GameObject | undefined): object is Die {
+  return object?.type === 'die'
+}
+
+export function isGroupSelectableObject(object: GameObject | undefined): object is Card | Deck | Board | Pool | Book | Die {
+  return isCard(object) || isDeck(object) || isBoard(object) || isPool(object) || isBook(object) || isDie(object)
 }
 
 export function getTransform(room: RoomDoc, id: Id) {
@@ -285,6 +298,33 @@ export function createBook(name = 'Book'): Book {
     pdfUrl: '',
     currentPage: 1,
     pageCount: 1,
+  }
+}
+
+function defaultDieFaces(count = 6): SpriteSpec[] {
+  return Array.from({ length: Math.max(1, count) }, (_, index) => {
+    const palette = DEFAULT_DIE_FACE_COLORS[index % DEFAULT_DIE_FACE_COLORS.length]
+    return {
+      kind: 'label',
+      label: String(index + 1),
+      bg: palette.bg,
+      fg: palette.fg,
+    }
+  })
+}
+
+export function createDie(name = 'Die'): Die {
+  return {
+    id: createObjectId('die'),
+    type: 'die',
+    name,
+    parentId: null,
+    locked: false,
+    meta: {},
+    size: { ...DEFAULT_DIE_SIZE },
+    faces: defaultDieFaces(),
+    currentFace: 0,
+    rollVersion: 0,
   }
 }
 
@@ -477,6 +517,13 @@ export function createBookOnPlane(room: RoomDoc, planeId: Id, transform: Transfo
   return book.id
 }
 
+export function createDieOnPlane(room: RoomDoc, planeId: Id, transform: Transform2D, name?: string) {
+  const die = createDie(name)
+  room.objects[die.id] = die
+  placeObjectOnPlane(room, die.id, planeId, transform)
+  return die.id
+}
+
 interface SpriteSheetOptions {
   url: string
   rows: number
@@ -489,6 +536,15 @@ interface DeckFromSpriteSheetOptions {
   faces: SpriteSheetOptions
   backs?: SpriteSheetOptions
   cardSize?: {
+    width: number
+    height: number
+  }
+}
+
+interface DieFromSpriteSheetOptions {
+  name?: string
+  faces: SpriteSheetOptions
+  dieSize?: {
     width: number
     height: number
   }
@@ -554,6 +610,29 @@ export function createDeckFromSpriteSheetOnPlane(
   }
 
   return deck.id
+}
+
+export function createDieFromSpriteSheetOnPlane(
+  room: RoomDoc,
+  planeId: Id,
+  transform: Transform2D,
+  options: DieFromSpriteSheetOptions,
+) {
+  const faceCount = normalizeSheetCount(options.faces.rows, options.faces.cols, options.faces.count)
+  if (faceCount <= 0) {
+    return undefined
+  }
+
+  const die = createDie(options.name?.trim() || 'Imported Die')
+  if (options.dieSize) {
+    die.size = { ...options.dieSize }
+  }
+  die.faces = Array.from({ length: faceCount }, (_, index) => spriteSpecFromSheet(options.faces, index))
+  die.currentFace = 0
+  die.rollVersion = 0
+  room.objects[die.id] = die
+  placeObjectOnPlane(room, die.id, planeId, transform)
+  return die.id
 }
 
 export function moveObject(room: RoomDoc, objectId: Id, transform: Partial<Transform2D>) {
@@ -739,6 +818,30 @@ export function isBoardFaceUp(board: Board) {
 
 export function isPoolFaceUp(pool: Pool) {
   return pool.meta.faceUp !== false
+}
+
+export function getDieFaceCount(die: Die) {
+  return Math.max(1, die.faces.length)
+}
+
+export function getDieCurrentFaceIndex(die: Die) {
+  return Math.max(0, Math.min(Math.floor(die.currentFace), getDieFaceCount(die) - 1))
+}
+
+export function getDieCurrentFace(die: Die) {
+  return die.faces[getDieCurrentFaceIndex(die)] ?? defaultDieFaces(1)[0]
+}
+
+export function rollDie(room: RoomDoc, dieId: Id, random = Math.random) {
+  const die = room.objects[dieId]
+  if (!isDie(die)) {
+    return undefined
+  }
+
+  const faceCount = getDieFaceCount(die)
+  die.currentFace = Math.floor(random() * faceCount)
+  die.rollVersion += 1
+  return die.currentFace
 }
 
 function cloneSpriteSpec(spec: SpriteSpec): SpriteSpec {
@@ -958,6 +1061,18 @@ function duplicateBook(book: Book): Book {
   }
 }
 
+function duplicateDie(die: Die): Die {
+  return {
+    ...die,
+    id: createObjectId('die'),
+    name: die.name,
+    meta: { ...die.meta },
+    size: { ...die.size },
+    faces: die.faces.map((face) => cloneSpriteSpec(face)),
+    parentId: null,
+  }
+}
+
 function duplicateDeck(deck: Deck): Deck {
   return {
     ...deck,
@@ -1062,6 +1177,22 @@ export function duplicateObject(room: RoomDoc, objectId: Id, options?: Duplicate
           ...transform,
           x: transform.x + 48,
           y: transform.y + 48,
+        }),
+      })
+    }
+    return copy.id
+  }
+
+  if (object.type === 'die') {
+    const copy = duplicateDie(object)
+    room.objects[copy.id] = copy
+    const transform = getTransform(room, objectId)
+    if (transform && object.parentId) {
+      placeObjectOnPlane(room, copy.id, object.parentId, {
+        ...(options?.transform ?? {
+          ...transform,
+          x: transform.x + 36,
+          y: transform.y + 36,
         }),
       })
     }

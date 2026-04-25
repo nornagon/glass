@@ -11,7 +11,10 @@ import {
   createCardOnPlane,
   createDeckOnPlane,
   createDeckFromSpriteSheetOnPlane,
+  createDieFromSpriteSheetOnPlane,
+  createDieOnPlane,
   createPoolOnPlane,
+  getDieFaceCount,
   getPoolRemainingTokens,
   createRoomDoc,
   drawFromDeck,
@@ -23,6 +26,7 @@ import {
   moveObject,
   removePlayer,
   renameOrAddPlayer,
+  rollDie,
   sendObjectsBackward,
   returnBoardToPool,
   setTurnPlayer,
@@ -44,12 +48,14 @@ describe('room model', () => {
     const room = createRoomDoc()
     const boardId = createBoardOnPlane(room, room.rootId, { x: 0, y: 0, rotation: 0 }, 'Board')
     const bookId = createBookOnPlane(room, room.rootId, { x: 5, y: 5, rotation: 0 }, 'Rulebook')
+    const dieId = createDieOnPlane(room, room.rootId, { x: 7, y: 7, rotation: 0 }, 'D6')
     const cardId = createCardOnPlane(room, room.rootId, { x: 10, y: 20, rotation: 0 })
     const deckId = createDeckOnPlane(room, room.rootId, { x: 30, y: 40, rotation: 0 })
     const poolId = createPoolOnPlane(room, room.rootId, { x: 50, y: 60, rotation: 0 }, 'Board')
 
     expect(isGroupSelectableObject(room.objects[boardId])).toBe(true)
     expect(isGroupSelectableObject(room.objects[bookId])).toBe(true)
+    expect(isGroupSelectableObject(room.objects[dieId])).toBe(true)
     expect(isGroupSelectableObject(room.objects[cardId])).toBe(true)
     expect(isGroupSelectableObject(room.objects[deckId])).toBe(true)
     expect(isGroupSelectableObject(room.objects[poolId])).toBe(true)
@@ -202,6 +208,7 @@ describe('room model', () => {
     const boardId = createBoardOnPlane(room, room.rootId, { x: 40, y: 40, rotation: 0 }, 'Board Name')
     const poolId = createPoolOnPlane(room, room.rootId, { x: 60, y: 60, rotation: 0 }, 'Pool Name')
     const bookId = createBookOnPlane(room, room.rootId, { x: 80, y: 80, rotation: 0 }, 'Rulebook')
+    const dieId = createDieOnPlane(room, room.rootId, { x: 100, y: 100, rotation: 0 }, 'D20')
 
     if (room.objects[bookId].type === 'book') {
       room.objects[bookId].pdfUrl = 'https://example.com/rules.pdf'
@@ -209,17 +216,56 @@ describe('room model', () => {
       room.objects[bookId].pageCount = 9
     }
 
-    const duplicatedIds = [cardId, deckId, boardId, poolId, bookId].map((objectId) => duplicateObject(room, objectId))
+    const duplicatedIds = [cardId, deckId, boardId, poolId, bookId, dieId].map((objectId) => duplicateObject(room, objectId))
 
-    expect(duplicatedIds).toHaveLength(5)
+    expect(duplicatedIds).toHaveLength(6)
     expect(duplicatedIds.every((objectId) => objectId)).toBe(true)
     expect(room.objects[duplicatedIds[0]!].name).toBe('Card Name')
     expect(room.objects[duplicatedIds[1]!].name).toBe('Deck Name')
     expect(room.objects[duplicatedIds[2]!].name).toBe('Board Name')
     expect(room.objects[duplicatedIds[3]!].name).toBe('Pool Name')
     expect(room.objects[duplicatedIds[4]!].name).toBe('Rulebook')
+    expect(room.objects[duplicatedIds[5]!].name).toBe('D20')
     const duplicatedBook = room.objects[duplicatedIds[4]!]
     expect(duplicatedBook.type === 'book' ? duplicatedBook.currentPage : undefined).toBe(3)
+  })
+
+  it('rolls dice and tracks repeated rolls', () => {
+    const room = createRoomDoc()
+    const dieId = createDieOnPlane(room, room.rootId, { x: 0, y: 0, rotation: 0 }, 'D6')
+
+    const firstFace = rollDie(room, dieId, () => 0.5)
+    const secondFace = rollDie(room, dieId, () => 0.5)
+    const die = room.objects[dieId]
+
+    expect(firstFace).toBe(3)
+    expect(secondFace).toBe(3)
+    expect(die.type === 'die' ? die.rollVersion : undefined).toBe(2)
+  })
+
+  it('creates dice from sprite sheets', () => {
+    const room = createRoomDoc()
+    const dieId = createDieFromSpriteSheetOnPlane(room, room.rootId, { x: 0, y: 0, rotation: 0 }, {
+      faces: {
+        url: 'https://example.com/dice.png',
+        rows: 2,
+        cols: 3,
+        count: 6,
+      },
+      dieSize: {
+        width: 80,
+        height: 80,
+      },
+    })
+
+    expect(dieId).toBeTruthy()
+    const die = room.objects[dieId!]
+    expect(die.type).toBe('die')
+    expect(die.type === 'die' ? getDieFaceCount(die) : undefined).toBe(6)
+    expect(die.type === 'die' ? die.size : undefined).toEqual({
+      width: 80,
+      height: 80,
+    })
   })
 
   it('can duplicate an object at an explicit transform', () => {

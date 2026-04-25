@@ -122,6 +122,10 @@ export function collectRoomImageAssetUrls(room: RoomDoc, extraUrls: Array<string
     if (object.type === 'card' || object.type === 'board' || object.type === 'pool') {
       candidates.push(spriteImageUrl(object.face))
       candidates.push(spriteImageUrl(object.back))
+    } else if (object.type === 'die') {
+      for (const face of object.faces) {
+        candidates.push(spriteImageUrl(face))
+      }
     }
   }
 

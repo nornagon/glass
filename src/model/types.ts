@@ -31,7 +31,7 @@ export interface Player {
 
 export interface GameObjectBase {
   id: Id
-  type: 'plane' | 'deck' | 'card' | 'board' | 'pool' | 'book'
+  type: 'plane' | 'deck' | 'card' | 'board' | 'pool' | 'book' | 'die'
   name: string
   parentId: Id | null
   locked: boolean
@@ -100,7 +100,18 @@ export interface Book extends GameObjectBase {
   pageCount: number
 }
 
-export type GameObject = Plane | Deck | Card | Board | Pool | Book
+export interface Die extends GameObjectBase {
+  type: 'die'
+  size: {
+    width: number
+    height: number
+  }
+  faces: SpriteSpec[]
+  currentFace: number
+  rollVersion: number
+}
+
+export type GameObject = Plane | Deck | Card | Board | Pool | Book | Die
 
 export interface RoomDoc {
   version: 1
@@ -141,6 +152,11 @@ export const DEFAULT_CARD_SIZE = {
 export const DEFAULT_BOARD_SIZE = {
   width: 960,
   height: 720,
+} as const
+
+export const DEFAULT_DIE_SIZE = {
+  width: 72,
+  height: 72,
 } as const
 
 export const BOARD_WORLD_SIZE = 5000

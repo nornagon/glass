@@ -3,7 +3,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { resolveImageSource, type ResolvedImageAsset, type ResolvedImageSource } from '../model/assets'
 import { resolvePdfSource, type ResolvedPdfAsset } from '../model/pdfAssets'
 import { BOARD_WORLD_SIZE, DEFAULT_CARD_SIZE, type CameraState, type Card, type Id, type RoomDoc, type SpriteSpec, type Transform2D } from '../model/types'
-import { canSeeCardFace, getPoolDisplaySize, getPoolRemainingTokens, getPoolTokenSize, getRootPlane, getTransform, isBoard, isBoardFaceUp, isBook, isCard, isDeck, isGroupSelectableObject, isPool, isPoolFaceUp } from '../model/room'
+import { canSeeCardFace, getDieCurrentFace, getPoolDisplaySize, getPoolRemainingTokens, getPoolTokenSize, getRootPlane, getTransform, isBoard, isBoardFaceUp, isBook, isCard, isDeck, isDie, isGroupSelectableObject, isPool, isPoolFaceUp } from '../model/room'
 import { releasePanVelocity } from './panMomentum'
 import { ShuffleIcon } from '../ShuffleIcon'
 import {
@@ -47,6 +47,7 @@ interface BoardViewProps {
   onLiftTopCardFromDeck: (deckId: Id) => Id | undefined
   onFlipCard: (cardId: Id) => void
   onFlipBoard: (boardId: Id) => void
+  onRollDie: (dieId: Id) => void
   onFlipDeck: (deckId: Id) => void
   onDrawDeck: (deckId: Id) => void
   onDropFileAt: (files: File[], point: { x: number; y: number }) => void
@@ -125,7 +126,7 @@ interface QuickAction {
   id: string
   label: string
   onClick: () => void
-  icon?: 'flip' | 'more' | 'shuffle' | 'view'
+  icon?: 'flip' | 'more' | 'roll' | 'shuffle' | 'view'
   text?: string
 }
 
@@ -468,7 +469,7 @@ function clientToLocal(root: HTMLDivElement | null, clientX: number, clientY: nu
 
 function isMovableObjectType(room: RoomDoc, objectId: Id) {
   const object = room.objects[objectId]
-  return Boolean(isCard(object) || isDeck(object) || isBoard(object) || isPool(object) || isBook(object))
+  return Boolean(isCard(object) || isDeck(object) || isBoard(object) || isPool(object) || isBook(object) || isDie(object))
 }
 
 function isMultiselectObjectType(room: RoomDoc, objectId: Id) {
@@ -477,7 +478,7 @@ function isMultiselectObjectType(room: RoomDoc, objectId: Id) {
 
 function objectDimensions(room: RoomDoc, objectId: Id) {
   const object = room.objects[objectId]
-  if (isCard(object) || isBoard(object) || isBook(object)) {
+  if (isCard(object) || isBoard(object) || isBook(object) || isDie(object)) {
     return object.size
   }
   if (isPool(object)) {
@@ -719,6 +720,15 @@ function MoreQuickActionIcon() {
     <svg className="more-icon" aria-hidden="true" viewBox="0 0 128 512" fill="currentColor">
       {/* Font Awesome Free 7.2.0 by @fontawesome - https://fontawesome.com/license/free */}
       <path d="M64 144a56 56 0 1 1 0-112 56 56 0 1 1 0 112zm0 224c30.9 0 56 25.1 56 56s-25.1 56-56 56-56-25.1-56-56 25.1-56 56-56zm56-112c0 30.9-25.1 56-56 56s-56-25.1-56-56 25.1-56 56-56 56 25.1 56 56z" />
+    </svg>
+  )
+}
+
+function RollQuickActionIcon() {
+  return (
+    <svg className="roll-icon" aria-hidden="true" viewBox="0 0 640 512" fill="currentColor">
+      {/* Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com/license/free */}
+      <path d="M274.9 34.3c-28.1-28.1-73.7-28.1-101.8 0L34.3 173.1c-28.1 28.1-28.1 73.7 0 101.8L173.1 413.7c28.1 28.1 73.7 28.1 101.8 0L413.7 274.9c28.1-28.1 28.1-73.7 0-101.8L274.9 34.3zM200 224a24 24 0 1 1 48 0 24 24 0 1 1 -48 0zM96 200a24 24 0 1 1 0 48 24 24 0 1 1 0-48zM224 376a24 24 0 1 1 0-48 24 24 0 1 1 0 48zM352 200a24 24 0 1 1 0 48 24 24 0 1 1 0-48zM224 120a24 24 0 1 1 0-48 24 24 0 1 1 0 48zm96 328c0 35.3 28.7 64 64 64l192 0c35.3 0 64-28.7 64-64l0-192c0-35.3-28.7-64-64-64l-114.3 0c11.6 36 3.1 77-25.4 105.5L320 413.8l0 34.2zM480 328a24 24 0 1 1 0 48 24 24 0 1 1 0-48z" />
     </svg>
   )
 }
@@ -2152,6 +2162,32 @@ interface BoardObjectContentProps {
   onInstantiatePoolBoard: (event: ReactPointerEvent<HTMLDivElement>, poolId: Id) => void
 }
 
+interface DieObjectProps {
+  dieId: Id
+  room: RoomDoc
+  imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>
+  size: Size
+}
+
+function DieObject({ dieId, room, imageAssets, size }: DieObjectProps) {
+  const die = room.objects[dieId]
+  if (!isDie(die)) {
+    return null
+  }
+
+  return (
+    <div className="board-card-shell">
+      <BoardSurface
+        spec={getDieCurrentFace(die)}
+        fallbackLabel={die.name}
+        size={size}
+        imageAssets={imageAssets}
+        rounded
+      />
+    </div>
+  )
+}
+
 interface BookObjectProps {
   bookId: Id
   room: RoomDoc
@@ -2285,6 +2321,17 @@ function BoardObjectContent({
         room={room}
         imageAssets={imageAssets}
         pdfAssets={pdfAssets}
+        size={size}
+      />
+    )
+  }
+
+  if (isDie(object)) {
+    return (
+      <DieObject
+        dieId={objectId}
+        room={room}
+        imageAssets={imageAssets}
         size={size}
       />
     )
@@ -2554,6 +2601,7 @@ export function BoardView({
   onLiftTopCardFromDeck,
   onFlipCard,
   onFlipBoard,
+  onRollDie,
   onFlipDeck: _onFlipDeck,
   onDrawDeck: _onDrawDeck,
   onDropFileAt,
@@ -4036,8 +4084,18 @@ export function BoardView({
       ]
     }
 
+    if (object.type === 'die') {
+      if (!canEdit) {
+        return []
+      }
+      return [
+        { id: 'roll', label: 'Roll', icon: 'roll', onClick: () => onRollDie(object.id) },
+        { id: 'more', label: 'More actions', icon: 'more', onClick: onOpenSelectionPanel },
+      ]
+    }
+
     return []
-  }, [canEdit, onFlipBoard, onFlipCard, onOpenBook, onOpenSelectionPanel, onShuffleDeck, room.objects, selectedId, selectionMode])
+  }, [canEdit, onFlipBoard, onFlipCard, onOpenBook, onOpenSelectionPanel, onRollDie, onShuffleDeck, room.objects, selectedId, selectionMode])
   hasQuickActionsRef.current = quickActions.length > 0
 
   const root = getRootPlane(room)
@@ -4760,6 +4818,8 @@ export function BoardView({
                 ? <FlipQuickActionIcon />
                 : action.icon === 'view'
                   ? <ViewQuickActionIcon />
+                : action.icon === 'roll'
+                  ? <RollQuickActionIcon />
                 : action.icon === 'shuffle'
                   ? <ShuffleIcon />
                 : action.icon === 'more'

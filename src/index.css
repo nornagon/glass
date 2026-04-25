@@ -1089,6 +1089,13 @@ textarea {
   fill: currentColor;
 }
 
+.quick-actions button.quick-action-icon svg.roll-icon {
+  width: 1.05rem;
+  height: 1.05rem;
+  stroke: none;
+  fill: currentColor;
+}
+
 .quick-actions button.quick-action-icon svg.more-icon {
   width: 0.34rem;
   height: 1.12rem;
