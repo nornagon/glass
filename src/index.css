@@ -1466,6 +1466,15 @@ textarea {
   min-width: 0;
 }
 
+.inspector-object-toolbar {
+  margin-bottom: 0.85rem;
+}
+
+.inspector-object-title-input {
+  margin-bottom: 0;
+  padding-bottom: 0.28em;
+}
+
 .inspector-toolbar h2 {
   margin: 0;
   font-family: 'Iowan Old Style', 'Palatino Linotype', serif;

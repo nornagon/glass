@@ -2,6 +2,7 @@
 
 ## 2026-04-25
 
+- Made selected object names editable inline in the inspector header with spacing that does not affect room or player title editors.
 - Added dice objects with roll actions, editable faces, and sprite-sheet imports, and switched the board roll quick action to a Font Awesome dice icon.
 - Added a card flip animation that lifts, turns with perspective, and drops smoothly without triggering when dragging cards out of decks.
 - Tightened deck drag-out performance by specializing top-card lifts and prewarming prepared surfaces for the cards most likely to appear next.

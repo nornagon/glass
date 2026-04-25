@@ -3203,10 +3203,33 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
         {visibleRightPanelMode === 'selection' && selectedObject ? (
           <aside className="inspector inspector-right">
             <section className="inspector-section">
-              <div className="inspector-toolbar">
-                <div>
+              <div className="inspector-toolbar inspector-object-toolbar">
+                <div className="inspector-toolbar-copy">
                   <p className="eyebrow">{selectedObject.type}</p>
-                  <h2>{selectedObject.name}</h2>
+                  {canEdit ? (
+                    <textarea
+                      aria-label="Object name"
+                      className="drawer-title-input inspector-object-title-input"
+                      placeholder="Object Name"
+                      rows={1}
+                      spellCheck={false}
+                      wrap="off"
+                      value={selectedObject.name}
+                      onChange={(event) =>
+                        mutate((draft) => {
+                          draft.objects[selectedObject.id].name = event.target.value.replaceAll('\n', ' ')
+                        })
+                      }
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault()
+                          event.currentTarget.blur()
+                        }
+                      }}
+                    />
+                  ) : (
+                    <h2>{selectedObject.name}</h2>
+                  )}
                 </div>
                 <button aria-label="Close panel" className="panel-close" onClick={closeRightPanel} title="Close panel" />
               </div>
@@ -3232,19 +3255,6 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                   Duplicate
                 </button>
               </div>
-
-              <label className="field">
-                <span>Name</span>
-                <input
-                  disabled={!canEdit}
-                  value={selectedObject.name}
-                  onChange={(event) =>
-                    mutate((draft) => {
-                      draft.objects[selectedObject.id].name = event.target.value
-                    })
-                  }
-                />
-              </label>
 
               <label className="toggle-row">
                 <span>Locked</span>
