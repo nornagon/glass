@@ -83,6 +83,7 @@ interface DragState {
   mode: 'move' | 'rotate'
   startPointer: Point
   startTransform: Transform2D
+  rotateAngleOffset?: number
   currentPoint: Point
   moved: boolean
   raisedToFront: boolean
@@ -159,7 +160,10 @@ const PREPARED_SPRITE_PREWARM_FALLBACK_DELAY_MS = 80
 const PREPARED_SPRITE_PREWARM_MIN_IDLE_MS = 12
 const PREPARED_SPRITE_PREWARM_MAX_TASKS_PER_IDLE = 2
 const SURFACE_SHADOW_ALPHA_THRESHOLD = 250
-const ROTATE_HANDLE_TOP_OFFSET_PX = 38
+const ROTATE_HANDLE_EDGE_GAP_PX = 12
+const ROTATE_HANDLE_SIZE_PX = 28
+const QUICK_ACTIONS_TOP_OFFSET_PX = 24
+const QUICK_ACTIONS_WITH_ROTATE_HANDLE_TOP_OFFSET_PX = 34
 
 const intrinsicImageSizeCache = new Map<string, Size | null>()
 const resolvedSourceImageElementCache = new Map<string, HTMLImageElement>()
@@ -329,11 +333,30 @@ function rotateHandleScreenPoint(
     x: transform.x,
     y: transform.y,
   })
-  const offset = worldSize.height * camera.zoom / 2 + ROTATE_HANDLE_TOP_OFFSET_PX
+  const offset = worldSize.height * camera.zoom / 2 + ROTATE_HANDLE_EDGE_GAP_PX + ROTATE_HANDLE_SIZE_PX / 2
 
   return {
     x: screenPoint.x + Math.sin(transform.rotation) * offset,
     y: screenPoint.y - Math.cos(transform.rotation) * offset,
+  }
+}
+
+function quickActionsScreenPoint(
+  viewport: Size,
+  camera: CameraState,
+  transform: Transform2D,
+  worldSize: Size,
+  hasRotateHandle: boolean,
+): Point {
+  const screenPoint = logicalToScreen(viewport, camera, {
+    x: transform.x,
+    y: transform.y,
+  })
+  const topOffset = hasRotateHandle ? QUICK_ACTIONS_WITH_ROTATE_HANDLE_TOP_OFFSET_PX : QUICK_ACTIONS_TOP_OFFSET_PX
+
+  return {
+    x: screenPoint.x,
+    y: screenPoint.y - worldSize.height * camera.zoom / 2 - topOffset,
   }
 }
 
@@ -2788,12 +2811,15 @@ export function BoardView({
       return
     }
 
-    const screenPoint = logicalToScreen(viewportSize, nextCamera, {
-      x: selectedObject.transform.x,
-      y: selectedObject.transform.y,
-    })
+    const screenPoint = quickActionsScreenPoint(
+      viewportSize,
+      nextCamera,
+      selectedObject.transform,
+      selectedObject.worldSize,
+      hasRotateHandleRef.current,
+    )
     quickActions.style.left = `${screenPoint.x}px`
-    quickActions.style.top = `${screenPoint.y - selectedObject.worldSize.height * nextCamera.zoom / 2 - 24}px`
+    quickActions.style.top = `${screenPoint.y}px`
   }, [viewportSize])
 
   const applyCameraToBoardWorld = useCallback((nextCamera: CameraState) => {
@@ -3101,12 +3127,18 @@ export function BoardView({
   ) => {
     tapCandidateRef.current = null
     cameraPointersRef.current.delete(pointerId)
+    const startPointer = screenToLogical(viewportSize, cameraRef.current, startPoint)
+    const rotatePointerAngle =
+      mode === 'rotate'
+        ? Math.atan2(startPointer.y - startTransform.y, startPointer.x - startTransform.x) + Math.PI / 2
+        : undefined
     dragRef.current = {
       id,
       pointerId,
       mode,
-      startPointer: screenToLogical(viewportSize, cameraRef.current, startPoint),
+      startPointer,
       startTransform: { ...startTransform },
+      rotateAngleOffset: rotatePointerAngle === undefined ? undefined : startTransform.rotation - rotatePointerAngle,
       currentPoint: startPoint,
       moved: options?.moved ?? false,
       raisedToFront: options?.raisedToFront ?? false,
@@ -3679,7 +3711,7 @@ export function BoardView({
             Math.atan2(
               worldPoint.y - activeDrag.startTransform.y,
               worldPoint.x - activeDrag.startTransform.x,
-            ) + Math.PI / 2
+            ) + Math.PI / 2 + (activeDrag.rotateAngleOffset ?? 0)
 
           const nextTransform = {
             ...activeDrag.startTransform,
@@ -4170,16 +4202,19 @@ export function BoardView({
       return undefined
     }
 
-    const screenPoint = logicalToScreen(viewportSize, cameraRef.current, {
-      x: selectedWorldObject.transform.x,
-      y: selectedWorldObject.transform.y,
-    })
+    const screenPoint = quickActionsScreenPoint(
+      viewportSize,
+      cameraRef.current,
+      selectedWorldObject.transform,
+      selectedWorldObject.worldSize,
+      Boolean(selectedRotateHandleObject),
+    )
 
     return {
       left: `${screenPoint.x}px`,
-      top: `${screenPoint.y - selectedWorldObject.worldSize.height * cameraRef.current.zoom / 2 - 24}px`,
+      top: `${screenPoint.y}px`,
     }
-  }, [quickActions.length, selectedWorldObject, viewportSize])
+  }, [quickActions.length, selectedRotateHandleObject, selectedWorldObject, viewportSize])
   const rotateHandlePosition = useMemo(() => {
     if (!selectedRotateHandleObject) {
       return undefined

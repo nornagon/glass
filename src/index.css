@@ -981,7 +981,7 @@ textarea {
   border-radius: 999px;
   border: calc(3px / var(--board-zoom, 1)) solid #5a3918;
   background: #f7c05e;
-  transform: translate(-50%, 0);
+  transform: translate(-50%, -50%);
   transition:
     background 120ms ease,
     border-color 120ms ease,
@@ -1002,7 +1002,7 @@ textarea {
 
 @media (hover: hover) and (pointer: fine) {
   .board-rotate-handle:hover:enabled {
-    transform: translate(-50%, 0);
+    transform: translate(-50%, -50%);
   }
 }
 
