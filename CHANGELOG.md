@@ -4,9 +4,11 @@
 
 - Moved the board grid off animated CSS backgrounds and into a canvas layer while keeping the board surface shadow in CSS, reducing Safari zoom jitter.
 - Fixed pool token drag-out placement so spawned boards stay under the dragged token instead of jumping down and right.
+- Removed pool flip actions and rotate handles so pools are only moved or edited through the inspector.
 - Fixed board camera bounce on initial load and after closing the PDF viewer by synchronizing viewport measurement before the first board paint.
 - Unmounted the board behind the PDF viewer on Mobile Safari to reduce WebContent memory pressure while zooming large PDFs.
 - Disabled prepared-surface prewarming so large image rooms no longer spend idle time building sprite surfaces ahead of demand.
+- Lazily prewarmed prepared card surfaces only for deck cards second from the top, while keeping the work idle-gated and removing the prewarm percent badge.
 - Pinned the workspace package manager metadata to `pnpm@10.11.1`.
 
 ## 2026-04-22

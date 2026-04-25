@@ -46,7 +46,6 @@ interface BoardViewProps {
   onLiftTopCardFromDeck: (deckId: Id) => Id | undefined
   onFlipCard: (cardId: Id) => void
   onFlipBoard: (boardId: Id) => void
-  onFlipPool: (poolId: Id) => void
   onFlipDeck: (deckId: Id) => void
   onDrawDeck: (deckId: Id) => void
   onDropFileAt: (files: File[], point: { x: number; y: number }) => void
@@ -117,11 +116,6 @@ interface QuickAction {
   text?: string
 }
 
-interface PrewarmProgress {
-  completed: number
-  total: number
-}
-
 type EphemeralTransformMap = Partial<Record<Id, Transform2D>>
 
 const FULL_CROP = { x: 0, y: 0, width: 1, height: 1 } as const
@@ -145,7 +139,6 @@ const ALPHA_OUTLINE_MIN_SAMPLES = 12
 const ALPHA_OUTLINE_MAX_SAMPLES = 64
 const PREPARED_SPRITE_MAX_DIMENSION = 4096
 const PREPARED_SPRITE_MOBILE_SAFARI_MAX_DIMENSION = 2048
-const ENABLE_PREPARED_SPRITE_PREWARM = false
 const PREPARED_SPRITE_PREWARM_INITIAL_DELAY_MS = 500
 const PREPARED_SPRITE_PREWARM_QUIET_MS = 400
 const PREPARED_SPRITE_PREWARM_FALLBACK_DELAY_MS = 80
@@ -2471,7 +2464,6 @@ export function BoardView({
   onLiftTopCardFromDeck,
   onFlipCard,
   onFlipBoard,
-  onFlipPool,
   onFlipDeck: _onFlipDeck,
   onDrawDeck: _onDrawDeck,
   onDropFileAt,
@@ -2544,7 +2536,6 @@ export function BoardView({
   const [hoverDropTargetId, setHoverDropTargetId] = useState<Id | undefined>()
   const [lassoPath, setLassoPath] = useState<Point[]>([])
   const [isImageDropTarget, setIsImageDropTarget] = useState(false)
-  const [prewarmProgress, setPrewarmProgress] = useState<PrewarmProgress | null>(null)
   const constrainedEffects = useMemo(() => isLikelyMobileSafari(), [])
 
   roomRef.current = room
@@ -3051,90 +3042,49 @@ export function BoardView({
     if (typeof window === 'undefined') {
       return
     }
-    if (!ENABLE_PREPARED_SPRITE_PREWARM) {
-      setPrewarmProgress(null)
-      return
-    }
-
-    const tasks = Object.values(room.objects).flatMap((object) => {
-      if (isCard(object)) {
-        const visibleSpec = canSeeCardFace(object, currentPlayerId) ? object.face : object.back
-        if (constrainedEffects) {
-          return [{ spec: visibleSpec, size: object.size }]
-        }
-
-        return [
-          { spec: object.face, size: object.size },
-          { spec: object.back, size: object.size },
-        ]
-      }
-
-      if (isBoard(object)) {
-        const visibleSpec = isBoardFaceUp(object) ? object.face : object.back
-        if (constrainedEffects) {
-          return [{ spec: visibleSpec, size: object.size }]
-        }
-
-        return [
-          { spec: object.face, size: object.size },
-          { spec: object.back, size: object.size },
-        ]
-      }
-
-      if (isPool(object)) {
-        const visibleSpec = isPoolFaceUp(object) ? object.face : object.back
-        const displaySize = getPoolDisplaySize(object)
-        if (constrainedEffects) {
-          return [{ spec: visibleSpec, size: displaySize }]
-        }
-
-        return [
-          { spec: object.face, size: displaySize },
-          { spec: object.back, size: displaySize },
-        ]
-      }
-
-      return []
-    })
 
     const seenTaskKeys = new Set<string>()
-    const queue = tasks.flatMap(({ spec, size }) => {
+    const queue = Object.values(room.objects).flatMap((object) => {
+      if (!isDeck(object) || object.childIds.length < 2) {
+        return []
+      }
+
+      const nextCard = room.objects[object.childIds[object.childIds.length - 2]]
+      if (!isCard(nextCard)) {
+        return []
+      }
+
+      const spec = canSeeCardFace(nextCard, currentPlayerId) ? nextCard.face : nextCard.back
       if (spec.kind !== 'image-url' || !spec.url) {
+        return []
+      }
+
+      const source = resolveImageSource(spec.url, imageAssets)
+      const imageUrl = source?.renderUrl
+      if (!imageUrl) {
         return []
       }
 
       const crop = normalizeCrop(spec.crop)
       const taskKey = [
-        spec.url,
-        size.width,
-        size.height,
+        imageUrl,
+        nextCard.size.width,
+        nextCard.size.height,
         spec.fit ?? 'cover',
         crop.x.toFixed(4),
         crop.y.toFixed(4),
         crop.width.toFixed(4),
         crop.height.toFixed(4),
       ].join('|')
-      if (seenTaskKeys.has(taskKey)) {
+      if (seenTaskKeys.has(taskKey) || completedPrewarmTaskKeysRef.current.has(taskKey)) {
         return []
       }
 
       seenTaskKeys.add(taskKey)
-      return [{ spec, size, taskKey }]
+      return [{ imageUrl, source, spec, size: nextCard.size, taskKey }]
     })
 
     if (queue.length === 0) {
-      setPrewarmProgress(null)
-      return
-    }
-
-    const completedTaskCount = queue.reduce(
-      (count, task) => count + (completedPrewarmTaskKeysRef.current.has(task.taskKey) ? 1 : 0),
-      0,
-    )
-    const pendingQueue = queue.filter((task) => !completedPrewarmTaskKeysRef.current.has(task.taskKey))
-
-    if (pendingQueue.length === 0) {
-      setPrewarmProgress(null)
       return
     }
 
@@ -3142,7 +3092,6 @@ export function BoardView({
     let idleCallbackId: number | undefined
     let timeoutId: ReturnType<typeof globalThis.setTimeout> | undefined
     let nextTaskIndex = 0
-    setPrewarmProgress({ completed: completedTaskCount, total: queue.length })
 
     const markTaskComplete = (taskKey: string) => {
       if (cancelled) {
@@ -3150,64 +3099,56 @@ export function BoardView({
       }
 
       completedPrewarmTaskKeysRef.current.add(taskKey)
-      setPrewarmProgress((current) => {
-        if (!current) {
-          return current
-        }
-
-        const completed = Math.min(current.total, current.completed + 1)
-        return completed >= current.total ? null : { completed, total: current.total }
-      })
     }
 
     const runNextTask = async () => {
-      const task = pendingQueue[nextTaskIndex]
+      const task = queue[nextTaskIndex]
       nextTaskIndex += 1
+      if (!task) {
+        return
+      }
 
-      try {
-        if (!task || task.spec.kind !== 'image-url' || !task.spec.url) {
-          return
+      const intrinsicSize = task.source?.asset?.width && task.source.asset.height
+        ? {
+          width: task.source.asset.width,
+          height: task.source.asset.height,
         }
-
-        const source = resolveImageSource(task.spec.url, imageAssets)
-        const imageUrl = source?.renderUrl
-        if (!imageUrl) {
-          return
-        }
-
-        const image = await loadSourceImageElement(imageUrl).catch(() => undefined)
-        if (!image || cancelled) {
-          return
-        }
-
-        const intrinsicSize =
-          source?.asset?.width && source.asset.height
-            ? {
-              width: source.asset.width,
-              height: source.asset.height,
+        : await loadSourceImageElement(task.imageUrl)
+          .then((image) => {
+            if (image.naturalWidth <= 0 || image.naturalHeight <= 0) {
+              return undefined
             }
-            : {
+
+            const size = {
               width: image.naturalWidth,
               height: image.naturalHeight,
             }
-        const crop = normalizeCrop(task.spec.crop)
-        const { fitWidth, fitHeight } = computeSurfaceFit(crop, task.size, intrinsicSize, task.spec.fit ?? 'cover')
-        await requestPreparedSpriteSurface(
-          imageUrl,
-          crop,
-          task.size.width * fitWidth,
-          task.size.height * fitHeight,
-          intrinsicSize,
-        )
-      } finally {
-        if (task) {
-          markTaskComplete(task.taskKey)
-        }
+            intrinsicImageSizeCache.set(task.imageUrl, size)
+            return size
+          })
+          .catch(() => undefined)
+      if (!intrinsicSize || cancelled) {
+        return
       }
+      if (prewarmPauseUntilRef.current > performance.now()) {
+        nextTaskIndex -= 1
+        return
+      }
+
+      const crop = normalizeCrop(task.spec.crop)
+      const { fitWidth, fitHeight } = computeSurfaceFit(crop, task.size, intrinsicSize, task.spec.fit ?? 'cover')
+      await requestPreparedSpriteSurface(
+        task.imageUrl,
+        crop,
+        task.size.width * fitWidth,
+        task.size.height * fitHeight,
+        intrinsicSize,
+      )
+      markTaskComplete(task.taskKey)
     }
 
     const scheduleNextTask = (delayMs = 0) => {
-      if (cancelled || nextTaskIndex >= pendingQueue.length) {
+      if (cancelled || nextTaskIndex >= queue.length) {
         return
       }
 
@@ -3242,7 +3183,7 @@ export function BoardView({
           let tasksRun = 0
           while (
             !cancelled &&
-            nextTaskIndex < pendingQueue.length &&
+            nextTaskIndex < queue.length &&
             tasksRun < PREPARED_SPRITE_PREWARM_MAX_TASKS_PER_IDLE &&
             prewarmPauseUntilRef.current <= performance.now() &&
             deadline.timeRemaining() >= PREPARED_SPRITE_PREWARM_MIN_IDLE_MS
@@ -3277,11 +3218,7 @@ export function BoardView({
         globalThis.clearTimeout(timeoutId)
       }
     }
-  }, [constrainedEffects, currentPlayerId, imageAssets, room.objects])
-
-  const prewarmPercent = ENABLE_PREPARED_SPRITE_PREWARM && prewarmProgress
-    ? Math.round((prewarmProgress.completed / prewarmProgress.total) * 100)
-    : undefined
+  }, [currentPlayerId, imageAssets, room.objects])
 
   useEffect(() => {
     const host = hostRef.current
@@ -3891,11 +3828,7 @@ export function BoardView({
     }
 
     if (object.type === 'pool') {
-      if (!canEdit) {
-        return []
-      }
       return [
-        { id: 'flip', label: 'Flip', icon: 'flip', onClick: () => onFlipPool(object.id) },
         { id: 'more', label: 'More actions', icon: 'more', onClick: onOpenSelectionPanel },
       ]
     }
@@ -3908,7 +3841,7 @@ export function BoardView({
     }
 
     return []
-  }, [canEdit, onFlipBoard, onFlipCard, onFlipPool, onOpenBook, onOpenSelectionPanel, onShuffleDeck, room.objects, selectedId, selectionMode])
+  }, [canEdit, onFlipBoard, onFlipCard, onOpenBook, onOpenSelectionPanel, onShuffleDeck, room.objects, selectedId, selectionMode])
   hasQuickActionsRef.current = quickActions.length > 0
 
   const root = getRootPlane(room)
@@ -4457,7 +4390,7 @@ export function BoardView({
         const usesCardOutlineSelection = isCard(object) && selectionStrokeWidth > 0
         const usesPoolOutlineSelection = isPool(object) && selectionStrokeWidth > 0
         const showsRotateHandle =
-          selectionMode === 'normal' && selectedId === objectId && canEdit && !object.locked
+          selectionMode === 'normal' && selectedId === objectId && canEdit && !object.locked && !isPool(object)
         const worldPosition = transform
 
         return (
@@ -4569,11 +4502,6 @@ export function BoardView({
       ) : null}
       {dropImportError ? (
         <div className="board-drop-error" role="status">{dropImportError}</div>
-      ) : null}
-      {prewarmPercent !== undefined ? (
-        <div aria-hidden="true" className="board-asset-progress">
-          {prewarmPercent}%
-        </div>
       ) : null}
       {lassoPath.length > 1 ? (
         <svg

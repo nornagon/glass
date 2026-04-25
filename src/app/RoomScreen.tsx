@@ -50,7 +50,6 @@ import {
   drawFromDeck,
   flipBoard,
   flipDeck,
-  flipPool,
   duplicateObject,
   flipCard,
   formatRoomTitle,
@@ -2868,11 +2867,6 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
               flipBoard(draft, boardId)
             })
           }
-          onFlipPool={(poolId) =>
-            mutate((draft) => {
-              flipPool(draft, poolId)
-            })
-          }
           onFlipDeck={(deckId) =>
             mutate((draft) => {
               flipDeck(draft, deckId)
@@ -3462,12 +3456,6 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
 
               {isPool(selectedObject) ? (
                 <>
-                  <div className="button-row">
-                    <button disabled={!canEdit} onClick={() => mutate((draft) => flipPool(draft, selectedObject.id))}>
-                      {selectedObject.meta.faceUp === false ? 'Show Face' : 'Show Back'}
-                    </button>
-                  </div>
-
                   <DimensionEditor
                     key={selectedObject.id}
                     width={selectedObject.size.width}

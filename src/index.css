@@ -933,26 +933,6 @@ textarea {
   color: #ffd5b8;
 }
 
-.board-asset-progress {
-  position: absolute;
-  left: max(1rem, env(safe-area-inset-left));
-  bottom: max(1rem, env(safe-area-inset-bottom));
-  z-index: 2;
-  pointer-events: none;
-  -webkit-user-select: none;
-  user-select: none;
-  padding: 0.45rem 0.7rem;
-  border-radius: 999px;
-  background: rgba(14, 25, 31, 0.58);
-  border: 1px solid rgba(255, 233, 196, 0.08);
-  backdrop-filter: blur(12px);
-  color: rgba(255, 241, 218, 0.72);
-  font-size: 0.72rem;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.04em;
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.14);
-}
-
 .quick-actions {
   position: absolute;
   display: flex;
