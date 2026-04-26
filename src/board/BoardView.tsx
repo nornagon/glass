@@ -53,6 +53,7 @@ interface BoardViewProps {
   onDropFileAt: (files: File[], point: { x: number; y: number }) => void
   onShuffleDeck: (deckId: Id) => void
   onOpenBook: (bookId: Id) => void
+  onSetBookPage: (bookId: Id, page: number) => void
   onOpenSelectionPanel: () => void
 }
 
@@ -127,7 +128,8 @@ interface QuickAction {
   id: string
   label: string
   onClick: () => void
-  icon?: 'flip' | 'more' | 'roll' | 'shuffle' | 'view'
+  icon?: 'flip' | 'more' | 'next-page' | 'previous-page' | 'roll' | 'shuffle' | 'view'
+  disabled?: boolean
   text?: string
 }
 
@@ -761,6 +763,24 @@ function ViewQuickActionIcon() {
     <svg aria-hidden="true" viewBox="0 0 24 24" fill="none">
       <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
       <circle cx="12" cy="12" r="3" />
+    </svg>
+  )
+}
+
+function PreviousPageQuickActionIcon() {
+  return (
+    <svg className="caret-icon" aria-hidden="true" viewBox="0 0 256 512" fill="currentColor">
+      {/* Font Awesome Free 7.2.0 by @fontawesome - https://fontawesome.com/license/free */}
+      <path d="M9.4 278.6c-12.5-12.5-12.5-32.8 0-45.3l128-128c9.2-9.2 22.9-11.9 34.9-6.9S192 115.1 192 128l0 256c0 12.9-7.8 24.6-19.8 29.6s-25.7 2.2-34.9-6.9l-128-128z" />
+    </svg>
+  )
+}
+
+function NextPageQuickActionIcon() {
+  return (
+    <svg className="caret-icon" aria-hidden="true" viewBox="0 0 256 512" fill="currentColor">
+      {/* Font Awesome Free 7.2.0 by @fontawesome - https://fontawesome.com/license/free */}
+      <path d="M246.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-128 128c-9.2 9.2-22.9 11.9-34.9 6.9S64 396.9 64 384l0-256c0-12.9 7.8-24.6 19.8-29.6s25.7-2.2 34.9 6.9l128 128z" />
     </svg>
   )
 }
@@ -2630,6 +2650,7 @@ export function BoardView({
   onDropFileAt,
   onShuffleDeck,
   onOpenBook,
+  onSetBookPage,
   onOpenSelectionPanel,
 }: BoardViewProps) {
   void _onFlipDeck
@@ -4110,8 +4131,24 @@ export function BoardView({
     }
 
     if (object.type === 'book') {
+      const pageCount = Math.max(object.currentPage, object.pageCount, 1)
+      const currentPage = Math.max(1, Math.min(object.currentPage, pageCount))
       return [
+        {
+          id: 'previous-page',
+          label: 'Previous page',
+          icon: 'previous-page',
+          disabled: currentPage <= 1,
+          onClick: () => onSetBookPage(object.id, currentPage - 1),
+        },
         { id: 'view', label: 'Open PDF', icon: 'view', onClick: () => onOpenBook(object.id) },
+        {
+          id: 'next-page',
+          label: 'Next page',
+          icon: 'next-page',
+          disabled: currentPage >= pageCount,
+          onClick: () => onSetBookPage(object.id, currentPage + 1),
+        },
         { id: 'more', label: 'More actions', icon: 'more', onClick: onOpenSelectionPanel },
       ]
     }
@@ -4127,7 +4164,7 @@ export function BoardView({
     }
 
     return []
-  }, [canEdit, onFlipBoard, onFlipCard, onOpenBook, onOpenSelectionPanel, onRollDie, onShuffleDeck, room.objects, selectedId, selectionMode])
+  }, [canEdit, onFlipBoard, onFlipCard, onOpenBook, onOpenSelectionPanel, onRollDie, onSetBookPage, onShuffleDeck, room.objects, selectedId, selectionMode])
   hasQuickActionsRef.current = quickActions.length > 0
 
   const root = getRootPlane(room)
@@ -4844,7 +4881,9 @@ export function BoardView({
               key={action.id}
               type="button"
               onPointerDown={(event) => event.stopPropagation()}
-              onClick={action.onClick}
+              onClick={action.disabled ? undefined : action.onClick}
+              aria-disabled={action.disabled ? 'true' : undefined}
+              data-disabled={action.disabled ? 'true' : undefined}
               className={action.icon ? 'quick-action-icon' : undefined}
               aria-label={action.label}
               title={action.label}
@@ -4853,6 +4892,10 @@ export function BoardView({
                 ? <FlipQuickActionIcon />
                 : action.icon === 'view'
                   ? <ViewQuickActionIcon />
+                : action.icon === 'previous-page'
+                  ? <PreviousPageQuickActionIcon />
+                : action.icon === 'next-page'
+                  ? <NextPageQuickActionIcon />
                 : action.icon === 'roll'
                   ? <RollQuickActionIcon />
                 : action.icon === 'shuffle'

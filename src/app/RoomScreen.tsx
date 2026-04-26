@@ -2480,6 +2480,18 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     setOpenBookViewerId(bookId)
   }
 
+  function setBookPage(bookId: string, page: number) {
+    mutate((draft) => {
+      const book = draft.objects[bookId]
+      if (!isBook(book)) {
+        return
+      }
+
+      const pageCount = Math.max(book.currentPage, book.pageCount, 1)
+      book.currentPage = Math.max(1, Math.min(page, pageCount))
+    })
+  }
+
   async function createBoardFromImageSource({
     faceUrl,
     backUrl,
@@ -3139,6 +3151,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
             })
           }
           onOpenBook={openBookViewer}
+          onSetBookPage={setBookPage}
           onOpenSelectionPanel={openSelectionPanel}
           />
         )}
