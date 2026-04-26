@@ -2,6 +2,7 @@
 
 ## 2026-04-26
 
+- Moved the book inspector's Open PDF control into the main object action grid.
 - Reworked the object inspector into consistent top actions, clearer size/face sections, compact image controls, and collapsed advanced/object details.
 - Added an expandable deck card list with per-card draw actions backed by model support for drawing a specific card from a deck.
 - Cleaned up die and pool inspector controls by merging the current-face count into the selector and rendering limited supply as a switch.

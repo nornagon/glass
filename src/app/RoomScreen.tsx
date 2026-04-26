@@ -3424,6 +3424,11 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                         Create Pool
                       </button>
                     ) : null}
+                    {isBook(selectedObject) ? (
+                      <button onClick={() => openBookViewer(selectedObject.id)}>
+                        Open PDF
+                      </button>
+                    ) : null}
                     {isDeck(selectedObject) ? (
                       <>
                         <button disabled={!canEdit} onClick={() => mutate((draft) => flipDeck(draft, selectedObject.id))}>
@@ -3670,12 +3675,6 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
 
               {isBook(selectedObject) ? (
                 <>
-                  <div className="button-row">
-                    <button onClick={() => openBookViewer(selectedObject.id)}>
-                      Open PDF
-                    </button>
-                  </div>
-
                   <div className="stats-card">
                     <span>Page</span>
                     <strong>{selectedObject.currentPage} / {Math.max(1, selectedObject.pageCount)}</strong>
