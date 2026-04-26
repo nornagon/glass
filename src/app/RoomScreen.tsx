@@ -48,6 +48,7 @@ import {
   createDieFromSpriteSheetOnPlane,
   createDieOnPlane,
   createPlayerId,
+  drawCardFromDeck,
   deleteObject,
   drawFromDeck,
   flipBoard,
@@ -71,11 +72,9 @@ import {
   mergeDeckIntoDeck,
   renameOrAddPlayer,
   returnBoardToPool,
-  sendObjectBackward,
   sendObjectsBackward,
   setTurnPlayer,
   shuffleDeck,
-  bringObjectForward,
   moveObject,
   removePlayer,
   rollDie,
@@ -105,7 +104,6 @@ import {
   boardSizeFromWidth,
   parseNumericExpression,
 } from './boardSizing'
-import { ShuffleIcon } from '../ShuffleIcon'
 
 const DEFAULT_CAMERA: CameraState = {
   centerX: 0,
@@ -466,6 +464,8 @@ function ImageSourceInput({
   value,
   disabled,
   placeholder,
+  compact = false,
+  showHelp = true,
   existingAssetUrls,
   imageAssets,
   onChange,
@@ -474,6 +474,8 @@ function ImageSourceInput({
   value: string
   disabled: boolean
   placeholder: string
+  compact?: boolean
+  showHelp?: boolean
   existingAssetUrls: Array<string | undefined>
   imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>
   onChange: (next: string) => void
@@ -545,7 +547,7 @@ function ImageSourceInput({
     }
   }, [])
 
-  function handleUploadDragEnter(event: ReactDragEvent<HTMLButtonElement>) {
+  function handleUploadDragEnter(event: ReactDragEvent<HTMLElement>) {
     if (disabled || isUploading) {
       return
     }
@@ -559,7 +561,7 @@ function ImageSourceInput({
     setIsDropTarget(true)
   }
 
-  function handleUploadDragOver(event: ReactDragEvent<HTMLButtonElement>) {
+  function handleUploadDragOver(event: ReactDragEvent<HTMLElement>) {
     if (disabled || isUploading) {
       return
     }
@@ -575,7 +577,7 @@ function ImageSourceInput({
     }
   }
 
-  function handleUploadDragLeave(event: ReactDragEvent<HTMLButtonElement>) {
+  function handleUploadDragLeave(event: ReactDragEvent<HTMLElement>) {
     if (disabled || isUploading) {
       return
     }
@@ -591,7 +593,7 @@ function ImageSourceInput({
     }
   }
 
-  function handleUploadDrop(event: ReactDragEvent<HTMLButtonElement>) {
+  function handleUploadDrop(event: ReactDragEvent<HTMLElement>) {
     if (disabled || isUploading) {
       return
     }
@@ -610,6 +612,129 @@ function ImageSourceInput({
     }
 
     void uploadFile(file)
+  }
+
+  const uploadText = isUploading
+    ? 'Uploading...'
+    : isDropTarget
+      ? 'Drop Image'
+      : source?.isStored
+        ? 'Replace Image'
+        : 'Upload Into Room'
+  const uploadHandlers = {
+    onDragEnter: handleUploadDragEnter,
+    onDragOver: handleUploadDragOver,
+    onDragLeave: handleUploadDragLeave,
+    onDrop: handleUploadDrop,
+  }
+  const fileInput = (
+    <input
+      ref={fileInputRef}
+      hidden
+      accept="image/*"
+      disabled={disabled || isUploading}
+      type="file"
+      onChange={(event) => {
+        const file = event.target.files?.[0]
+        event.target.value = ''
+        if (!file) {
+          return
+        }
+        void uploadFile(file)
+      }}
+    />
+  )
+
+  if (compact) {
+    return (
+      <>
+        <div className="compact-image-source-row">
+          {source?.isStored ? (
+            <div
+              aria-disabled={disabled || isUploading}
+              aria-label={`Replace ${label}`}
+              className={`image-source-card compact-image-source-drop ${isDropTarget ? 'is-drop-target' : ''}`}
+              onClick={() => fileInputRef.current?.click()}
+              onKeyDown={(event) => {
+                if (disabled || isUploading) {
+                  return
+                }
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  fileInputRef.current?.click()
+                }
+              }}
+              role="button"
+              tabIndex={disabled || isUploading ? -1 : 0}
+              title="Drop an image here or choose a file"
+              {...uploadHandlers}
+            >
+              {storedAsset?.objectUrl ? (
+                <img alt={storedAsset.name} className="image-source-preview" src={storedAsset.objectUrl} />
+              ) : (
+                <div className="image-source-preview image-source-placeholder">Loading preview...</div>
+              )}
+              <div className="image-source-copy">
+                <strong>{storedAsset?.name ?? 'Stored image'}</strong>
+                <small>{formatAssetSummary(storedAsset)}</small>
+              </div>
+              {isUploading || isDropTarget ? <span className="compact-image-source-action">{uploadText}</span> : null}
+              {value ? (
+                <button
+                  aria-label={`Clear ${label}`}
+                  className="image-source-clear-button"
+                  disabled={disabled || isUploading}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onChange('')
+                  }}
+                  title={`Clear ${label}`}
+                >
+                  ×
+                </button>
+              ) : null}
+            </div>
+          ) : (
+            <label className="field compact-image-url-field">
+              <span>{label}</span>
+              <input
+                disabled={disabled || isUploading}
+                type="url"
+                value={value}
+                onChange={(event) => onChange(event.target.value)}
+                placeholder={placeholder}
+              />
+            </label>
+          )}
+          {value && !source?.isStored ? (
+            <button
+              aria-label={`Clear ${label}`}
+              className="image-source-clear-button"
+              disabled={disabled || isUploading}
+              onClick={() => onChange('')}
+              title={`Clear ${label}`}
+            >
+              ×
+            </button>
+          ) : null}
+        </div>
+
+        {!source?.isStored ? (
+          <button
+            className={`upload-drop-button compact-upload-drop-button ${isDropTarget ? 'is-drop-target' : ''}`}
+            disabled={disabled || isUploading}
+            onClick={() => fileInputRef.current?.click()}
+            {...uploadHandlers}
+          >
+            {uploadText}
+          </button>
+        ) : null}
+
+        {fileInput}
+        {showHelp ? <p className="field-note">Drag an image onto the upload button or choose a file.</p> : null}
+        {uploadError ? <p className="inline-error">{uploadError}</p> : null}
+      </>
+    )
   }
 
   return (
@@ -644,18 +769,9 @@ function ImageSourceInput({
           className={`upload-drop-button ${isDropTarget ? 'is-drop-target' : ''}`}
           disabled={disabled || isUploading}
           onClick={() => fileInputRef.current?.click()}
-          onDragEnter={handleUploadDragEnter}
-          onDragOver={handleUploadDragOver}
-          onDragLeave={handleUploadDragLeave}
-          onDrop={handleUploadDrop}
+          {...uploadHandlers}
         >
-          {isUploading
-            ? 'Uploading...'
-            : isDropTarget
-              ? 'Drop Image to Upload'
-              : source?.isStored
-                ? 'Replace Image'
-                : 'Upload Into Room'}
+          {uploadText}
         </button>
         {value ? (
           <button disabled={disabled || isUploading} onClick={() => onChange('')}>
@@ -664,24 +780,8 @@ function ImageSourceInput({
         ) : null}
       </div>
 
-      <input
-        ref={fileInputRef}
-        hidden
-        accept="image/*"
-        disabled={disabled || isUploading}
-        type="file"
-        onChange={(event) => {
-          const file = event.target.files?.[0]
-          event.target.value = ''
-          if (!file) {
-            return
-          }
-          void uploadFile(file)
-        }}
-      />
-      <p className="field-note">
-        Drag an image onto the upload button or choose a file.
-      </p>
+      {fileInput}
+      {showHelp ? <p className="field-note">Drag an image onto the upload button or choose a file.</p> : null}
       {uploadError ? <p className="inline-error">{uploadError}</p> : null}
     </>
   )
@@ -1179,11 +1279,12 @@ function SpriteEditor({
   onChange: (next: SpriteSpec) => void
 }) {
   return (
-    <section className="inspector-group">
-      <h4>{label}</h4>
-      <label className="field">
-        <span>Kind</span>
+    <section className="inspector-group sprite-editor">
+      <div className="sprite-editor-header">
+        <h4>{label}</h4>
         <select
+          aria-label={`${label} kind`}
+          className="sprite-kind-select"
           disabled={disabled}
           value={value.kind}
           onChange={(event) =>
@@ -1196,7 +1297,7 @@ function SpriteEditor({
           <option value="label">Label</option>
           <option value="image-url">Image</option>
         </select>
-      </label>
+      </div>
       {value.kind === 'image-url' ? (
         <>
           <ImageSourceInput
@@ -1204,8 +1305,10 @@ function SpriteEditor({
             value={value.url ?? ''}
             disabled={disabled}
             placeholder="https://example.com/card.png"
+            compact
             existingAssetUrls={existingAssetUrls}
             imageAssets={imageAssets}
+            showHelp={false}
             onChange={(url) =>
               onChange({
                 ...value,
@@ -1213,144 +1316,149 @@ function SpriteEditor({
               })
             }
           />
+          <details className="sprite-advanced">
+            <summary>Advanced</summary>
+            <label className="field">
+              <span>Fit</span>
+              <select
+                disabled={disabled}
+                value={value.fit ?? 'cover'}
+                onChange={(event) =>
+                  onChange({
+                    ...value,
+                    fit: event.target.value as NonNullable<SpriteSpec['fit']>,
+                  })
+                }
+              >
+                <option value="cover">Cover Card</option>
+                <option value="contain">Contain Inside Border</option>
+              </select>
+            </label>
+            <div className="field-row">
+              <label className="field">
+                <span>Crop X</span>
+                <input
+                  disabled={disabled}
+                  type="number"
+                  step="0.001"
+                  min="0"
+                  max="1"
+                  value={value.crop?.x ?? 0}
+                  onChange={(event) =>
+                    onChange(
+                      updateSpriteCrop(value, {
+                        x: Number.parseFloat(event.target.value) || 0,
+                      }),
+                    )
+                  }
+                />
+              </label>
+              <label className="field">
+                <span>Crop Y</span>
+                <input
+                  disabled={disabled}
+                  type="number"
+                  step="0.001"
+                  min="0"
+                  max="1"
+                  value={value.crop?.y ?? 0}
+                  onChange={(event) =>
+                    onChange(
+                      updateSpriteCrop(value, {
+                        y: Number.parseFloat(event.target.value) || 0,
+                      }),
+                    )
+                  }
+                />
+              </label>
+            </div>
+            <div className="field-row">
+              <label className="field">
+                <span>Crop W</span>
+                <input
+                  disabled={disabled}
+                  type="number"
+                  step="0.001"
+                  min="0.001"
+                  max="1"
+                  value={value.crop?.width ?? 1}
+                  onChange={(event) =>
+                    onChange(
+                      updateSpriteCrop(value, {
+                        width: Math.max(0.001, Number.parseFloat(event.target.value) || 1),
+                      }),
+                    )
+                  }
+                />
+              </label>
+              <label className="field">
+                <span>Crop H</span>
+                <input
+                  disabled={disabled}
+                  type="number"
+                  step="0.001"
+                  min="0.001"
+                  max="1"
+                  value={value.crop?.height ?? 1}
+                  onChange={(event) =>
+                    onChange(
+                      updateSpriteCrop(value, {
+                        height: Math.max(0.001, Number.parseFloat(event.target.value) || 1),
+                      }),
+                    )
+                  }
+                />
+              </label>
+            </div>
+          </details>
+        </>
+      ) : (
+        <>
           <label className="field">
-            <span>Fit</span>
-            <select
+            <span>Label</span>
+            <input
               disabled={disabled}
-              value={value.fit ?? 'cover'}
+              value={value.label ?? ''}
               onChange={(event) =>
                 onChange({
                   ...value,
-                  fit: event.target.value as NonNullable<SpriteSpec['fit']>,
+                  label: event.target.value,
                 })
               }
-            >
-              <option value="cover">Cover Card</option>
-              <option value="contain">Contain Inside Border</option>
-            </select>
+            />
           </label>
           <div className="field-row">
             <label className="field">
-              <span>Crop X</span>
+              <span>Background</span>
               <input
                 disabled={disabled}
-                type="number"
-                step="0.001"
-                min="0"
-                max="1"
-                value={value.crop?.x ?? 0}
+                type="color"
+                value={value.bg ?? '#f8efe1'}
                 onChange={(event) =>
-                  onChange(
-                    updateSpriteCrop(value, {
-                      x: Number.parseFloat(event.target.value) || 0,
-                    }),
-                  )
+                  onChange({
+                    ...value,
+                    bg: event.target.value,
+                  })
                 }
               />
             </label>
             <label className="field">
-              <span>Crop Y</span>
+              <span>Foreground</span>
               <input
                 disabled={disabled}
-                type="number"
-                step="0.001"
-                min="0"
-                max="1"
-                value={value.crop?.y ?? 0}
+                type="color"
+                value={value.fg ?? '#20262b'}
                 onChange={(event) =>
-                  onChange(
-                    updateSpriteCrop(value, {
-                      y: Number.parseFloat(event.target.value) || 0,
-                    }),
-                  )
-                }
-              />
-            </label>
-          </div>
-          <div className="field-row">
-            <label className="field">
-              <span>Crop W</span>
-              <input
-                disabled={disabled}
-                type="number"
-                step="0.001"
-                min="0.001"
-                max="1"
-                value={value.crop?.width ?? 1}
-                onChange={(event) =>
-                  onChange(
-                    updateSpriteCrop(value, {
-                      width: Math.max(0.001, Number.parseFloat(event.target.value) || 1),
-                    }),
-                  )
-                }
-              />
-            </label>
-            <label className="field">
-              <span>Crop H</span>
-              <input
-                disabled={disabled}
-                type="number"
-                step="0.001"
-                min="0.001"
-                max="1"
-                value={value.crop?.height ?? 1}
-                onChange={(event) =>
-                  onChange(
-                    updateSpriteCrop(value, {
-                      height: Math.max(0.001, Number.parseFloat(event.target.value) || 1),
-                    }),
-                  )
+                  onChange({
+                    ...value,
+                    fg: event.target.value,
+                  })
                 }
               />
             </label>
           </div>
         </>
-      ) : (
-        <label className="field">
-          <span>Label</span>
-          <input
-            disabled={disabled}
-            value={value.label ?? ''}
-            onChange={(event) =>
-              onChange({
-                ...value,
-                label: event.target.value,
-              })
-            }
-          />
-        </label>
       )}
-      <div className="field-row">
-        <label className="field">
-          <span>Background</span>
-          <input
-            disabled={disabled}
-            type="color"
-            value={value.bg ?? '#f8efe1'}
-            onChange={(event) =>
-              onChange({
-                ...value,
-                bg: event.target.value,
-              })
-            }
-          />
-        </label>
-        <label className="field">
-          <span>Foreground</span>
-          <input
-            disabled={disabled}
-            type="color"
-            value={value.fg ?? '#20262b'}
-            onChange={(event) =>
-              onChange({
-                ...value,
-                fg: event.target.value,
-              })
-            }
-          />
-        </label>
-      </div>
     </section>
   )
 }
@@ -1368,8 +1476,10 @@ function ObjectEditor({
   const [error, setError] = useState('')
 
   return (
-    <section className="inspector-group">
-      <h4>Object</h4>
+    <details className="inspector-group object-json-editor">
+      <summary>
+        <span>Object</span>
+      </summary>
       <textarea
         className="meta-editor"
         disabled={disabled}
@@ -1392,12 +1502,12 @@ function ObjectEditor({
         </button>
       </div>
       {error ? <p className="inline-error">{error}</p> : null}
-    </section>
+    </details>
   )
 }
 
 function DimensionEditor({
-  title = 'Layout',
+  title = 'Size',
   width,
   height,
   disabled,
@@ -1513,9 +1623,10 @@ function PoolRemainingEditor({
   return (
     <section className="inspector-group">
       <h4>Supply</h4>
-      <label className="toggle-row">
+      <label className="toggle-row switch-row">
         <span>Limited Supply</span>
         <input
+          className="switch-input"
           disabled={disabled}
           type="checkbox"
           checked={limited}
@@ -1620,6 +1731,21 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   )
   const resolvedPdfAssets = useResolvedPdfAssets(pdfAssetUrls)
   const selectedObject = selectionMode === 'normal' && selectedId ? room.objects[selectedId] : undefined
+  const selectedDeckCards = useMemo(() => {
+    if (!isDeck(selectedObject)) {
+      return []
+    }
+
+    return [...selectedObject.childIds].reverse().map((cardId, index) => {
+      const card = room.objects[cardId]
+      return {
+        id: cardId,
+        name: card?.name ?? 'Missing card',
+        missing: !card,
+        top: index === 0,
+      }
+    })
+  }, [room.objects, selectedObject])
   const viewerBook = openBookViewerId ? room.objects[openBookViewerId] : undefined
   const bookViewerMemoryGuardEnabled = useMemo(() => isLikelyMobileSafari(), [])
   const shouldUnmountBoardForBookViewer = bookViewerMemoryGuardEnabled && isBook(viewerBook)
@@ -3202,143 +3328,194 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
 
         {visibleRightPanelMode === 'selection' && selectedObject ? (
           <aside className="inspector inspector-right">
-            <section className="inspector-section">
-              <div className="inspector-toolbar inspector-object-toolbar">
-                <div className="inspector-toolbar-copy">
-                  <p className="eyebrow">{selectedObject.type}</p>
-                  {canEdit ? (
-                    <textarea
-                      aria-label="Object name"
-                      className="drawer-title-input inspector-object-title-input"
-                      placeholder="Object Name"
-                      rows={1}
-                      spellCheck={false}
-                      wrap="off"
-                      value={selectedObject.name}
-                      onChange={(event) =>
+            <section className="inspector-section object-inspector">
+              <div className="object-inspector-head">
+                <div className="inspector-toolbar">
+                  <div className="inspector-toolbar-copy">
+                    <p className="eyebrow">{selectedObject.type}</p>
+                    {canEdit ? (
+                      <textarea
+                        aria-label="Object name"
+                        className="drawer-title-input object-title-input"
+                        rows={1}
+                        spellCheck={false}
+                        wrap="off"
+                        value={selectedObject.name}
+                        onChange={(event) =>
+                          mutate((draft) => {
+                            draft.objects[selectedObject.id].name = event.target.value.replaceAll('\n', ' ')
+                          })
+                        }
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault()
+                            event.currentTarget.blur()
+                          }
+                        }}
+                      />
+                    ) : (
+                      <h2>{selectedObject.name}</h2>
+                    )}
+                  </div>
+                  <button aria-label="Close panel" className="panel-close" onClick={closeRightPanel} title="Close panel" />
+                </div>
+
+                <section className="object-command-section" aria-label="Object actions">
+                  <div className="inspector-action-grid object-command-grid">
+                    <button
+                      aria-pressed={selectedObject.locked}
+                      className={selectedObject.locked ? 'is-pressed' : undefined}
+                      disabled={!canEdit}
+                      onClick={() =>
                         mutate((draft) => {
-                          draft.objects[selectedObject.id].name = event.target.value.replaceAll('\n', ' ')
+                          draft.objects[selectedObject.id].locked = !selectedObject.locked
                         })
                       }
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
-                          event.preventDefault()
-                          event.currentTarget.blur()
-                        }
-                      }}
-                    />
-                  ) : (
-                    <h2>{selectedObject.name}</h2>
-                  )}
-                </div>
-                <button aria-label="Close panel" className="panel-close" onClick={closeRightPanel} title="Close panel" />
-              </div>
-
-              <div className="button-row">
-                <button disabled={!canEdit} onClick={() => mutate((draft) => bringObjectForward(draft, selectedObject.id))}>
-                  Forward
-                </button>
-                <button disabled={!canEdit} onClick={() => mutate((draft) => sendObjectBackward(draft, selectedObject.id))}>
-                  Back
-                </button>
-                <button
-                  disabled={!canEdit}
-                  onClick={() =>
-                    mutate((draft) => {
-                      const duplicateId = duplicateObject(draft, selectedObject.id)
-                      if (duplicateId) {
-                        updateSelection(duplicateId)
-                      }
-                    })
-                  }
-                >
-                  Duplicate
-                </button>
-              </div>
-
-              <label className="toggle-row">
-                <span>Locked</span>
-                <input
-                  disabled={!canEdit}
-                  type="checkbox"
-                  checked={selectedObject.locked}
-                  onChange={(event) =>
-                    mutate((draft) => {
-                      draft.objects[selectedObject.id].locked = event.target.checked
-                    })
-                  }
-                />
-              </label>
-
-              {isCard(selectedObject) ? (
-                <>
-                  <div className="button-row">
-                    <button disabled={!canEdit} onClick={() => mutate((draft) => flipCard(draft, selectedObject.id))}>
-                      {selectedObject.meta.faceUp === false ? 'Show Face' : 'Show Back'}
+                    >
+                      Lock
                     </button>
                     <button
                       disabled={!canEdit}
                       onClick={() =>
                         mutate((draft) => {
-                          ;(draft.objects[selectedObject.id] as Card).visibility = true
+                          const duplicateId = duplicateObject(draft, selectedObject.id)
+                          if (duplicateId) {
+                            updateSelection(duplicateId)
+                          }
                         })
                       }
                     >
-                      Reveal To All
+                      Duplicate
                     </button>
-                  </div>
-
-                  <label className="field">
-                    <span>Visibility</span>
-                    <select
+                    <button
+                      className="danger"
                       disabled={!canEdit}
-                      value={selectedObject.visibility === true ? 'all' : 'limited'}
-                      onChange={(event) =>
+                      onClick={() =>
                         mutate((draft) => {
-                          ;(draft.objects[selectedObject.id] as Card).visibility =
-                            event.target.value === 'all' ? true : currentPlayer ? [currentPlayer.id] : []
+                          deleteObject(draft, selectedObject.id)
+                          updateSelection(undefined)
                         })
                       }
                     >
-                      <option value="all">Everyone sees the face</option>
-                      <option value="limited">Only selected players see the face</option>
-                    </select>
-                  </label>
-
-                  {selectedObject.visibility !== true ? (
-                    <div className="player-visibility-list">
-                      {playerList.map((player) => {
-                        const checked = selectedObject.visibility !== true && selectedObject.visibility.includes(player.id)
-                        return (
-                          <label className="toggle-row" key={player.id}>
-                            <span>{player.name}</span>
-                            <input
-                              disabled={!canEdit}
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() =>
-                                mutate((draft) => {
-                                  const card = draft.objects[selectedObject.id] as Card
-                                  const current = card.visibility === true ? [] : [...card.visibility]
-                                  card.visibility = checked
-                                    ? current.filter((playerId) => playerId !== player.id)
-                                    : [...current, player.id]
-                                })
-                              }
-                            />
-                          </label>
-                        )
-                      })}
-                    </div>
-                  ) : null}
-
-                  <div className="preview-note">
-                    Normal view: {canSeeCardFace(selectedObject, currentPlayer?.id) ? 'face visible' : 'back only'}
+                      Delete
+                    </button>
+                    {isCard(selectedObject) ? (
+                      <button disabled={!canEdit} onClick={() => mutate((draft) => flipCard(draft, selectedObject.id))}>
+                        Flip
+                      </button>
+                    ) : null}
+                    {isBoard(selectedObject) ? (
+                      <button disabled={!canEdit} onClick={() => mutate((draft) => flipBoard(draft, selectedObject.id))}>
+                        Flip
+                      </button>
+                    ) : null}
+                    {isBoard(selectedObject) ? (
+                      <button
+                        disabled={!canEdit}
+                        onClick={() =>
+                          mutate((draft) => {
+                            const poolId = convertBoardToPool(draft, selectedObject.id)
+                            if (poolId) {
+                              updateSelection(poolId)
+                            }
+                          })
+                        }
+                      >
+                        Create Pool
+                      </button>
+                    ) : null}
+                    {isDeck(selectedObject) ? (
+                      <>
+                        <button disabled={!canEdit} onClick={() => mutate((draft) => flipDeck(draft, selectedObject.id))}>
+                          Flip
+                        </button>
+                        <button disabled={!canEdit} onClick={() => mutate((draft) => shuffleDeck(draft, selectedObject.id))}>
+                          Shuffle
+                        </button>
+                        <button disabled={!canEdit} onClick={() => mutate((draft) => drawFromDeck(draft, selectedObject.id))}>
+                          Draw
+                        </button>
+                      </>
+                    ) : null}
+                    {isDie(selectedObject) ? (
+                      <button disabled={!canEdit} onClick={() => mutate((draft) => void rollDie(draft, selectedObject.id))}>
+                        Roll
+                      </button>
+                    ) : null}
                   </div>
+                </section>
+              </div>
+
+              {isCard(selectedObject) ? (
+                <>
+                  <section className="inspector-group object-inspector-group">
+                    <h4>Visibility</h4>
+
+                    <label className="field compact-field">
+                      <select
+                        disabled={!canEdit}
+                        value={selectedObject.visibility === true ? 'all' : 'limited'}
+                        onChange={(event) =>
+                          mutate((draft) => {
+                            ;(draft.objects[selectedObject.id] as Card).visibility =
+                              event.target.value === 'all' ? true : currentPlayer ? [currentPlayer.id] : []
+                          })
+                        }
+                      >
+                        <option value="all">Everyone sees the face</option>
+                        <option value="limited">Only selected players see the face</option>
+                      </select>
+                    </label>
+
+                    {selectedObject.visibility !== true ? (
+                      <div className="player-visibility-list">
+                        {playerList.map((player) => {
+                          const checked = selectedObject.visibility !== true && selectedObject.visibility.includes(player.id)
+                          return (
+                            <label className="toggle-row switch-row" key={player.id}>
+                              <span>{player.name}</span>
+                              <input
+                                className="switch-input"
+                                disabled={!canEdit}
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() =>
+                                  mutate((draft) => {
+                                    const card = draft.objects[selectedObject.id] as Card
+                                    const current = card.visibility === true ? [] : [...card.visibility]
+                                    card.visibility = checked
+                                      ? current.filter((playerId) => playerId !== player.id)
+                                      : [...current, player.id]
+                                  })
+                                }
+                              />
+                            </label>
+                          )
+                        })}
+                      </div>
+                    ) : null}
+
+                    <div className="preview-note">
+                      Normal view: {canSeeCardFace(selectedObject, currentPlayer?.id) ? 'face visible' : 'back only'}
+                    </div>
+                    {selectedObject.visibility !== true ? (
+                      <div className="inspector-action-grid">
+                        <button
+                          disabled={!canEdit}
+                          onClick={() =>
+                            mutate((draft) => {
+                              ;(draft.objects[selectedObject.id] as Card).visibility = true
+                            })
+                          }
+                        >
+                          Reveal All
+                        </button>
+                      </div>
+                    ) : null}
+                  </section>
 
                   <DimensionEditor
                     key={selectedObject.id}
-                    title="Size"
                     width={selectedObject.size.width}
                     height={selectedObject.size.height}
                     disabled={!canEdit}
@@ -3389,51 +3566,40 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
 
               {isDeck(selectedObject) ? (
                 <>
-                  <div className="stats-card">
-                    <span>Cards</span>
-                    <strong>{selectedObject.childIds.length}</strong>
-                  </div>
-                  <div className="button-row">
-                    <button disabled={!canEdit} onClick={() => mutate((draft) => flipDeck(draft, selectedObject.id))}>
-                      Flip Deck
-                    </button>
-                    <button
-                      aria-label="Shuffle"
-                      className="icon-action-button"
-                      disabled={!canEdit}
-                      onClick={() => mutate((draft) => shuffleDeck(draft, selectedObject.id))}
-                      title="Shuffle"
-                    >
-                      <ShuffleIcon />
-                    </button>
-                    <button disabled={!canEdit} onClick={() => mutate((draft) => drawFromDeck(draft, selectedObject.id))}>
-                      Draw Top Card
-                    </button>
-                  </div>
+                  <details className="deck-card-disclosure">
+                    <summary>
+                      <span>Cards</span>
+                      <strong>{selectedObject.childIds.length}</strong>
+                    </summary>
+                    {selectedDeckCards.length > 0 ? (
+                      <ol className="deck-card-list">
+                        {selectedDeckCards.map((card) => (
+                          <li className={card.missing ? 'is-missing' : undefined} key={card.id}>
+                            <span>{card.name}</span>
+                            {card.top ? <small>Top</small> : null}
+                            <button
+                              aria-label={`Draw ${card.name}`}
+                              disabled={!canEdit || card.missing}
+                              onClick={() =>
+                                mutate((draft) => {
+                                  drawCardFromDeck(draft, selectedObject.id, card.id)
+                                })
+                              }
+                            >
+                              Draw
+                            </button>
+                          </li>
+                        ))}
+                      </ol>
+                    ) : (
+                      <p className="empty-copy deck-card-empty">No cards in this deck.</p>
+                    )}
+                  </details>
                 </>
               ) : null}
 
               {isBoard(selectedObject) ? (
                 <>
-                  <div className="button-row">
-                    <button disabled={!canEdit} onClick={() => mutate((draft) => flipBoard(draft, selectedObject.id))}>
-                      {selectedObject.meta.faceUp === false ? 'Show Face' : 'Show Back'}
-                    </button>
-                    <button
-                      disabled={!canEdit}
-                      onClick={() =>
-                        mutate((draft) => {
-                          const poolId = convertBoardToPool(draft, selectedObject.id)
-                          if (poolId) {
-                            updateSelection(poolId)
-                          }
-                        })
-                      }
-                    >
-                      Create Pool
-                    </button>
-                  </div>
-
                   <DimensionEditor
                     key={selectedObject.id}
                     width={selectedObject.size.width}
@@ -3689,42 +3855,8 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
 
               {isDie(selectedObject) ? (
                 <>
-                  <div className="button-row">
-                    <button disabled={!canEdit} onClick={() => mutate((draft) => void rollDie(draft, selectedObject.id))}>
-                      Roll
-                    </button>
-                  </div>
-
-                  <div className="stats-card">
-                    <span>Face</span>
-                    <strong>{getDieCurrentFaceIndex(selectedObject) + 1} / {getDieFaceCount(selectedObject)}</strong>
-                  </div>
-
-                  <label className="field">
-                    <span>Current Face</span>
-                    <select
-                      disabled={!canEdit}
-                      value={String(getDieCurrentFaceIndex(selectedObject))}
-                      onChange={(event) =>
-                        mutate((draft) => {
-                          const die = draft.objects[selectedObject.id]
-                          if (isDie(die)) {
-                            die.currentFace = Number.parseInt(event.target.value, 10) || 0
-                          }
-                        })
-                      }
-                    >
-                      {selectedObject.faces.map((_, index) => (
-                        <option key={index} value={String(index)}>
-                          Face {index + 1}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
                   <DimensionEditor
                     key={selectedObject.id}
-                    title="Size"
                     width={selectedObject.size.width}
                     height={selectedObject.size.height}
                     disabled={!canEdit}
@@ -3745,6 +3877,31 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                       })
                     }
                   />
+
+                  <section className="inspector-group object-inspector-group">
+                    <h4>Current Face</h4>
+                    <label className="field compact-field">
+                      <select
+                        aria-label="Current Face"
+                        disabled={!canEdit}
+                        value={String(getDieCurrentFaceIndex(selectedObject))}
+                        onChange={(event) =>
+                          mutate((draft) => {
+                            const die = draft.objects[selectedObject.id]
+                            if (isDie(die)) {
+                              die.currentFace = Number.parseInt(event.target.value, 10) || 0
+                            }
+                          })
+                        }
+                      >
+                        {selectedObject.faces.map((_, index) => (
+                          <option key={index} value={String(index)}>
+                            Face {index + 1} / {getDieFaceCount(selectedObject)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </section>
 
                   {selectedObject.faces.map((face, index) => (
                     <SpriteEditor
@@ -3777,21 +3934,6 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                   })
                 }
               />
-
-              <div className="button-row">
-                <button
-                  className="danger"
-                  disabled={!canEdit}
-                  onClick={() =>
-                    mutate((draft) => {
-                      deleteObject(draft, selectedObject.id)
-                      updateSelection(undefined)
-                    })
-                  }
-                >
-                  Delete
-                </button>
-              </div>
             </section>
           </aside>
         ) : null}

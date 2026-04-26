@@ -17,6 +17,7 @@ import {
   getDieFaceCount,
   getPoolRemainingTokens,
   createRoomDoc,
+  drawCardFromDeck,
   drawFromDeck,
   duplicateObject,
   getPoolDisplaySize,
@@ -89,6 +90,23 @@ describe('room model', () => {
     expect(room.objects[deckId].type === 'deck' ? room.objects[deckId].childIds : []).toEqual([cardA, cardB])
     expect(drawFromDeck(room, deckId)).toBe(cardB)
     expect(drawFromDeck(room, deckId)).toBe(cardA)
+  })
+
+  it('draws a specific card from a deck', () => {
+    const room = createRoomDoc()
+    const deckId = createDeckOnPlane(room, room.rootId, { x: 30, y: 40, rotation: 0 })
+    const cardA = createCardOnPlane(room, room.rootId, { x: 0, y: 0, rotation: 0 }, 'A')
+    const cardB = createCardOnPlane(room, room.rootId, { x: 0, y: 0, rotation: 0 }, 'B')
+    const cardC = createCardOnPlane(room, room.rootId, { x: 0, y: 0, rotation: 0 }, 'C')
+
+    addCardToDeck(room, cardA, deckId)
+    addCardToDeck(room, cardB, deckId)
+    addCardToDeck(room, cardC, deckId)
+
+    expect(drawCardFromDeck(room, deckId, cardB)).toBe(cardB)
+    expect(room.objects[deckId].type === 'deck' ? room.objects[deckId].childIds : []).toEqual([cardA, cardC])
+    expect(getRootPlane(room).childOrder).toContain(cardB)
+    expect(room.objects[cardB].parentId).toBe(room.rootId)
   })
 
   it('can insert a target card onto the bottom of a dragged deck', () => {

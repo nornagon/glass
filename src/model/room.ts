@@ -971,24 +971,23 @@ export function liftTopCardFromDeck(room: RoomDoc, deckId: Id) {
   return cardId
 }
 
-export function drawFromDeck(room: RoomDoc, deckId: Id) {
+export function drawCardFromDeck(room: RoomDoc, deckId: Id, cardId: Id) {
   const deck = room.objects[deckId]
-  if (!isDeck(deck) || deck.childIds.length === 0 || !deck.parentId) {
-    return
+  if (!isDeck(deck) || !deck.childIds.includes(cardId) || !deck.parentId) {
+    return undefined
   }
 
   const parent = room.objects[deck.parentId]
   if (!isPlane(parent)) {
-    return
+    return undefined
   }
 
-  const cardId = deck.childIds[deck.childIds.length - 1]
   const card = room.objects[cardId]
   if (!isCard(card)) {
-    return
+    return undefined
   }
 
-  deck.childIds.splice(deck.childIds.length - 1, 1)
+  removeFromDeck(deck, cardId)
 
   const baseTransform = parent.childTransforms[deck.id] ?? { x: 0, y: 0, rotation: 0 }
   moveKnownDeckCardToPlane(card, parent, {
@@ -997,6 +996,15 @@ export function drawFromDeck(room: RoomDoc, deckId: Id) {
     rotation: 0,
   })
   return cardId
+}
+
+export function drawFromDeck(room: RoomDoc, deckId: Id) {
+  const deck = room.objects[deckId]
+  if (!isDeck(deck) || deck.childIds.length === 0) {
+    return undefined
+  }
+
+  return drawCardFromDeck(room, deckId, deck.childIds[deck.childIds.length - 1])
 }
 
 function duplicateCard(card: Card): Card {
