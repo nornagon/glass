@@ -5,6 +5,7 @@
 - Reworked the object inspector into consistent top actions, clearer size/face sections, compact image controls, and collapsed advanced/object details.
 - Added an expandable deck card list with per-card draw actions backed by model support for drawing a specific card from a deck.
 - Cleaned up die and pool inspector controls by merging the current-face count into the selector and rendering limited supply as a switch.
+- Styled inspector scrollbars as clipped overlays so the panel padding stays symmetric.
 
 ## 2026-04-25
 

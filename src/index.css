@@ -1155,6 +1155,7 @@ textarea {
 }
 
 .inspector {
+  --inspector-radius: 28px;
   position: absolute;
   top: max(5.25rem, calc(env(safe-area-inset-top) + 4.4rem));
   bottom: max(1rem, env(safe-area-inset-bottom));
@@ -1162,6 +1163,10 @@ textarea {
   display: flex;
   pointer-events: auto;
   z-index: 2;
+  border-radius: var(--inspector-radius);
+  overflow: hidden;
+  clip-path: inset(0 round var(--inspector-radius));
+  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.35);
 }
 
 .inspector-left {
@@ -1468,7 +1473,7 @@ textarea {
 .inspector-section {
   --panel-inset: 1rem;
   width: 100%;
-  border-radius: 28px;
+  border-radius: var(--inspector-radius);
   background:
     linear-gradient(180deg, rgba(246, 233, 210, 0.12), rgba(12, 20, 27, 0.94)),
     rgba(13, 22, 28, 0.96);
@@ -1476,15 +1481,43 @@ textarea {
   min-height: 16rem;
   max-height: 100%;
   overflow: auto;
+  overflow: overlay;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(205, 225, 242, 0.5) transparent;
   padding: var(--panel-inset) var(--panel-inset) calc(env(safe-area-inset-bottom) + var(--panel-inset));
   display: flex;
   flex-direction: column;
   gap: 1rem;
   backdrop-filter: blur(20px);
-  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.35);
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
   position: relative;
+}
+
+.inspector-section::-webkit-scrollbar {
+  width: 0.55rem;
+  height: 0.55rem;
+}
+
+.inspector-section::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 1rem 0;
+}
+
+.inspector-section::-webkit-scrollbar-thumb {
+  min-height: 3rem;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(205, 225, 242, 0.46);
+  background-clip: padding-box;
+}
+
+.inspector-section::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(226, 238, 248, 0.66);
+}
+
+.inspector-section::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 .inspector-toolbar {
@@ -2844,6 +2877,7 @@ button,
   }
 
   .inspector {
+    --inspector-radius: 24px;
     left: 0.75rem;
     right: 0.75rem;
     top: auto;
@@ -2939,7 +2973,6 @@ button,
   .inspector-section {
     --panel-inset: 0.85rem;
     min-height: 9.5rem;
-    border-radius: 24px;
     padding: var(--panel-inset) var(--panel-inset) calc(env(safe-area-inset-bottom) + var(--panel-inset));
     gap: 0.75rem;
   }
