@@ -2,6 +2,7 @@
 
 ## 2026-04-26
 
+- Added darker translucent backgrounds to the turn pill and quick actions so they stay legible over light board artwork.
 - Added previous and next page quick actions for selected PDF books.
 - Moved the book inspector's Open PDF control into the main object action grid.
 - Reworked the object inspector into consistent top actions, clearer size/face sections, compact image controls, and collapsed advanced/object details.

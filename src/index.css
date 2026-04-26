@@ -358,7 +358,9 @@ textarea {
   max-width: min(18rem, calc(100vw - 10rem));
   padding: 0.78rem 1rem 0.82rem;
   border-radius: 22px;
-  background: rgba(255, 237, 208, 0.08);
+  background:
+    linear-gradient(rgba(255, 237, 208, 0.08), rgba(255, 237, 208, 0.08)),
+    rgba(10, 20, 28, 0.58);
   backdrop-filter: blur(18px);
   border: 1px solid rgba(255, 237, 208, 0.12);
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.22);
@@ -384,7 +386,9 @@ textarea {
 }
 
 .turn-pill-button.is-self-turn {
-  background: rgba(203, 114, 54, 0.22);
+  background:
+    linear-gradient(rgba(203, 114, 54, 0.24), rgba(203, 114, 54, 0.24)),
+    rgba(10, 20, 28, 0.58);
   border-color: rgba(255, 203, 114, 0.32);
   box-shadow:
     0 14px 34px rgba(0, 0, 0, 0.22),
@@ -1088,8 +1092,18 @@ textarea {
 
 .quick-actions button {
   padding-inline: 0.85rem;
-  background: rgba(17, 29, 35, 0.92);
+  background:
+    linear-gradient(rgba(255, 237, 208, 0.08), rgba(255, 237, 208, 0.08)),
+    rgba(10, 20, 28, 0.78);
   backdrop-filter: blur(12px);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .quick-actions button:hover:enabled {
+    background:
+      linear-gradient(rgba(255, 237, 208, 0.14), rgba(255, 237, 208, 0.14)),
+      rgba(10, 20, 28, 0.82);
+  }
 }
 
 .quick-actions button.quick-action-icon {
