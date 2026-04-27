@@ -1,6 +1,7 @@
 import { isValidAutomergeUrl, type AutomergeUrl } from '@automerge/react'
 import { useEffect, useRef, useState } from 'react'
 import { loadCachedResourceDoc, saveCachedResourceDoc } from './resourceCache'
+import { enqueueResourceLoad } from './resourceLoadQueue'
 import { resourceRepo } from './repo'
 import type { RoomDoc } from './types'
 
@@ -173,7 +174,7 @@ export async function buildPdfAssetDoc(file: File): Promise<PdfAssetDoc> {
   }
 }
 
-export async function loadStoredPdfAsset(url: string) {
+async function loadStoredPdfAssetNow(url: string) {
   const assetUrl = asAutomergeUrl(url)
   if (!assetUrl) {
     return undefined
@@ -210,6 +211,10 @@ export async function loadStoredPdfAsset(url: string) {
   } finally {
     await resourceRepo.removeFromCache(handle.documentId).catch(() => undefined)
   }
+}
+
+export function loadStoredPdfAsset(url: string) {
+  return enqueueResourceLoad(() => loadStoredPdfAssetNow(url))
 }
 
 export async function findMatchingStoredPdfAssetUrl(

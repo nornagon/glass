@@ -1,6 +1,7 @@
 import { isValidAutomergeUrl, type AutomergeUrl } from '@automerge/react'
 import { useEffect, useRef, useState } from 'react'
 import { loadCachedResourceDoc, saveCachedResourceDoc } from './resourceCache'
+import { enqueueResourceLoad } from './resourceLoadQueue'
 import { resourceRepo } from './repo'
 import type { RoomDoc, SpriteSpec } from './types'
 
@@ -201,7 +202,7 @@ export async function buildImageAssetDoc(file: File): Promise<ImageAssetDoc> {
   }
 }
 
-export async function loadStoredImageAsset(url: string) {
+async function loadStoredImageAssetNow(url: string) {
   const assetUrl = asAutomergeUrl(url)
   if (!assetUrl) {
     return undefined
@@ -238,6 +239,10 @@ export async function loadStoredImageAsset(url: string) {
   } finally {
     await resourceRepo.removeFromCache(handle.documentId).catch(() => undefined)
   }
+}
+
+export function loadStoredImageAsset(url: string) {
+  return enqueueResourceLoad(() => loadStoredImageAssetNow(url))
 }
 
 export async function findMatchingStoredImageAssetUrl(
