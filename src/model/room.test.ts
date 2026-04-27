@@ -15,6 +15,7 @@ import {
   createDieOnPlane,
   createPoolOnPlane,
   getDieFaceCount,
+  getDieLabelScale,
   getPoolRemainingTokens,
   createRoomDoc,
   drawCardFromDeck,
@@ -33,6 +34,7 @@ import {
   setTurnPlayer,
   shuffleDeck,
 } from './room'
+import { DEFAULT_DIE_LABEL_SCALE } from './types'
 
 describe('room model', () => {
   it('creates and places objects on the root plane', () => {
@@ -259,6 +261,22 @@ describe('room model', () => {
     expect(firstFace).toBe(3)
     expect(secondFace).toBe(3)
     expect(die.type === 'die' ? die.rollVersion : undefined).toBe(2)
+  })
+
+  it('defaults and clamps die label scale', () => {
+    const room = createRoomDoc()
+    const dieId = createDieOnPlane(room, room.rootId, { x: 0, y: 0, rotation: 0 }, 'D6')
+    const die = room.objects[dieId]
+
+    expect(die.type === 'die' ? getDieLabelScale(die) : undefined).toBe(DEFAULT_DIE_LABEL_SCALE)
+
+    if (die.type === 'die') {
+      delete die.labelScale
+      expect(getDieLabelScale(die)).toBe(DEFAULT_DIE_LABEL_SCALE)
+
+      die.labelScale = 99
+      expect(getDieLabelScale(die)).toBe(5)
+    }
   })
 
   it('creates dice from sprite sheets', () => {

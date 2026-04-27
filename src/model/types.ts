@@ -109,6 +109,7 @@ export interface Die extends GameObjectBase {
   faces: SpriteSpec[]
   currentFace: number
   rollVersion: number
+  labelScale?: number
 }
 
 export type GameObject = Plane | Deck | Card | Board | Pool | Book | Die
@@ -158,5 +159,7 @@ export const DEFAULT_DIE_SIZE = {
   width: 72,
   height: 72,
 } as const
+
+export const DEFAULT_DIE_LABEL_SCALE = 2.2
 
 export const BOARD_WORLD_SIZE = 5000

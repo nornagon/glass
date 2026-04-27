@@ -1,5 +1,5 @@
 import type { Board, Book, Card, Deck, Die, GameObject, Id, Plane, PlayerId, Pool, RoomDoc, SpriteSpec, Transform2D } from './types'
-import { DEFAULT_BOARD_SIZE, DEFAULT_CARD_SIZE, DEFAULT_DIE_SIZE } from './types'
+import { DEFAULT_BOARD_SIZE, DEFAULT_CARD_SIZE, DEFAULT_DIE_LABEL_SCALE, DEFAULT_DIE_SIZE } from './types'
 
 const DEFAULT_FACE: SpriteSpec = {
   kind: 'label',
@@ -210,6 +210,12 @@ export function isGroupSelectableObject(object: GameObject | undefined): object 
   return isCard(object) || isDeck(object) || isBoard(object) || isPool(object) || isBook(object) || isDie(object)
 }
 
+export function getDieLabelScale(die: Die) {
+  return Number.isFinite(die.labelScale) && die.labelScale !== undefined
+    ? Math.max(0.5, Math.min(5, die.labelScale))
+    : DEFAULT_DIE_LABEL_SCALE
+}
+
 export function getTransform(room: RoomDoc, id: Id) {
   const object = room.objects[id]
   if (!object || !object.parentId) {
@@ -325,6 +331,7 @@ export function createDie(name = 'Die'): Die {
     faces: defaultDieFaces(),
     currentFace: 0,
     rollVersion: 0,
+    labelScale: DEFAULT_DIE_LABEL_SCALE,
   }
 }
 

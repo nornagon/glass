@@ -3,7 +3,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { resolveImageSource, type ResolvedImageAsset, type ResolvedImageSource } from '../model/assets'
 import { resolvePdfSource, type ResolvedPdfAsset } from '../model/pdfAssets'
 import { BOARD_WORLD_SIZE, DEFAULT_CARD_SIZE, type CameraState, type Card, type Id, type RoomDoc, type SpriteSpec, type Transform2D } from '../model/types'
-import { canSeeCardFace, getDieCurrentFace, getPoolDisplaySize, getPoolRemainingTokens, getPoolTokenSize, getRootPlane, getTransform, isBoard, isBoardFaceUp, isBook, isCard, isDeck, isDie, isGroupSelectableObject, isPool, isPoolFaceUp } from '../model/room'
+import { canSeeCardFace, getDieCurrentFace, getDieLabelScale, getPoolDisplaySize, getPoolRemainingTokens, getPoolTokenSize, getRootPlane, getTransform, isBoard, isBoardFaceUp, isBook, isCard, isDeck, isDie, isGroupSelectableObject, isPool, isPoolFaceUp } from '../model/room'
 import { releasePanVelocity } from './panMomentum'
 import { ShuffleIcon } from '../ShuffleIcon'
 import {
@@ -1765,6 +1765,7 @@ interface BoardSurfaceProps {
   size: Size
   imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>
   rounded: boolean
+  labelScale?: number
   className?: string
   shadowMode?: 'box' | 'pixel'
 }
@@ -1784,6 +1785,7 @@ function useBoardSurfaceLayout(
   size: Size,
   imageAssets: ReadonlyMap<AutomergeUrl, ResolvedImageAsset>,
   rounded: boolean,
+  labelScale = 1,
 ): BoardSurfaceLayout {
   const imageSource = spec.kind === 'image-url' ? resolveImageSource(spec.url, imageAssets) : undefined
   const imageUrl = imageSource?.renderUrl
@@ -1822,7 +1824,7 @@ function useBoardSurfaceLayout(
     fitHeight = targetAspect / cropAspect
   }
 
-  const labelFontSize = Math.max(12, Math.min(size.width, size.height) * (rounded ? 0.14 : 0.08))
+  const labelFontSize = Math.max(12, Math.min(size.width, size.height) * (rounded ? 0.14 : 0.08) * labelScale)
 
   return {
     imageUrl,
@@ -1841,6 +1843,7 @@ function BoardSurface({
   size,
   imageAssets,
   rounded,
+  labelScale,
   className,
   shadowMode,
 }: BoardSurfaceProps) {
@@ -1852,7 +1855,7 @@ function BoardSurface({
     fitHeight,
     labelFontSize,
     surfaceBackground,
-  } = useBoardSurfaceLayout(spec, size, imageAssets, rounded)
+  } = useBoardSurfaceLayout(spec, size, imageAssets, rounded, labelScale)
   const fitWorldWidth = size.width * fitWidth
   const fitWorldHeight = size.height * fitHeight
   const { preparedSurfaceUrl, stage } = usePreparedSpriteSurfaceUrl(
@@ -2226,6 +2229,7 @@ function DieObject({ dieId, room, imageAssets, size }: DieObjectProps) {
         size={size}
         imageAssets={imageAssets}
         rounded
+        labelScale={getDieLabelScale(die)}
       />
     </div>
   )

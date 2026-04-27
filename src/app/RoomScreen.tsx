@@ -58,6 +58,7 @@ import {
   formatRoomTitle,
   getDieFaceCount,
   getDieCurrentFaceIndex,
+  getDieLabelScale,
   getTransform,
   getPoolRemainingTokens,
   getRootPlane,
@@ -3914,6 +3915,27 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                       </select>
                     </label>
                   </section>
+
+                  <label className="field">
+                    <span>Text Scale</span>
+                    <input
+                      disabled={!canEdit}
+                      type="number"
+                      step="0.1"
+                      min="0.5"
+                      max="5"
+                      value={getDieLabelScale(selectedObject)}
+                      onChange={(event) =>
+                        mutate((draft) => {
+                          const die = draft.objects[selectedObject.id]
+                          const nextScale = Number.parseFloat(event.target.value)
+                          if (isDie(die) && Number.isFinite(nextScale)) {
+                            die.labelScale = Math.max(0.5, Math.min(5, nextScale))
+                          }
+                        })
+                      }
+                    />
+                  </label>
 
                   {selectedObject.faces.map((face, index) => (
                     <SpriteEditor
