@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-04-27
+
+- Added a visible die roll animation so repeated rolls still confirm that a roll happened.
+
 ## 2026-04-26
 
 - Added editable die face text scaling with defaulting and clamping in the room model.

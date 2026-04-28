@@ -2216,21 +2216,55 @@ interface DieObjectProps {
 }
 
 function DieObject({ dieId, room, imageAssets, size }: DieObjectProps) {
-  const die = room.objects[dieId]
-  if (!isDie(die)) {
+  const object = room.objects[dieId]
+  const rollVersion = isDie(object) ? object.rollVersion : 0
+  const previousRollVersionRef = useRef<number | undefined>(undefined)
+  const rollAnimationTimeoutRef = useRef<number | undefined>(undefined)
+  const shellRef = useRef<HTMLDivElement | null>(null)
+
+  useLayoutEffect(() => {
+    const previousRollVersion = previousRollVersionRef.current
+    previousRollVersionRef.current = rollVersion
+    if (previousRollVersion === undefined || previousRollVersion === rollVersion) {
+      return
+    }
+
+    const shell = shellRef.current
+    if (!shell) {
+      return
+    }
+
+    window.clearTimeout(rollAnimationTimeoutRef.current)
+    shell.classList.remove('is-rolling')
+    void shell.offsetWidth
+    shell.classList.add('is-rolling')
+    rollAnimationTimeoutRef.current = window.setTimeout(() => {
+      shell.classList.remove('is-rolling')
+      rollAnimationTimeoutRef.current = undefined
+    }, 520)
+
+    return () => {
+      window.clearTimeout(rollAnimationTimeoutRef.current)
+      shell.classList.remove('is-rolling')
+    }
+  }, [rollVersion])
+
+  if (!isDie(object)) {
     return null
   }
 
   return (
-    <div className="board-card-shell">
-      <BoardSurface
-        spec={getDieCurrentFace(die)}
-        fallbackLabel={die.name}
-        size={size}
-        imageAssets={imageAssets}
-        rounded
-        labelScale={getDieLabelScale(die)}
-      />
+    <div className="board-die-shell" ref={shellRef}>
+      <div className="board-die-roll-frame">
+        <BoardSurface
+          spec={getDieCurrentFace(object)}
+          fallbackLabel={object.name}
+          size={size}
+          imageAssets={imageAssets}
+          rounded
+          labelScale={getDieLabelScale(object)}
+        />
+      </div>
     </div>
   )
 }

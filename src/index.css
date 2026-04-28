@@ -839,6 +839,24 @@ textarea {
     0 0 22px rgba(255, 203, 114, 0.28);
 }
 
+.board-die-shell,
+.board-die-roll-frame {
+  position: absolute;
+  inset: 0;
+  border-radius: 18px;
+  transform-origin: center center;
+}
+
+.board-die-shell.is-rolling {
+  animation: board-die-roll-lift 520ms cubic-bezier(0.2, 0.86, 0.26, 1) both;
+  will-change: transform;
+}
+
+.board-die-shell.is-rolling .board-die-roll-frame {
+  animation: board-die-roll-spin 520ms cubic-bezier(0.16, 0.8, 0.22, 1) both;
+  will-change: transform, filter;
+}
+
 .board-card-flip {
   position: relative;
   width: 100%;
@@ -952,6 +970,79 @@ textarea {
 
   100% {
     transform: translateZ(0) rotateY(360deg);
+  }
+}
+
+@keyframes board-die-roll-lift {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+
+  32% {
+    transform: translate3d(0, -14px, 0) scale(1.06);
+  }
+
+  64% {
+    transform: translate3d(0, 2px, 0) scale(0.985);
+  }
+
+  82% {
+    transform: translate3d(0, -3px, 0) scale(1.012);
+  }
+
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes board-die-roll-spin {
+  0% {
+    filter: brightness(1);
+    transform: rotate(0deg) scale(1);
+  }
+
+  18% {
+    filter: brightness(1.08);
+    transform: rotate(-16deg) scale(0.94);
+  }
+
+  48% {
+    filter: brightness(1.12);
+    transform: rotate(228deg) scale(1.02);
+  }
+
+  76% {
+    filter: brightness(1.07);
+    transform: rotate(344deg) scale(1.035);
+  }
+
+  100% {
+    filter: brightness(1);
+    transform: rotate(360deg) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .board-die-shell.is-rolling {
+    animation: board-die-roll-confirm 180ms ease-out both;
+  }
+
+  .board-die-shell.is-rolling .board-die-roll-frame {
+    animation: none;
+  }
+}
+
+@keyframes board-die-roll-confirm {
+  0% {
+    transform: scale(1);
+  }
+
+  55% {
+    transform: scale(1.035);
+  }
+
+  100% {
+    transform: scale(1);
   }
 }
 
