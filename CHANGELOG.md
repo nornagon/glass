@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-05-02
+
+- Added a deck lift cue when touch long-press drag mode activates, including the selection ring.
+
 ## 2026-04-27
 
 - Added a visible die roll animation so repeated rolls still confirm that a roll happened.

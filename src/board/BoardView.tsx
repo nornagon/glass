@@ -2756,6 +2756,7 @@ export function BoardView({
   const [liveSelectionZoom, setLiveSelectionZoom] = useState(() => cameraRef.current.zoom)
   const [previewTransforms, setPreviewTransforms] = useState<EphemeralTransformMap>({})
   const [hoverDropTargetId, setHoverDropTargetId] = useState<Id | undefined>()
+  const [longPressedDeckId, setLongPressedDeckId] = useState<Id | undefined>()
   const [lassoPath, setLassoPath] = useState<Point[]>([])
   const [isImageDropTarget, setIsImageDropTarget] = useState(false)
   const constrainedEffects = useMemo(() => isLikelyMobileSafari(), [])
@@ -2791,6 +2792,7 @@ export function BoardView({
     if (pendingTouchPress.timeoutId !== null) {
       window.clearTimeout(pendingTouchPress.timeoutId)
     }
+    setLongPressedDeckId((current) => (current === pendingTouchPress.objectId ? undefined : current))
     pendingTouchPressRef.current = null
   }, [])
 
@@ -2826,6 +2828,7 @@ export function BoardView({
     }
 
     dragRef.current = null
+    setLongPressedDeckId(undefined)
     setHoverDropTargetId(undefined)
     if (activeDrag.groupMembers && activeDrag.groupMembers.length > 0) {
       for (const member of activeDrag.groupMembers) {
@@ -3260,6 +3263,9 @@ export function BoardView({
             }
 
             pendingTouchPressRef.current = null
+            if (pendingTouchPress.moveAction === 'deck-drag-out') {
+              setLongPressedDeckId(objectId)
+            }
             startDrag(
               objectId,
               pointerId,
@@ -3911,6 +3917,7 @@ export function BoardView({
       const activeDrag = dragRef.current
       if (activeDrag && activeDrag.pointerId === event.pointerId) {
         dragRef.current = null
+        setLongPressedDeckId(undefined)
 
         if (activeDrag.prewarmDeckOnReleaseTasks) {
           for (const task of activeDrag.prewarmDeckOnReleaseTasks) {
@@ -4030,6 +4037,7 @@ export function BoardView({
       if (dragRef.current?.pointerId === event.pointerId) {
         const drag = dragRef.current
         dragRef.current = null
+        setLongPressedDeckId(undefined)
         setHoverDropTargetId(undefined)
         if (drag.spawnedFromPool && !drag.moved) {
           onClearPreviewTransform(drag.id)
@@ -4785,12 +4793,13 @@ export function BoardView({
         )
         const usesCardOutlineSelection = isCard(object) && selectionStrokeWidth > 0
         const usesPoolOutlineSelection = isPool(object) && selectionStrokeWidth > 0
+        const isLongPressedDeck = longPressedDeckId === objectId && isDeck(object)
         const worldPosition = transform
 
         return (
           <div
             key={objectId}
-            className={`board-object board-object-${object.type}${isDragging ? ' is-dragging' : ''}${usesCardOutlineSelection ? ' has-card-outline-selection' : ''}${usesPoolOutlineSelection ? ' has-pool-outline-selection' : ''}`}
+            className={`board-object board-object-${object.type}${isDragging ? ' is-dragging' : ''}${isLongPressedDeck ? ' is-long-pressed' : ''}${usesCardOutlineSelection ? ' has-card-outline-selection' : ''}${usesPoolOutlineSelection ? ' has-pool-outline-selection' : ''}`}
             data-board-object-id={objectId}
             data-board-object-type={object.type}
             style={{
@@ -4811,32 +4820,34 @@ export function BoardView({
             aria-label={`${object.type}: ${object.name}`}
             onPointerDown={(event) => handleObjectPointerDown(event, objectId)}
           >
-            {selectionStrokeWidth > 0 && boardSelectionSpec && usesAlphaBoardSelection ? (
-              <BoardSelectionOverlay
-                spec={boardSelectionSpec}
-                size={worldSize}
+            <div className="board-object-lift-frame">
+              {selectionStrokeWidth > 0 && boardSelectionSpec && usesAlphaBoardSelection ? (
+                <BoardSelectionOverlay
+                  spec={boardSelectionSpec}
+                  size={worldSize}
+                  imageAssets={imageAssets}
+                  cameraZoom={objectElementsZoomDependency ?? 1}
+                  selectionStrokeWidth={selectionStrokeWidth}
+                  selectionStrokeColor={selectionStrokeColor}
+                />
+              ) : null}
+              <MemoBoardObjectContent
+                objectId={objectId}
+                room={room}
+                currentPlayerId={currentPlayerId}
                 imageAssets={imageAssets}
-                cameraZoom={objectElementsZoomDependency ?? 1}
-                selectionStrokeWidth={selectionStrokeWidth}
-                selectionStrokeColor={selectionStrokeColor}
+                pdfAssets={pdfAssets}
+                size={worldSize}
+                constrainedEffects={constrainedEffects}
+                canInstantiatePool={canEdit && selectionMode === 'normal'}
+                onInstantiatePoolBoard={handlePoolInstantiatePointerDown}
               />
-            ) : null}
-            <MemoBoardObjectContent
-              objectId={objectId}
-              room={room}
-              currentPlayerId={currentPlayerId}
-              imageAssets={imageAssets}
-              pdfAssets={pdfAssets}
-              size={worldSize}
-              constrainedEffects={constrainedEffects}
-              canInstantiatePool={canEdit && selectionMode === 'normal'}
-              onInstantiatePoolBoard={handlePoolInstantiatePointerDown}
-            />
-            {selectionStrokeWidth > 0 && !usesCardOutlineSelection && !usesPoolOutlineSelection && (!boardSelectionSpec || !usesAlphaBoardSelection) ? (
-              <div
-                className={`board-object-selection ${object.type === 'board' || object.type === 'book' ? 'is-square' : 'is-rounded'}`}
-              />
-            ) : null}
+              {selectionStrokeWidth > 0 && !usesCardOutlineSelection && !usesPoolOutlineSelection && (!boardSelectionSpec || !usesAlphaBoardSelection) ? (
+                <div
+                  className={`board-object-selection ${object.type === 'board' || object.type === 'book' ? 'is-square' : 'is-rounded'}`}
+                />
+              ) : null}
+            </div>
           </div>
         )
       }),
@@ -4849,6 +4860,7 @@ export function BoardView({
       handlePoolInstantiatePointerDown,
       hoverDropTargetId,
       imageAssets,
+      longPressedDeckId,
       pdfAssets,
       objectElementsZoomDependency,
       room,

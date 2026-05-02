@@ -560,6 +560,20 @@ textarea {
   filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.42));
 }
 
+.board-object-lift-frame {
+  position: absolute;
+  inset: 0;
+  transform-origin: center center;
+}
+
+.board-object-deck.is-long-pressed > .board-object-lift-frame {
+  filter: drop-shadow(0 9px 14px rgba(0, 0, 0, 0.34));
+  transform: translate3d(0, -10px, 0) scale(1.025);
+  transition:
+    filter 140ms ease,
+    transform 140ms ease;
+}
+
 .board-object-selection {
   position: absolute;
   --board-selection-outline-width: calc(var(--board-selection-width, 0px) / var(--board-zoom, 1));
