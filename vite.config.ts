@@ -5,9 +5,13 @@ import wasm from 'vite-plugin-wasm'
 
 const repoName = process.env.GITHUB_REPOSITORY?.split('/')[1]
 const base = process.env.GITHUB_ACTIONS === 'true' && repoName ? `/${repoName}/` : '/'
+const buildVersion = process.env.BUILD_VERSION ?? ''
 
 export default defineConfig({
   base,
+  define: {
+    __BUILD_VERSION__: JSON.stringify(buildVersion),
+  },
   build: {
     chunkSizeWarningLimit: 600,
     rollupOptions: {

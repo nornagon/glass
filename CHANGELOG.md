@@ -2,6 +2,7 @@
 
 ## 2026-05-02
 
+- Added GitHub Pages build version metadata to the landing page so deployed builds show their short commit SHA.
 - Added a deck lift cue when touch long-press drag mode activates, including the selection ring.
 
 ## 2026-04-27

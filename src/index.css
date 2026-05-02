@@ -261,6 +261,18 @@ textarea {
   gap: 0.75rem;
 }
 
+.build-version {
+  width: min(42rem, calc(100vw - 2rem));
+  color: rgba(255, 241, 218, 0.45);
+  font-size: 0.76rem;
+  text-align: center;
+}
+
+.build-version code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  color: rgba(255, 241, 218, 0.62);
+}
+
 .app-shell {
   position: relative;
   width: 100%;

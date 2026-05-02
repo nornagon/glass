@@ -16,6 +16,8 @@ const BUILTIN_ROOM_TEMPLATES = [
   },
 ]
 
+const buildVersion = __BUILD_VERSION__
+
 function cloneTemplateRoom(room: RoomDoc) {
   return JSON.parse(JSON.stringify(room)) as RoomDoc
 }
@@ -250,6 +252,12 @@ export function LandingScreen() {
               {roomHistory.length === 0 ? <p className="empty-copy">No rooms have been opened on this device yet.</p> : null}
             </div>
           </section>
+        </section>
+      ) : null}
+
+      {buildVersion ? (
+        <section className="build-version" aria-label="Version information">
+          Built from <code>{buildVersion}</code>
         </section>
       ) : null}
     </main>
