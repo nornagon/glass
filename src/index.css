@@ -666,17 +666,20 @@ textarea {
   border-radius: 4px;
 }
 
-.board-object-board > .board-surface-shadow-frame > .board-surface {
+.board-object-board > .board-surface-shadow-frame > .board-surface,
+.board-object-board > .board-object-lift-frame > .board-surface-shadow-frame > .board-surface {
   border: 0;
   box-shadow: none;
   filter: none;
 }
 
-.board-object-board > .board-surface-shadow-frame.surface-shadow-box {
+.board-object-board > .board-surface-shadow-frame.surface-shadow-box,
+.board-object-board > .board-object-lift-frame > .board-surface-shadow-frame.surface-shadow-box {
   box-shadow: 0 1.5px 4px rgba(0, 0, 0, 0.58);
 }
 
-.board-object-board > .board-surface-shadow-frame.surface-shadow-pixel {
+.board-object-board > .board-surface-shadow-frame.surface-shadow-pixel,
+.board-object-board > .board-object-lift-frame > .board-surface-shadow-frame.surface-shadow-pixel {
   filter: drop-shadow(0 1.5px 4px rgba(0, 0, 0, 0.58));
 }
 

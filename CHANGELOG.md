@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-05-03
+
+- Added memory-budgeted resource loading for stored images, PDFs, PDF rendering, and image analysis so boot work stays queued under mobile and desktop budgets.
+- Switched board sprites to render directly from source images with crop-aware positioning, removing prepared sprite surface generation and deck prewarming.
+- Restored alpha-following token shadows while keeping token surface borders and box shadows off transparent images.
+
 ## 2026-05-02
 
 - Added GitHub Pages build version metadata to the landing page so deployed builds show their short commit SHA.

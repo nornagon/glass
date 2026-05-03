@@ -1,7 +1,7 @@
 import { isValidAutomergeUrl, type AutomergeUrl } from '@automerge/react'
 import { useEffect, useRef, useState } from 'react'
 import { loadCachedResourceDoc, saveCachedResourceDoc } from './resourceCache'
-import { enqueueResourceLoad } from './resourceLoadQueue'
+import { enqueueResourceLoad, estimateStoredAssetMemoryBytes } from './resourceLoadQueue'
 import { resourceRepo } from './repo'
 import type { RoomDoc } from './types'
 
@@ -217,6 +217,14 @@ export function loadStoredPdfAsset(url: string) {
   return enqueueResourceLoad(() => loadStoredPdfAssetNow(url))
 }
 
+function createPdfAssetObjectUrl(assetDoc: PdfAssetDoc) {
+  return enqueueResourceLoad(
+    async () =>
+      URL.createObjectURL(new Blob([blobPartFromBytes(assetDoc.bytes)], { type: assetDoc.mimeType || 'application/pdf' })),
+    { estimatedBytes: estimateStoredAssetMemoryBytes(assetDoc.sizeBytes, 4) },
+  )
+}
+
 export async function findMatchingStoredPdfAssetUrl(
   assetDoc: Pick<PdfAssetDoc, 'bytes' | 'sizeBytes' | 'contentHash'>,
   candidateUrls: Array<string | undefined>,
@@ -278,24 +286,54 @@ export function useResolvedPdfAssets(urls: Array<string | undefined>) {
     loadVersionRef.current = loadVersion
     let cancelled = false
 
-    void Promise.all(
-      assetUrls.map(async (assetUrl) => {
-        try {
-          return [assetUrl, await loadStoredPdfAsset(assetUrl)] as const
-        } catch {
-          return [assetUrl, undefined] as const
-        }
-      }),
-    ).then((loadedAssets) => {
-      if (cancelled || loadVersionRef.current !== loadVersion) {
-        return
+    const liveUrls = new Set(assetUrls)
+    for (const [assetUrl, currentObjectUrl] of objectUrlRef.current) {
+      if (!liveUrls.has(assetUrl)) {
+        URL.revokeObjectURL(currentObjectUrl.objectUrl)
+        objectUrlRef.current.delete(assetUrl)
       }
+    }
+    setResolvedAssets((currentAssets) => {
+      const nextResolvedAssets = new Map(currentAssets)
+      for (const assetUrl of currentAssets.keys()) {
+        if (!liveUrls.has(assetUrl)) {
+          nextResolvedAssets.delete(assetUrl)
+        }
+      }
+      return nextResolvedAssets
+    })
 
-      const nextResolvedAssets = new Map<AutomergeUrl, ResolvedPdfAsset>()
-      const liveUrls = new Set(assetUrls)
+    void (async () => {
+      for (const assetUrl of assetUrls) {
+        if (cancelled || loadVersionRef.current !== loadVersion) {
+          return
+        }
 
-      for (const [assetUrl, assetDoc] of loadedAssets) {
+        let assetDoc: PdfAssetDoc | undefined
+        try {
+          assetDoc = await loadStoredPdfAsset(assetUrl)
+        } catch {
+          assetDoc = undefined
+        }
+
+        if (cancelled || loadVersionRef.current !== loadVersion) {
+          return
+        }
+
         if (!assetDoc) {
+          const currentObjectUrl = objectUrlRef.current.get(assetUrl)
+          if (currentObjectUrl) {
+            URL.revokeObjectURL(currentObjectUrl.objectUrl)
+            objectUrlRef.current.delete(assetUrl)
+          }
+          setResolvedAssets((currentAssets) => {
+            if (!currentAssets.has(assetUrl)) {
+              return currentAssets
+            }
+            const nextResolvedAssets = new Map(currentAssets)
+            nextResolvedAssets.delete(assetUrl)
+            return nextResolvedAssets
+          })
           continue
         }
 
@@ -314,10 +352,12 @@ export function useResolvedPdfAssets(urls: Array<string | undefined>) {
 
           objectUrlRef.current.set(assetUrl, {
             signature,
-            objectUrl: URL.createObjectURL(
-              new Blob([blobPartFromBytes(assetDoc.bytes)], { type: assetDoc.mimeType || 'application/pdf' }),
-            ),
+            objectUrl: await createPdfAssetObjectUrl(assetDoc),
           })
+        }
+
+        if (cancelled || loadVersionRef.current !== loadVersion) {
+          return
         }
 
         const objectUrl = objectUrlRef.current.get(assetUrl)
@@ -325,7 +365,7 @@ export function useResolvedPdfAssets(urls: Array<string | undefined>) {
           continue
         }
 
-        nextResolvedAssets.set(assetUrl, {
+        const resolvedAsset: ResolvedPdfAsset = {
           url: assetUrl,
           objectUrl: objectUrl.objectUrl,
           signature,
@@ -333,18 +373,15 @@ export function useResolvedPdfAssets(urls: Array<string | undefined>) {
           mimeType: assetDoc.mimeType,
           sizeBytes: assetDoc.sizeBytes,
           contentHash: assetDoc.contentHash,
+        }
+
+        setResolvedAssets((currentAssets) => {
+          const nextResolvedAssets = new Map(currentAssets)
+          nextResolvedAssets.set(assetUrl, resolvedAsset)
+          return nextResolvedAssets
         })
       }
-
-      for (const [assetUrl, currentObjectUrl] of objectUrlRef.current) {
-        if (!liveUrls.has(assetUrl) || !nextResolvedAssets.has(assetUrl)) {
-          URL.revokeObjectURL(currentObjectUrl.objectUrl)
-          objectUrlRef.current.delete(assetUrl)
-        }
-      }
-
-      setResolvedAssets(nextResolvedAssets)
-    })
+    })()
 
     return () => {
       cancelled = true

@@ -99,6 +99,7 @@ import {
 import type { Board, Book, CameraState, Card, GameObject, Id, Pool, RoomDoc, SpriteSpec, Transform2D } from '../model/types'
 import { DEFAULT_BOARD_SIZE, DEFAULT_CARD_SIZE, DEFAULT_DIE_SIZE } from '../model/types'
 import { inspectPdfPageSource, inspectPdfSource } from '../pdf/render'
+import { enqueueResourceLoad, estimateStoredAssetMemoryBytes } from '../model/resourceLoadQueue'
 import {
   boardSizeFromDimensions,
   boardSizeFromHeight,
@@ -430,7 +431,10 @@ function waitForBrowserIdle(timeoutMs = 200) {
 }
 
 async function inspectPdfFile(file: File) {
-  const objectUrl = URL.createObjectURL(file)
+  const objectUrl = await enqueueResourceLoad(
+    async () => URL.createObjectURL(file),
+    { estimatedBytes: estimateStoredAssetMemoryBytes(file.size, 2) },
+  )
   try {
     return await inspectPdfSource(objectUrl)
   } finally {
@@ -452,7 +456,11 @@ async function loadPdfSourceInfo(
     throw new Error('PDF source unavailable')
   }
 
-  const objectUrl = URL.createObjectURL(new Blob([Uint8Array.from(storedAsset.bytes)], { type: storedAsset.mimeType || 'application/pdf' }))
+  const objectUrl = await enqueueResourceLoad(
+    async () =>
+      URL.createObjectURL(new Blob([Uint8Array.from(storedAsset.bytes)], { type: storedAsset.mimeType || 'application/pdf' })),
+    { estimatedBytes: estimateStoredAssetMemoryBytes(storedAsset.sizeBytes, 4) },
+  )
   try {
     return await inspectPdfSource(objectUrl)
   } finally {

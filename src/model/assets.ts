@@ -1,7 +1,7 @@
 import { isValidAutomergeUrl, type AutomergeUrl } from '@automerge/react'
 import { useEffect, useRef, useState } from 'react'
 import { loadCachedResourceDoc, saveCachedResourceDoc } from './resourceCache'
-import { enqueueResourceLoad } from './resourceLoadQueue'
+import { enqueueResourceLoad, estimateRasterMemoryBytes, estimateStoredAssetMemoryBytes } from './resourceLoadQueue'
 import { resourceRepo } from './repo'
 import type { RoomDoc, SpriteSpec } from './types'
 
@@ -50,6 +50,14 @@ function cloneImageAssetDoc(assetDoc: ImageAssetDoc): ImageAssetDoc {
 
 function isFinitePositiveNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
+}
+
+function estimateImageAssetMemoryBytes(assetDoc: Pick<ImageAssetDoc, 'height' | 'sizeBytes' | 'width'>) {
+  const byteEstimate = estimateStoredAssetMemoryBytes(assetDoc.sizeBytes, 4)
+  const rasterEstimate = assetDoc.width && assetDoc.height
+    ? estimateRasterMemoryBytes(assetDoc.width, assetDoc.height, 2)
+    : 0
+  return Math.max(byteEstimate, rasterEstimate)
 }
 
 async function sha256Hex(bytes: Uint8Array) {
@@ -160,27 +168,32 @@ export function resolveImageSource(
 }
 
 export async function readImageBlobDimensions(blob: Blob) {
-  const objectUrl = URL.createObjectURL(blob)
-  try {
-    return await new Promise<{ width: number; height: number }>((resolve, reject) => {
-      const image = new Image()
-      image.decoding = 'async'
-      image.onload = () => {
-        if (image.naturalWidth > 0 && image.naturalHeight > 0) {
-          resolve({
-            width: image.naturalWidth,
-            height: image.naturalHeight,
-          })
-        } else {
-          reject(new Error('Image loaded without dimensions'))
-        }
+  return enqueueResourceLoad(
+    async () => {
+      const objectUrl = URL.createObjectURL(blob)
+      try {
+        return await new Promise<{ width: number; height: number }>((resolve, reject) => {
+          const image = new Image()
+          image.decoding = 'async'
+          image.onload = () => {
+            if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+              resolve({
+                width: image.naturalWidth,
+                height: image.naturalHeight,
+              })
+            } else {
+              reject(new Error('Image loaded without dimensions'))
+            }
+          }
+          image.onerror = () => reject(new Error('Image failed to load'))
+          image.src = objectUrl
+        })
+      } finally {
+        URL.revokeObjectURL(objectUrl)
       }
-      image.onerror = () => reject(new Error('Image failed to load'))
-      image.src = objectUrl
-    })
-  } finally {
-    URL.revokeObjectURL(objectUrl)
-  }
+    },
+    { estimatedBytes: estimateStoredAssetMemoryBytes(blob.size, 2) },
+  )
 }
 
 export async function buildImageAssetDoc(file: File): Promise<ImageAssetDoc> {
@@ -243,6 +256,16 @@ async function loadStoredImageAssetNow(url: string) {
 
 export function loadStoredImageAsset(url: string) {
   return enqueueResourceLoad(() => loadStoredImageAssetNow(url))
+}
+
+function createImageAssetObjectUrl(assetDoc: ImageAssetDoc) {
+  return enqueueResourceLoad(
+    async () =>
+      URL.createObjectURL(
+        new Blob([blobPartFromBytes(assetDoc.bytes)], { type: assetDoc.mimeType || 'application/octet-stream' }),
+      ),
+    { estimatedBytes: estimateImageAssetMemoryBytes(assetDoc) },
+  )
 }
 
 export async function findMatchingStoredImageAssetUrl(
@@ -322,24 +345,54 @@ export function useResolvedImageAssets(urls: Array<string | undefined>) {
     loadVersionRef.current = loadVersion
     let cancelled = false
 
-    void Promise.all(
-      assetUrls.map(async (assetUrl) => {
-        try {
-          return [assetUrl, await loadStoredImageAsset(assetUrl)] as const
-        } catch {
-          return [assetUrl, undefined] as const
-        }
-      }),
-    ).then((loadedAssets) => {
-      if (cancelled || loadVersionRef.current !== loadVersion) {
-        return
+    const liveUrls = new Set(assetUrls)
+    for (const [assetUrl, currentObjectUrl] of objectUrlRef.current) {
+      if (!liveUrls.has(assetUrl)) {
+        URL.revokeObjectURL(currentObjectUrl.objectUrl)
+        objectUrlRef.current.delete(assetUrl)
       }
+    }
+    setResolvedAssets((currentAssets) => {
+      const nextResolvedAssets = new Map(currentAssets)
+      for (const assetUrl of currentAssets.keys()) {
+        if (!liveUrls.has(assetUrl)) {
+          nextResolvedAssets.delete(assetUrl)
+        }
+      }
+      return nextResolvedAssets
+    })
 
-      const nextResolvedAssets = new Map<AutomergeUrl, ResolvedImageAsset>()
-      const liveUrls = new Set(assetUrls)
+    void (async () => {
+      for (const assetUrl of assetUrls) {
+        if (cancelled || loadVersionRef.current !== loadVersion) {
+          return
+        }
 
-      for (const [assetUrl, assetDoc] of loadedAssets) {
+        let assetDoc: ImageAssetDoc | undefined
+        try {
+          assetDoc = await loadStoredImageAsset(assetUrl)
+        } catch {
+          assetDoc = undefined
+        }
+
+        if (cancelled || loadVersionRef.current !== loadVersion) {
+          return
+        }
+
         if (!assetDoc) {
+          const currentObjectUrl = objectUrlRef.current.get(assetUrl)
+          if (currentObjectUrl) {
+            URL.revokeObjectURL(currentObjectUrl.objectUrl)
+            objectUrlRef.current.delete(assetUrl)
+          }
+          setResolvedAssets((currentAssets) => {
+            if (!currentAssets.has(assetUrl)) {
+              return currentAssets
+            }
+            const nextResolvedAssets = new Map(currentAssets)
+            nextResolvedAssets.delete(assetUrl)
+            return nextResolvedAssets
+          })
           continue
         }
 
@@ -360,10 +413,12 @@ export function useResolvedImageAssets(urls: Array<string | undefined>) {
 
           objectUrlRef.current.set(assetUrl, {
             signature,
-            objectUrl: URL.createObjectURL(
-              new Blob([blobPartFromBytes(assetDoc.bytes)], { type: assetDoc.mimeType || 'application/octet-stream' }),
-            ),
+            objectUrl: await createImageAssetObjectUrl(assetDoc),
           })
+        }
+
+        if (cancelled || loadVersionRef.current !== loadVersion) {
+          return
         }
 
         const objectUrl = objectUrlRef.current.get(assetUrl)
@@ -371,7 +426,7 @@ export function useResolvedImageAssets(urls: Array<string | undefined>) {
           continue
         }
 
-        nextResolvedAssets.set(assetUrl, {
+        const resolvedAsset: ResolvedImageAsset = {
           url: assetUrl,
           objectUrl: objectUrl.objectUrl,
           signature,
@@ -381,18 +436,15 @@ export function useResolvedImageAssets(urls: Array<string | undefined>) {
           contentHash: assetDoc.contentHash,
           width: assetDoc.width,
           height: assetDoc.height,
+        }
+
+        setResolvedAssets((currentAssets) => {
+          const nextResolvedAssets = new Map(currentAssets)
+          nextResolvedAssets.set(assetUrl, resolvedAsset)
+          return nextResolvedAssets
         })
       }
-
-      for (const [assetUrl, currentObjectUrl] of objectUrlRef.current) {
-        if (!liveUrls.has(assetUrl) || !nextResolvedAssets.has(assetUrl)) {
-          URL.revokeObjectURL(currentObjectUrl.objectUrl)
-          objectUrlRef.current.delete(assetUrl)
-        }
-      }
-
-      setResolvedAssets(nextResolvedAssets)
-    })
+    })()
 
     return () => {
       cancelled = true

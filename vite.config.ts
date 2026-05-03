@@ -6,11 +6,17 @@ import wasm from 'vite-plugin-wasm'
 const repoName = process.env.GITHUB_REPOSITORY?.split('/')[1]
 const base = process.env.GITHUB_ACTIONS === 'true' && repoName ? `/${repoName}/` : '/'
 const buildVersion = process.env.BUILD_VERSION ?? ''
+const resourceMemoryBudgetMb = Number(process.env.RESOURCE_MEMORY_BUDGET_MB)
+const resourceMemoryBudgetBytes =
+  Number.isFinite(resourceMemoryBudgetMb) && resourceMemoryBudgetMb > 0
+    ? Math.floor(resourceMemoryBudgetMb * 1024 * 1024)
+    : 0
 
 export default defineConfig({
   base,
   define: {
     __BUILD_VERSION__: JSON.stringify(buildVersion),
+    __RESOURCE_MEMORY_BUDGET_BYTES__: JSON.stringify(resourceMemoryBudgetBytes),
   },
   build: {
     chunkSizeWarningLimit: 600,

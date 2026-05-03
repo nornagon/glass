@@ -1,6 +1,6 @@
 import type { AutomergeUrl } from '@automerge/react'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import { resolveImageSource, type ResolvedImageAsset, type ResolvedImageSource } from '../model/assets'
+import { resolveImageSource, type ResolvedImageAsset } from '../model/assets'
 import { resolvePdfSource, type ResolvedPdfAsset } from '../model/pdfAssets'
 import { BOARD_WORLD_SIZE, DEFAULT_CARD_SIZE, type CameraState, type Card, type Id, type RoomDoc, type SpriteSpec, type Transform2D } from '../model/types'
 import { canSeeCardFace, getDieCurrentFace, getDieLabelScale, getPoolDisplaySize, getPoolRemainingTokens, getPoolTokenSize, getRootPlane, getTransform, isBoard, isBoardFaceUp, isBook, isCard, isDeck, isDie, isGroupSelectableObject, isPool, isPoolFaceUp } from '../model/room'
@@ -12,6 +12,7 @@ import {
   recordBoardInputRecorderSelection,
   recordBoardInputRecorderViewport,
 } from '../debug/inputRecorder'
+import { enqueueResourceLoad, estimateRasterMemoryBytes } from '../model/resourceLoadQueue'
 import { usePdfPageImage } from '../pdf/render'
 
 interface BoardViewProps {
@@ -67,17 +68,6 @@ interface Size {
   height: number
 }
 
-type PrewarmReason = 'deck-top' | 'deck-next' | 'deck-release'
-
-interface PreparedSurfacePrewarmTask {
-  imageUrl: string
-  source: ResolvedImageSource | undefined
-  spec: SpriteSpec
-  size: Size
-  taskKey: string
-  reason: PrewarmReason
-}
-
 interface DragState {
   id: Id
   pointerId: number
@@ -90,7 +80,6 @@ interface DragState {
   raisedToFront: boolean
   spawnedFromPool?: boolean
   selectOnMove?: boolean
-  prewarmDeckOnReleaseTasks?: PreparedSurfacePrewarmTask[]
   groupMembers?: Array<{ id: Id; startTransform: Transform2D }>
 }
 
@@ -154,13 +143,6 @@ const ALPHA_OUTLINE_RENDER_THRESHOLD = 24
 const ALPHA_OUTLINE_MAX_RASTER_DIMENSION = 1024
 const ALPHA_OUTLINE_MIN_SAMPLES = 12
 const ALPHA_OUTLINE_MAX_SAMPLES = 64
-const PREPARED_SPRITE_MAX_DIMENSION = 4096
-const PREPARED_SPRITE_MOBILE_SAFARI_MAX_DIMENSION = 2048
-const PREPARED_SPRITE_PREWARM_INITIAL_DELAY_MS = 500
-const PREPARED_SPRITE_PREWARM_QUIET_MS = 400
-const PREPARED_SPRITE_PREWARM_FALLBACK_DELAY_MS = 80
-const PREPARED_SPRITE_PREWARM_MIN_IDLE_MS = 12
-const PREPARED_SPRITE_PREWARM_MAX_TASKS_PER_IDLE = 2
 const SURFACE_SHADOW_ALPHA_THRESHOLD = 250
 const ROTATE_HANDLE_EDGE_GAP_PX = 12
 const ROTATE_HANDLE_SIZE_PX = 28
@@ -170,10 +152,6 @@ const QUICK_ACTIONS_WITH_ROTATE_HANDLE_TOP_OFFSET_PX = 34
 const intrinsicImageSizeCache = new Map<string, Size | null>()
 const resolvedSourceImageElementCache = new Map<string, HTMLImageElement>()
 const sourceImageElementCache = new Map<string, Promise<HTMLImageElement>>()
-const resolvedSourceImageBitmapCache = new Map<string, ImageBitmap>()
-const sourceImageBitmapCache = new Map<string, Promise<ImageBitmap>>()
-const preparedSpriteSurfaceUrlCache = new Map<string, string | null>()
-const preparedSpriteSurfaceRequestCache = new Map<string, Promise<string | null>>()
 const opaqueRegionBoundsCache = new Map<string, { x: number; y: number; width: number; height: number } | null>()
 const opaqueRegionRequestCache = new Map<string, Promise<{ x: number; y: number; width: number; height: number } | null>>()
 const surfaceShadowModeCache = new Map<string, 'box' | 'pixel'>()
@@ -193,64 +171,6 @@ function seededUnit(seed: number) {
   return value - Math.floor(value)
 }
 
-function computeSurfaceFit(
-  crop: ReturnType<typeof normalizeCrop>,
-  targetSize: Size,
-  sourceSize: Size,
-  fit: SpriteSpec['fit'],
-) {
-  const targetAspect = targetSize.width > 0 && targetSize.height > 0 ? targetSize.width / targetSize.height : 1
-  const sourceAspect = sourceSize.width / sourceSize.height
-  const cropAspect = sourceAspect * crop.width / crop.height
-
-  let fitWidth = 1
-  let fitHeight = 1
-  if (fit === 'contain') {
-    if (cropAspect > targetAspect) {
-      fitHeight = targetAspect / cropAspect
-    } else {
-      fitWidth = cropAspect / targetAspect
-    }
-  } else if (cropAspect > targetAspect) {
-    fitWidth = cropAspect / targetAspect
-  } else {
-    fitHeight = targetAspect / cropAspect
-  }
-
-  return {
-    fitWidth,
-    fitHeight,
-  }
-}
-
-function preparedSpriteSurfaceRasterSize(
-  crop: ReturnType<typeof normalizeCrop>,
-  fitWorldWidth: number,
-  fitWorldHeight: number,
-  intrinsicSize: Size,
-) {
-  const maxDimension = isLikelyMobileSafari() ? PREPARED_SPRITE_MOBILE_SAFARI_MAX_DIMENSION : PREPARED_SPRITE_MAX_DIMENSION
-  const qualityScale =
-    typeof window === 'undefined'
-      ? MAX_ZOOM_SCALE
-      : Math.max(1, (window.devicePixelRatio || 1) * MAX_ZOOM_SCALE)
-  const cropPixelWidth = Math.max(1, Math.round(intrinsicSize.width * crop.width))
-  const cropPixelHeight = Math.max(1, Math.round(intrinsicSize.height * crop.height))
-  const targetRasterWidth = Math.max(1, Math.round(fitWorldWidth * qualityScale))
-  const targetRasterHeight = Math.max(1, Math.round(fitWorldHeight * qualityScale))
-  const uncappedRasterWidth = Math.min(targetRasterWidth, cropPixelWidth)
-  const uncappedRasterHeight = Math.min(targetRasterHeight, cropPixelHeight)
-  const scaleLimit = Math.min(
-    1,
-    maxDimension / Math.max(uncappedRasterWidth, uncappedRasterHeight, 1),
-  )
-
-  return {
-    rasterWidth: Math.max(1, Math.round(uncappedRasterWidth * scaleLimit)),
-    rasterHeight: Math.max(1, Math.round(uncappedRasterHeight * scaleLimit)),
-  }
-}
-
 function isLikelyMobileSafari() {
   if (typeof navigator === 'undefined') {
     return false
@@ -262,6 +182,19 @@ function isLikelyMobileSafari() {
   const isOtherIosBrowser = /CriOS|FxiOS|EdgiOS|OPiOS|DuckDuckGo|GSA/.test(userAgent)
   const isTouchAppleDevice = navigator.maxTouchPoints > 1 && (/iP(hone|ad|od)/.test(userAgent) || userAgent.includes('Macintosh'))
   return isAppleWebKit && !isOtherIosBrowser && isTouchAppleDevice
+}
+
+function isLikelyConstrainedMemoryDevice() {
+  if (typeof navigator === 'undefined') {
+    return false
+  }
+
+  const userAgent = navigator.userAgent
+  return (
+    isLikelyMobileSafari() ||
+    /Android|iPhone|iPad|iPod|Mobile/i.test(userAgent) ||
+    (navigator.maxTouchPoints > 1 && userAgent.includes('Macintosh'))
+  )
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -785,7 +718,7 @@ function NextPageQuickActionIcon() {
   )
 }
 
-function loadSourceImageElement(url: string) {
+function loadSourceImageElementNow(url: string) {
   const resolved = resolvedSourceImageElementCache.get(url)
   if (resolved) {
     return Promise.resolve(resolved)
@@ -825,6 +758,17 @@ function loadSourceImageElement(url: string) {
   return request
 }
 
+function loadSourceImageElement(url: string) {
+  if (resolvedSourceImageElementCache.has(url) || sourceImageElementCache.has(url)) {
+    return loadSourceImageElementNow(url)
+  }
+
+  return enqueueResourceLoad(
+    () => loadSourceImageElementNow(url),
+    { estimatedBytes: estimateRasterMemoryBytes(4096, 4096, 1) },
+  )
+}
+
 function useSourceImagePreload(url: string | undefined) {
   useEffect(() => {
     if (!url) {
@@ -835,270 +779,8 @@ function useSourceImagePreload(url: string | undefined) {
   }, [url])
 }
 
-function loadSourceImageBitmap(url: string) {
-  const resolved = resolvedSourceImageBitmapCache.get(url)
-  if (resolved) {
-    return Promise.resolve(resolved)
-  }
-
-  const cached = sourceImageBitmapCache.get(url)
-  if (cached) {
-    return cached
-  }
-
-  const request = loadSourceImageElement(url)
-    .then(async (image) => {
-      if (typeof createImageBitmap !== 'function') {
-        throw new Error('ImageBitmap is not supported')
-      }
-
-      const bitmap = await createImageBitmap(image)
-      resolvedSourceImageBitmapCache.set(url, bitmap)
-      sourceImageBitmapCache.delete(url)
-      return bitmap
-    })
-    .catch((error) => {
-      resolvedSourceImageBitmapCache.delete(url)
-      sourceImageBitmapCache.delete(url)
-      throw error
-    })
-
-  sourceImageBitmapCache.set(url, request)
-  return request
-}
-
-function canvasBlob(canvas: HTMLCanvasElement | OffscreenCanvas) {
-  if (typeof OffscreenCanvas !== 'undefined' && canvas instanceof OffscreenCanvas) {
-    return canvas.convertToBlob({ type: 'image/png' })
-  }
-
-  return new Promise<Blob | null>((resolve) => {
-    ;(canvas as HTMLCanvasElement).toBlob((nextBlob) => resolve(nextBlob), 'image/png')
-  })
-}
-
-function preparedSpriteSurfaceCacheKey(
-  imageUrl: string,
-  crop: ReturnType<typeof normalizeCrop>,
-  rasterWidth: number,
-  rasterHeight: number,
-) {
-  return [
-    imageUrl,
-    crop.x.toFixed(4),
-    crop.y.toFixed(4),
-    crop.width.toFixed(4),
-    crop.height.toFixed(4),
-    rasterWidth,
-    rasterHeight,
-  ].join('|')
-}
-
-async function buildPreparedSpriteSurfaceUrl(
-  imageUrl: string,
-  crop: ReturnType<typeof normalizeCrop>,
-  rasterWidth: number,
-  rasterHeight: number,
-) {
-  if (typeof document === 'undefined' && typeof OffscreenCanvas === 'undefined') {
-    return null
-  }
-
-  try {
-    if (typeof createImageBitmap === 'function') {
-      const sourceBitmap = await loadSourceImageBitmap(imageUrl)
-      const sx = Math.max(0, Math.round(sourceBitmap.width * crop.x))
-      const sy = Math.max(0, Math.round(sourceBitmap.height * crop.y))
-      const sw = Math.max(1, Math.round(sourceBitmap.width * crop.width))
-      const sh = Math.max(1, Math.round(sourceBitmap.height * crop.height))
-      const preparedBitmap = await createImageBitmap(sourceBitmap, sx, sy, sw, sh, {
-        resizeWidth: rasterWidth,
-        resizeHeight: rasterHeight,
-        resizeQuality: 'high',
-      })
-
-      const canvas =
-        typeof OffscreenCanvas !== 'undefined'
-          ? new OffscreenCanvas(rasterWidth, rasterHeight)
-          : Object.assign(document.createElement('canvas'), { width: rasterWidth, height: rasterHeight })
-      const context = canvas.getContext('2d')
-      if (!context) {
-        preparedBitmap.close()
-        return null
-      }
-
-      context.clearRect(0, 0, rasterWidth, rasterHeight)
-      context.drawImage(preparedBitmap, 0, 0)
-      preparedBitmap.close()
-
-      const blob = await canvasBlob(canvas)
-      return blob ? URL.createObjectURL(blob) : null
-    }
-  } catch {
-    // Fall back to the plain HTMLImageElement canvas path below.
-  }
-
-  const image = await loadSourceImageElement(imageUrl)
-  const canvas = document.createElement('canvas')
-  canvas.width = rasterWidth
-  canvas.height = rasterHeight
-  const context = canvas.getContext('2d')
-  if (!context) {
-    return null
-  }
-
-  context.clearRect(0, 0, rasterWidth, rasterHeight)
-  context.drawImage(
-    image,
-    image.naturalWidth * crop.x,
-    image.naturalHeight * crop.y,
-    image.naturalWidth * crop.width,
-    image.naturalHeight * crop.height,
-    0,
-    0,
-    rasterWidth,
-    rasterHeight,
-  )
-
-  const blob = await canvasBlob(canvas)
-
-  return blob ? URL.createObjectURL(blob) : null
-}
-
-function usePreparedSpriteSurfaceUrl(
-  imageUrl: string | undefined,
-  crop: ReturnType<typeof normalizeCrop>,
-  fitWorldWidth: number,
-  fitWorldHeight: number,
-  intrinsicSize?: Size,
-) {
-  const hasRenderableImage = Boolean(imageUrl)
-  const { rasterWidth, rasterHeight } = intrinsicSize
-    ? preparedSpriteSurfaceRasterSize(crop, fitWorldWidth, fitWorldHeight, intrinsicSize)
-    : {
-      rasterWidth: Math.max(1, Math.round(fitWorldWidth)),
-      rasterHeight: Math.max(1, Math.round(fitWorldHeight)),
-    }
-  const cacheKey = imageUrl && hasRenderableImage
-    ? preparedSpriteSurfaceCacheKey(imageUrl, crop, rasterWidth, rasterHeight)
-    : undefined
-  const cachedPreparedSurfaceUrl = cacheKey ? preparedSpriteSurfaceUrlCache.get(cacheKey) : undefined
-  const [loadedPreparedSurface, setLoadedPreparedSurface] = useState<{ key: string; url: string | null } | undefined>(
-    () => {
-      if (!cacheKey || cachedPreparedSurfaceUrl === undefined) {
-        return undefined
-      }
-
-      return {
-        key: cacheKey,
-        url: cachedPreparedSurfaceUrl,
-      }
-    },
-  )
-
-  useEffect(() => {
-    if (!imageUrl || !cacheKey) {
-      return
-    }
-
-    const cached = preparedSpriteSurfaceUrlCache.get(cacheKey)
-    if (cached !== undefined) {
-      return
-    }
-
-    let cancelled = false
-    const request =
-      preparedSpriteSurfaceRequestCache.get(cacheKey) ??
-      buildPreparedSpriteSurfaceUrl(imageUrl, crop, rasterWidth, rasterHeight)
-        .then((url) => {
-          preparedSpriteSurfaceUrlCache.set(cacheKey, url)
-          preparedSpriteSurfaceRequestCache.delete(cacheKey)
-          return url
-        })
-        .catch(() => {
-          preparedSpriteSurfaceUrlCache.set(cacheKey, null)
-          preparedSpriteSurfaceRequestCache.delete(cacheKey)
-          return null
-        })
-
-    preparedSpriteSurfaceRequestCache.set(cacheKey, request)
-    void request.then((url) => {
-      if (!cancelled) {
-        setLoadedPreparedSurface({
-          key: cacheKey,
-          url,
-        })
-      }
-    })
-
-    return () => {
-      cancelled = true
-    }
-  }, [cacheKey, crop, imageUrl, rasterHeight, rasterWidth])
-
-  const loadedPreparedSurfaceUrl = loadedPreparedSurface?.key === cacheKey
-    ? loadedPreparedSurface?.url
-    : undefined
-
-  const preparedSurfaceUrl =
-    typeof loadedPreparedSurfaceUrl === 'string'
-      ? loadedPreparedSurfaceUrl
-      : typeof cachedPreparedSurfaceUrl === 'string'
-        ? cachedPreparedSurfaceUrl
-        : undefined
-
-  let stage: 'preparing' | 'ready' | 'failed' | undefined
-  if (!imageUrl || !cacheKey) {
-    stage = undefined
-  } else if (preparedSurfaceUrl) {
-    stage = 'ready'
-  } else if (loadedPreparedSurface?.key === cacheKey && loadedPreparedSurface?.url === null) {
-    stage = 'failed'
-  } else if (cachedPreparedSurfaceUrl === null) {
-    stage = 'failed'
-  } else {
-    stage = 'preparing'
-  }
-
-  return {
-    preparedSurfaceUrl,
-    stage,
-  }
-}
-
-function requestPreparedSpriteSurface(
-  imageUrl: string,
-  crop: ReturnType<typeof normalizeCrop>,
-  fitWorldWidth: number,
-  fitWorldHeight: number,
-  intrinsicSize: Size,
-) {
-  const { rasterWidth, rasterHeight } = preparedSpriteSurfaceRasterSize(crop, fitWorldWidth, fitWorldHeight, intrinsicSize)
-  const cacheKey = preparedSpriteSurfaceCacheKey(imageUrl, crop, rasterWidth, rasterHeight)
-  const cached = preparedSpriteSurfaceUrlCache.get(cacheKey)
-  if (cached !== undefined) {
-    return Promise.resolve(cached)
-  }
-
-  const existingRequest = preparedSpriteSurfaceRequestCache.get(cacheKey)
-  if (existingRequest) {
-    return existingRequest
-  }
-
-  const request = buildPreparedSpriteSurfaceUrl(imageUrl, crop, rasterWidth, rasterHeight)
-    .then((url) => {
-      preparedSpriteSurfaceUrlCache.set(cacheKey, url)
-      preparedSpriteSurfaceRequestCache.delete(cacheKey)
-      return url
-    })
-    .catch(() => {
-      preparedSpriteSurfaceUrlCache.set(cacheKey, null)
-      preparedSpriteSurfaceRequestCache.delete(cacheKey)
-      return null
-    })
-
-  preparedSpriteSurfaceRequestCache.set(cacheKey, request)
-  return request
+function estimateAlphaAnalysisMemoryBytes(rasterWidth: number, rasterHeight: number) {
+  return estimateRasterMemoryBytes(rasterWidth, rasterHeight, 3)
 }
 
 function composeCrop(
@@ -1134,7 +816,7 @@ async function analyzeSurfaceShadowMode(
     return 'pixel'
   }
 
-  const image = await loadSourceImageElement(imageUrl)
+  const image = await loadSourceImageElementNow(imageUrl)
   const cropPixelWidth = Math.max(1, Math.round(image.naturalWidth * crop.width))
   const cropPixelHeight = Math.max(1, Math.round(image.naturalHeight * crop.height))
   const analysisScale = Math.min(
@@ -1182,7 +864,7 @@ async function analyzeLargestOpaqueRegion(
     return null
   }
 
-  const image = await loadSourceImageElement(imageUrl)
+  const image = await loadSourceImageElementNow(imageUrl)
   const cropPixelWidth = Math.max(1, Math.round(image.naturalWidth * crop.width))
   const cropPixelHeight = Math.max(1, Math.round(image.naturalHeight * crop.height))
   const analysisScale = Math.min(
@@ -1527,7 +1209,10 @@ function useLargestOpaqueRegion(
     let cancelled = false
     const request =
       opaqueRegionRequestCache.get(cacheKey) ??
-      analyzeLargestOpaqueRegion(imageUrl, crop)
+      enqueueResourceLoad(
+        () => analyzeLargestOpaqueRegion(imageUrl, crop),
+        { estimatedBytes: estimateAlphaAnalysisMemoryBytes(ALPHA_COMPONENT_ANALYSIS_MAX_DIMENSION, ALPHA_COMPONENT_ANALYSIS_MAX_DIMENSION) },
+      )
         .then((result) => {
           opaqueRegionBoundsCache.set(cacheKey, result)
           opaqueRegionRequestCache.delete(cacheKey)
@@ -1590,7 +1275,10 @@ function useBoardSurfaceShadowMode(
     let cancelled = false
     const request =
       surfaceShadowModeRequestCache.get(cacheKey) ??
-      analyzeSurfaceShadowMode(imageUrl, crop)
+      enqueueResourceLoad(
+        () => analyzeSurfaceShadowMode(imageUrl, crop),
+        { estimatedBytes: estimateAlphaAnalysisMemoryBytes(ALPHA_COMPONENT_ANALYSIS_MAX_DIMENSION, ALPHA_COMPONENT_ANALYSIS_MAX_DIMENSION) },
+      )
         .then((mode) => {
           surfaceShadowModeCache.set(cacheKey, mode)
           surfaceShadowModeRequestCache.delete(cacheKey)
@@ -1772,7 +1460,6 @@ interface BoardSurfaceProps {
 
 interface BoardSurfaceLayout {
   imageUrl?: string
-  intrinsicSize?: Size
   crop: ReturnType<typeof normalizeCrop>
   fitWidth: number
   fitHeight: number
@@ -1828,7 +1515,6 @@ function useBoardSurfaceLayout(
 
   return {
     imageUrl,
-    intrinsicSize,
     crop,
     fitWidth,
     fitHeight,
@@ -1849,26 +1535,20 @@ function BoardSurface({
 }: BoardSurfaceProps) {
   const {
     imageUrl,
-    intrinsicSize,
     crop,
     fitWidth,
     fitHeight,
     labelFontSize,
     surfaceBackground,
   } = useBoardSurfaceLayout(spec, size, imageAssets, rounded, labelScale)
-  const fitWorldWidth = size.width * fitWidth
-  const fitWorldHeight = size.height * fitHeight
-  const { preparedSurfaceUrl, stage } = usePreparedSpriteSurfaceUrl(
-    imageUrl,
-    crop,
-    fitWorldWidth,
-    fitWorldHeight,
-    intrinsicSize,
-  )
-  const preparedImageStyle: CSSProperties = {
-    width: '100%',
-    height: '100%',
-    opacity: preparedSurfaceUrl ? 1 : 0,
+  const imageStyle: CSSProperties = {
+    width: `${100 / crop.width}%`,
+    height: `${100 / crop.height}%`,
+    left: `${(-crop.x / crop.width) * 100}%`,
+    top: `${(-crop.y / crop.height) * 100}%`,
+    right: 'auto',
+    bottom: 'auto',
+    opacity: imageUrl ? 1 : 0,
   }
 
   return (
@@ -1893,14 +1573,13 @@ function BoardSurface({
             >
               <img
                 className="board-sprite-image"
-                src={preparedSurfaceUrl}
+                src={imageUrl}
                 alt=""
                 draggable={false}
                 decoding="async"
                 loading="eager"
                 fetchPriority="high"
-                data-board-sprite-stage={stage}
-                style={preparedImageStyle}
+                style={imageStyle}
               />
             </div>
           </div>
@@ -2731,10 +2410,6 @@ export function BoardView({
   const cameraMomentumPositionRef = useRef<Point>({ x: 0, y: 0 })
   const cameraMomentumVelocityRef = useRef<Point>({ x: 0, y: 0 })
   const cameraMomentumTimeRef = useRef(performance.now() / 1000)
-  const prewarmPauseUntilRef = useRef(
-    typeof performance === 'undefined' ? 0 : performance.now() + PREPARED_SPRITE_PREWARM_INITIAL_DELAY_MS,
-  )
-  const completedPrewarmTaskKeysRef = useRef(new Set<string>())
   const hasActiveAlphaSelectionRef = useRef(false)
   const hasRotateHandleRef = useRef(false)
   const hasQuickActionsRef = useRef(false)
@@ -2759,7 +2434,7 @@ export function BoardView({
   const [longPressedDeckId, setLongPressedDeckId] = useState<Id | undefined>()
   const [lassoPath, setLassoPath] = useState<Point[]>([])
   const [isImageDropTarget, setIsImageDropTarget] = useState(false)
-  const constrainedEffects = useMemo(() => isLikelyMobileSafari(), [])
+  const constrainedEffects = useMemo(() => isLikelyConstrainedMemoryDevice(), [])
 
   roomRef.current = room
   recorderContextRef.current = {
@@ -2905,125 +2580,6 @@ export function BoardView({
     applyQuickActionsPosition(nextCamera)
   }, [applyQuickActionsPosition, applyRotateHandlePosition, viewportSize])
 
-  const markPrewarmInteraction = useCallback(() => {
-    if (typeof performance === 'undefined') {
-      return
-    }
-
-    prewarmPauseUntilRef.current = performance.now() + PREPARED_SPRITE_PREWARM_QUIET_MS
-  }, [])
-
-  const hasActivePrewarmBlockingInteraction = useCallback(() => (
-    dragRef.current !== null ||
-    pendingTouchPressRef.current !== null ||
-    lassoRef.current !== null ||
-    cameraPointersRef.current.size > 0
-  ), [])
-
-  const isPrewarmPaused = useCallback(() => (
-    prewarmPauseUntilRef.current > performance.now() || hasActivePrewarmBlockingInteraction()
-  ), [hasActivePrewarmBlockingInteraction])
-
-  const createPrewarmTask = useCallback((
-    card: { size: Size },
-    spec: SpriteSpec,
-    reason: PrewarmReason,
-    seenTaskKeys?: Set<string>,
-  ): PreparedSurfacePrewarmTask | undefined => {
-    if (spec.kind !== 'image-url' || !spec.url) {
-      return undefined
-    }
-
-    const source = resolveImageSource(spec.url, imageAssets)
-    const imageUrl = source?.renderUrl
-    if (!imageUrl) {
-      return undefined
-    }
-
-    const crop = normalizeCrop(spec.crop)
-    const taskKey = [
-      imageUrl,
-      card.size.width,
-      card.size.height,
-      spec.fit ?? 'cover',
-      crop.x.toFixed(4),
-      crop.y.toFixed(4),
-      crop.width.toFixed(4),
-      crop.height.toFixed(4),
-    ].join('|')
-    if (seenTaskKeys?.has(taskKey) || completedPrewarmTaskKeysRef.current.has(taskKey)) {
-      return undefined
-    }
-
-    seenTaskKeys?.add(taskKey)
-    return {
-      imageUrl,
-      source,
-      spec,
-      size: { ...card.size },
-      taskKey,
-      reason,
-    }
-  }, [imageAssets])
-
-  const runPrewarmTask = useCallback(async (
-    task: PreparedSurfacePrewarmTask,
-    shouldPause?: () => boolean,
-  ) => {
-    if (completedPrewarmTaskKeysRef.current.has(task.taskKey)) {
-      return 'done'
-    }
-    if (shouldPause?.()) {
-      return 'paused'
-    }
-
-    const crop = normalizeCrop(task.spec.crop)
-    console.log('[glass] prewarming deck card surface', {
-      reason: task.reason,
-      imageUrl: task.imageUrl,
-      size: task.size,
-      crop,
-    })
-    const intrinsicSize = task.source?.asset?.width && task.source.asset.height
-      ? {
-        width: task.source.asset.width,
-        height: task.source.asset.height,
-      }
-      : await loadSourceImageElement(task.imageUrl)
-        .then((image) => {
-          if (image.naturalWidth <= 0 || image.naturalHeight <= 0) {
-            return undefined
-          }
-
-          const size = {
-            width: image.naturalWidth,
-            height: image.naturalHeight,
-          }
-          intrinsicImageSizeCache.set(task.imageUrl, size)
-          return size
-        })
-        .catch(() => undefined)
-    if (!intrinsicSize) {
-      return 'done'
-    }
-    if (shouldPause?.()) {
-      return 'paused'
-    }
-
-    const { fitWidth, fitHeight } = computeSurfaceFit(crop, task.size, intrinsicSize, task.spec.fit ?? 'cover')
-    const preparedUrl = await requestPreparedSpriteSurface(
-      task.imageUrl,
-      crop,
-      task.size.width * fitWidth,
-      task.size.height * fitHeight,
-      intrinsicSize,
-    )
-    if (typeof preparedUrl === 'string') {
-      completedPrewarmTaskKeysRef.current.add(task.taskKey)
-    }
-    return 'done'
-  }, [])
-
   const scheduleCameraRenderSync = useCallback(() => {
     if (cameraRenderSyncTimeoutRef.current !== null) {
       window.clearTimeout(cameraRenderSyncTimeoutRef.current)
@@ -3112,7 +2668,6 @@ export function BoardView({
 
       if (!sameCamera(currentCamera, nextCamera)) {
         applyCommittedCamera(nextCamera)
-        markPrewarmInteraction()
       }
 
       const screenVelocity = Math.hypot(nextVelocityX, nextVelocityY) * nextCamera.zoom
@@ -3124,7 +2679,7 @@ export function BoardView({
     }
 
     cameraMomentumFrameRef.current = window.requestAnimationFrame(tickMomentum)
-  }, [applyCommittedCamera, markPrewarmInteraction, stopCameraMomentum, viewportSize])
+  }, [applyCommittedCamera, stopCameraMomentum, viewportSize])
 
   const flushPendingCameraUpdate = useCallback(() => {
     if (cameraAnimationFrameRef.current !== null) {
@@ -3184,7 +2739,7 @@ export function BoardView({
     mode: DragState['mode'],
     startPoint: Point,
     startTransform: Transform2D,
-    options?: Partial<Pick<DragState, 'spawnedFromPool' | 'selectOnMove' | 'moved' | 'raisedToFront' | 'prewarmDeckOnReleaseTasks'>>,
+    options?: Partial<Pick<DragState, 'spawnedFromPool' | 'selectOnMove' | 'moved' | 'raisedToFront'>>,
     groupMembers?: DragState['groupMembers'],
   ) => {
     tapCandidateRef.current = null
@@ -3206,7 +2761,6 @@ export function BoardView({
       raisedToFront: options?.raisedToFront ?? false,
       spawnedFromPool: options?.spawnedFromPool,
       selectOnMove: options?.selectOnMove,
-      prewarmDeckOnReleaseTasks: options?.prewarmDeckOnReleaseTasks,
       groupMembers,
     }
   }, [viewportSize])
@@ -3406,133 +2960,6 @@ export function BoardView({
   }, [])
 
   useEffect(() => {
-    if (typeof window === 'undefined') {
-      return
-    }
-
-    const seenTaskKeys = new Set<string>()
-    const queue = Object.values(room.objects).flatMap((object) => {
-      if (!isDeck(object) || object.childIds.length === 0) {
-        return []
-      }
-
-      const topCard = room.objects[object.childIds[object.childIds.length - 1]]
-      const nextCard = object.childIds.length >= 2
-        ? room.objects[object.childIds[object.childIds.length - 2]]
-        : undefined
-      const tasks = [
-        isCard(topCard) ? createPrewarmTask(topCard, topCard.face, 'deck-top', seenTaskKeys) : undefined,
-        isCard(topCard) ? createPrewarmTask(topCard, topCard.back, 'deck-top', seenTaskKeys) : undefined,
-        isCard(nextCard) ? createPrewarmTask(nextCard, nextCard.face, 'deck-next', seenTaskKeys) : undefined,
-        isCard(nextCard) ? createPrewarmTask(nextCard, nextCard.back, 'deck-next', seenTaskKeys) : undefined,
-      ]
-
-      return tasks.filter((task): task is NonNullable<typeof task> => Boolean(task))
-    })
-
-    if (queue.length === 0) {
-      return
-    }
-
-    let cancelled = false
-    let idleCallbackId: number | undefined
-    let timeoutId: ReturnType<typeof globalThis.setTimeout> | undefined
-    let nextTaskIndex = 0
-
-    const runNextTask = async () => {
-      const task = queue[nextTaskIndex]
-      nextTaskIndex += 1
-      if (!task) {
-        return
-      }
-
-      if (cancelled) {
-        return
-      }
-      const result = await runPrewarmTask(task, () => cancelled || isPrewarmPaused())
-      if (result === 'paused') {
-        nextTaskIndex -= 1
-      }
-    }
-
-    const scheduleNextTask = (delayMs = 0) => {
-      if (cancelled || nextTaskIndex >= queue.length) {
-        return
-      }
-
-      if (delayMs > 0) {
-        timeoutId = globalThis.setTimeout(() => {
-          timeoutId = undefined
-          scheduleNextTask()
-        }, delayMs)
-        return
-      }
-
-      const quietDelayMs = Math.max(0, prewarmPauseUntilRef.current - performance.now())
-      const interactionDelayMs = hasActivePrewarmBlockingInteraction()
-        ? PREPARED_SPRITE_PREWARM_FALLBACK_DELAY_MS
-        : 0
-      const pauseDelayMs = Math.max(quietDelayMs, interactionDelayMs)
-      if (pauseDelayMs > 0) {
-        timeoutId = globalThis.setTimeout(() => {
-          timeoutId = undefined
-          scheduleNextTask()
-        }, pauseDelayMs)
-        return
-      }
-
-      if ('requestIdleCallback' in window) {
-        idleCallbackId = window.requestIdleCallback(async (deadline) => {
-          idleCallbackId = undefined
-          if (
-            isPrewarmPaused() ||
-            deadline.timeRemaining() < PREPARED_SPRITE_PREWARM_MIN_IDLE_MS
-          ) {
-            scheduleNextTask(PREPARED_SPRITE_PREWARM_FALLBACK_DELAY_MS)
-            return
-          }
-
-          let tasksRun = 0
-          while (
-            !cancelled &&
-            nextTaskIndex < queue.length &&
-            tasksRun < PREPARED_SPRITE_PREWARM_MAX_TASKS_PER_IDLE &&
-            !isPrewarmPaused() &&
-            deadline.timeRemaining() >= PREPARED_SPRITE_PREWARM_MIN_IDLE_MS
-          ) {
-            await runNextTask()
-            tasksRun += 1
-          }
-          scheduleNextTask()
-        })
-        return
-      }
-
-      timeoutId = globalThis.setTimeout(async () => {
-        timeoutId = undefined
-        if (isPrewarmPaused()) {
-          scheduleNextTask()
-          return
-        }
-        await runNextTask()
-        scheduleNextTask()
-      }, PREPARED_SPRITE_PREWARM_FALLBACK_DELAY_MS)
-    }
-
-    scheduleNextTask()
-
-    return () => {
-      cancelled = true
-      if (idleCallbackId !== undefined && 'cancelIdleCallback' in window) {
-        window.cancelIdleCallback(idleCallbackId)
-      }
-      if (timeoutId !== undefined) {
-        globalThis.clearTimeout(timeoutId)
-      }
-    }
-  }, [createPrewarmTask, hasActivePrewarmBlockingInteraction, isPrewarmPaused, room.objects, runPrewarmTask])
-
-  useEffect(() => {
     const host = hostRef.current
     if (!host) {
       return
@@ -3540,7 +2967,6 @@ export function BoardView({
 
     const handleWheel = (event: WheelEvent) => {
       event.preventDefault()
-      markPrewarmInteraction()
       stopCameraMomentum()
       resetPointerPanState()
       const localPoint = clientToLocal(rootRef.current, event.clientX, event.clientY)
@@ -3559,7 +2985,7 @@ export function BoardView({
     return () => {
       host.removeEventListener('wheel', handleWheel)
     }
-  }, [markPrewarmInteraction, resetPointerPanState, stopCameraMomentum, updateCamera, viewportSize])
+  }, [resetPointerPanState, stopCameraMomentum, updateCamera, viewportSize])
 
   useEffect(() => {
     const host = hostRef.current
@@ -3604,8 +3030,6 @@ export function BoardView({
         return
       }
 
-      markPrewarmInteraction()
-
       const activeLasso = lassoRef.current
       if (activeLasso && activeLasso.pointerId === event.pointerId) {
         const lastPoint = activeLasso.points[activeLasso.points.length - 1]
@@ -3628,19 +3052,6 @@ export function BoardView({
           clearPendingTouchPress()
 
           if (pendingTouchPress.moveAction === 'deck-drag-out') {
-            const deck = roomRef.current.objects[pendingTouchPress.objectId]
-            const releasePrewarmCardId = isDeck(deck) && deck.childIds.length >= 3
-              ? deck.childIds[deck.childIds.length - 3]
-              : undefined
-            const releasePrewarmCard = releasePrewarmCardId
-              ? roomRef.current.objects[releasePrewarmCardId]
-              : undefined
-            const releasePrewarmTasks = isCard(releasePrewarmCard)
-              ? [
-                  createPrewarmTask(releasePrewarmCard, releasePrewarmCard.face, 'deck-release'),
-                  createPrewarmTask(releasePrewarmCard, releasePrewarmCard.back, 'deck-release'),
-                ].filter((task): task is PreparedSurfacePrewarmTask => Boolean(task))
-              : []
             const liftedCardId = onLiftTopCardFromDeck(pendingTouchPress.objectId)
             const dragId = liftedCardId ?? pendingTouchPress.objectId
             if (liftedCardId) {
@@ -3653,12 +3064,7 @@ export function BoardView({
               'move',
               pendingTouchPress.startPoint,
               pendingTouchPress.startTransform,
-              liftedCardId
-                ? {
-                    raisedToFront: true,
-                    prewarmDeckOnReleaseTasks: releasePrewarmTasks.length > 0 ? releasePrewarmTasks : undefined,
-                  }
-                : undefined,
+              liftedCardId ? { raisedToFront: true } : undefined,
             )
           } else if (pendingTouchPress.moveAction === 'pool-drag-out') {
             const dragOutTransform = pendingTouchPress.dragOutTransform ?? pendingTouchPress.startTransform
@@ -3796,8 +3202,6 @@ export function BoardView({
         return
       }
 
-      markPrewarmInteraction()
-
       cameraPointers.set(event.pointerId, localPoint)
       const pointerEntries = [...cameraPointers.entries()]
 
@@ -3873,7 +3277,6 @@ export function BoardView({
     }
 
     const handlePointerUp = (event: PointerEvent) => {
-      markPrewarmInteraction()
       clearPendingTouchPress()
       const hadCameraPointer = cameraPointersRef.current.has(event.pointerId)
       const shouldStartMomentum =
@@ -3918,12 +3321,6 @@ export function BoardView({
       if (activeDrag && activeDrag.pointerId === event.pointerId) {
         dragRef.current = null
         setLongPressedDeckId(undefined)
-
-        if (activeDrag.prewarmDeckOnReleaseTasks) {
-          for (const task of activeDrag.prewarmDeckOnReleaseTasks) {
-            void runPrewarmTask(task)
-          }
-        }
 
         setHoverDropTargetId(undefined)
 
@@ -4033,7 +3430,6 @@ export function BoardView({
     }
 
     const handlePointerCancel = (event: PointerEvent) => {
-      markPrewarmInteraction()
       if (dragRef.current?.pointerId === event.pointerId) {
         const drag = dragRef.current
         dragRef.current = null
@@ -4102,9 +3498,6 @@ export function BoardView({
     resetPointerPanState,
     startCameraMomentum,
     stopCameraMomentum,
-    markPrewarmInteraction,
-    createPrewarmTask,
-    runPrewarmTask,
   ])
 
   useEffect(
@@ -4367,7 +3760,6 @@ export function BoardView({
       }
     }
 
-    markPrewarmInteraction()
     stopCameraMomentum()
     resetPointerPanState()
 
@@ -4390,7 +3782,7 @@ export function BoardView({
     }
 
     beginCameraPointer(event.pointerId, localPoint)
-  }, [beginCameraPointer, cancelTouchObjectInteraction, lassoMode, markPrewarmInteraction, onSelect, resetPointerPanState, selectionMode, stopCameraMomentum])
+  }, [beginCameraPointer, cancelTouchObjectInteraction, lassoMode, onSelect, resetPointerPanState, selectionMode, stopCameraMomentum])
 
   const handleObjectPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>, objectId: Id) => {
     const object = room.objects[objectId]
@@ -4441,7 +3833,6 @@ export function BoardView({
       }
     }
 
-    markPrewarmInteraction()
     stopCameraMomentum()
     resetPointerPanState()
 
@@ -4637,7 +4028,6 @@ export function BoardView({
     transformForElementCenter,
     beginCameraPointer,
     cancelTouchObjectInteraction,
-    markPrewarmInteraction,
   ])
 
   const handleRotatePointerDown = useCallback((event: ReactPointerEvent<HTMLButtonElement>, objectId: Id) => {
@@ -4656,11 +4046,10 @@ export function BoardView({
       event.preventDefault()
     }
 
-    markPrewarmInteraction()
     stopCameraMomentum()
     resetPointerPanState()
     startDrag(objectId, event.pointerId, 'rotate', localPoint, currentTransform)
-  }, [currentTransformForObject, markPrewarmInteraction, resetPointerPanState, startDrag, stopCameraMomentum])
+  }, [currentTransformForObject, resetPointerPanState, startDrag, stopCameraMomentum])
 
   const handlePoolInstantiatePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>, poolId: Id) => {
     if (!canEdit || selectionMode !== 'normal') {
@@ -4681,8 +4070,7 @@ export function BoardView({
       return
     }
 
-    event.stopPropagation()
-    markPrewarmInteraction()
+  event.stopPropagation()
     stopCameraMomentum()
     resetPointerPanState()
     const copyTransform = transformForElementCenter(event.currentTarget)
@@ -4694,7 +4082,6 @@ export function BoardView({
   }, [
     armPoolCopyDragOut,
     canEdit,
-    markPrewarmInteraction,
     resetPointerPanState,
     room,
     selectionMode,

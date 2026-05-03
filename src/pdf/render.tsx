@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { PdfDocumentObject, PdfEngine, PdfPageObject } from '@embedpdf/models'
+import { enqueueResourceLoad, estimateRasterMemoryBytes } from '../model/resourceLoadQueue'
 
 type Size = {
   width: number
@@ -41,7 +42,7 @@ function pageDisplaySize(page: PdfPageObject) {
     : page.size
 }
 
-export async function loadPdfDocument(url: string) {
+function openPdfDocument(url: string) {
   const cached = pdfDocumentPromiseCache.get(url)
   if (cached) {
     return cached
@@ -57,12 +58,17 @@ export async function loadPdfDocument(url: string) {
 
   pdfDocumentPromiseCache.set(url, request)
 
-  try {
-    return await request
-  } catch (error) {
+  void request.catch(() => {
     pdfDocumentPromiseCache.delete(url)
-    throw error
-  }
+  })
+  return request
+}
+
+export function loadPdfDocument(url: string) {
+  return enqueueResourceLoad(
+    () => openPdfDocument(url),
+    { estimatedBytes: estimateRasterMemoryBytes(4096, 4096, 4) },
+  )
 }
 
 export async function inspectPdfSource(url: string) {
@@ -122,8 +128,8 @@ async function renderPdfPageToObjectUrl(
     return cachedPromise
   }
 
-  const request = (async () => {
-    const pdfDocument = await loadPdfDocument(url)
+  const request = enqueueResourceLoad(async () => {
+    const pdfDocument = await openPdfDocument(url)
     const safePageIndex = Math.max(0, Math.min(pageNumber - 1, pdfDocument.pageCount - 1))
     const page = pdfDocument.pages[safePageIndex]
     if (!page) {
@@ -147,7 +153,7 @@ async function renderPdfPageToObjectUrl(
     renderedPdfPageCache.set(cacheKey, objectUrl)
     renderedPdfPagePromiseCache.delete(cacheKey)
     return objectUrl
-  })()
+  }, { estimatedBytes: estimateRasterMemoryBytes(rasterSize.width, rasterSize.height, 6) })
 
   renderedPdfPagePromiseCache.set(cacheKey, request)
 
