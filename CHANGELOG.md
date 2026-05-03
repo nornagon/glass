@@ -2,6 +2,7 @@
 
 ## 2026-05-03
 
+- Added per-room player identity links with a QR-code share dialog for joining as the same player from another device.
 - Added memory-budgeted resource loading for stored images, PDFs, PDF rendering, and image analysis so boot work stays queued under mobile and desktop budgets.
 - Switched board sprites to render directly from source images with crop-aware positioning, removing prepared sprite surface generation and deck prewarming.
 - Restored alpha-following token shadows while keeping token surface borders and box shadows off transparent images.

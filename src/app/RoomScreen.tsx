@@ -100,6 +100,8 @@ import type { Board, Book, CameraState, Card, GameObject, Id, Pool, RoomDoc, Spr
 import { DEFAULT_BOARD_SIZE, DEFAULT_CARD_SIZE, DEFAULT_DIE_SIZE } from '../model/types'
 import { inspectPdfPageSource, inspectPdfSource } from '../pdf/render'
 import { enqueueResourceLoad, estimateStoredAssetMemoryBytes } from '../model/resourceLoadQueue'
+import { parsePlayerIdentityFromHash, playerIdentityHash, roomHash } from '../model/repo'
+import { createQrCodeMatrix, qrCodePath } from './qrCode'
 import {
   boardSizeFromDimensions,
   boardSizeFromHeight,
@@ -117,6 +119,25 @@ const REMOTE_DRAG_STALE_MS = 5000
 
 function createClientId() {
   return globalThis.crypto?.randomUUID?.() ?? `glass-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function createPlayerIdentityUrl(roomUrl: string, playerId: string) {
+  const url = new URL(window.location.href)
+  url.hash = playerIdentityHash(roomUrl, playerId).slice(1)
+  return url.toString()
+}
+
+function QrCodeIcon() {
+  return (
+    <svg className="qr-code-icon" aria-hidden="true" viewBox="0 0 448 512" fill="currentColor">
+      {/* Font Awesome Free 7.2.0 by @fontawesome - https://fontawesome.com/license/free */}
+      <path d="M64 160l64 0 0-64-64 0 0 64zM0 80C0 53.5 21.5 32 48 32l96 0c26.5 0 48 21.5 48 48l0 96c0 26.5-21.5 48-48 48l-96 0c-26.5 0-48-21.5-48-48L0 80zM64 416l64 0 0-64-64 0 0 64zM0 336c0-26.5 21.5-48 48-48l96 0c26.5 0 48 21.5 48 48l0 96c0 26.5-21.5 48-48 48l-96 0c-26.5 0-48-21.5-48-48l0-96zM320 96l0 64 64 0 0-64-64 0zM304 32l96 0c26.5 0 48 21.5 48 48l0 96c0 26.5-21.5 48-48 48l-96 0c-26.5 0-48-21.5-48-48l0-96c0-26.5 21.5-48 48-48zM288 352a32 32 0 1 1 0-64 32 32 0 1 1 0 64zm0 64c17.7 0 32 14.3 32 32s-14.3 32-32 32-32-14.3-32-32 14.3-32 32-32zm96 32c0-17.7 14.3-32 32-32s32 14.3 32 32-14.3 32-32 32-32-14.3-32-32zm32-96a32 32 0 1 1 0-64 32 32 0 1 1 0 64zm-32 32a32 32 0 1 1 -64 0 32 32 0 1 1 64 0z" />
+    </svg>
+  )
+}
+
+function deferStateUpdate(update: () => void) {
+  window.setTimeout(update, 0)
 }
 
 function sameTransform(a: Transform2D | undefined, b: Transform2D | undefined) {
@@ -1701,6 +1722,8 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   const [isAddMenuOpen, setIsAddMenuOpen] = useState(false)
   const [creationMode, setCreationMode] = useState<CreationMode | undefined>()
   const [camera, setCamera] = useState<CameraState>(() => loadCameraState(roomUrl) ?? DEFAULT_CAMERA)
+  const [identityShareStatus, setIdentityShareStatus] = useState('')
+  const [isIdentityQrOpen, setIsIdentityQrOpen] = useState(false)
   const cameraRef = useRef<CameraState>(camera)
   const cameraCommitTimeoutRef = useRef<number | undefined>(undefined)
   const [allowSelectLocked, setAllowSelectLocked] = useState(false)
@@ -1994,6 +2017,40 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
   }, [currentPlayer?.name, room.turnPlayerId, roomTitle, roomUrl])
 
   useEffect(() => {
+    const identityPlayerId = parsePlayerIdentityFromHash()
+    if (!identityPlayerId) {
+      return
+    }
+
+    const clearIdentityHash = () => window.history.replaceState(null, '', roomHash(roomUrl))
+    const identityPlayer = room.players[identityPlayerId]
+    if (!identityPlayer) {
+      deferStateUpdate(() => setIdentityShareStatus('Identity link does not match this room.'))
+      clearIdentityHash()
+      return
+    }
+
+    if (joinedPlayerId === identityPlayerId) {
+      clearIdentityHash()
+      return
+    }
+
+    const existingPlayer = joinedPlayerId ? room.players[joinedPlayerId] : undefined
+    const shouldUseIdentity = existingPlayer
+      ? window.confirm(`Use "${identityPlayer.name}" on this device instead of "${existingPlayer.name}"?`)
+      : true
+
+    if (shouldUseIdentity) {
+      saveJoinedPlayerId(roomUrl, identityPlayerId)
+      deferStateUpdate(() => {
+        setJoinedPlayerId(identityPlayerId)
+        setIdentityShareStatus(`Using "${identityPlayer.name}" on this device.`)
+      })
+    }
+    clearIdentityHash()
+  }, [joinedPlayerId, room.players, roomUrl])
+
+  useEffect(() => {
     const isMyTurn = Boolean(joinedPlayerId && room.turnPlayerId === joinedPlayerId)
     void syncTurnBadge(isMyTurn)
 
@@ -2014,6 +2071,22 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
         .filter((player): player is NonNullable<typeof player> => Boolean(player)),
     [room.playerOrder, room.players],
   )
+  const currentPlayerIdentityUrl = useMemo(
+    () => (currentPlayer ? createPlayerIdentityUrl(roomUrl, currentPlayer.id) : ''),
+    [currentPlayer, roomUrl],
+  )
+  const identityQrCode = useMemo(() => {
+    if (!isIdentityQrOpen || !currentPlayerIdentityUrl) {
+      return undefined
+    }
+
+    try {
+      const matrix = createQrCodeMatrix(currentPlayerIdentityUrl)
+      return { matrix, path: qrCodePath(matrix), error: '' }
+    } catch {
+      return { matrix: undefined, path: '', error: 'Identity link is too long for a QR code.' }
+    }
+  }, [currentPlayerIdentityUrl, isIdentityQrOpen])
 
   function updateSelection(nextId?: string) {
     blurActiveEditableElement()
@@ -2294,6 +2367,7 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
 
   function closeTurnPanel() {
     blurActiveEditableElement()
+    setIsIdentityQrOpen(false)
     setRightPanelMode((current) => (current === 'turn' ? undefined : current))
   }
 
@@ -2406,6 +2480,21 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
     })
     saveJoinedPlayerId(roomUrl, playerId)
     setJoinedPlayerId(playerId)
+    setIdentityShareStatus('')
+  }
+
+  async function copyPlayerIdentityLink() {
+    if (!currentPlayerIdentityUrl) {
+      return
+    }
+
+    try {
+      await navigator.clipboard.writeText(currentPlayerIdentityUrl)
+      setIdentityShareStatus('Identity link copied.')
+    } catch {
+      window.prompt('Copy player identity link', currentPlayerIdentityUrl)
+      setIdentityShareStatus('Identity link ready.')
+    }
   }
 
   function removePlayerFromRoom(playerId: string) {
@@ -3264,39 +3353,52 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
               <section className="turn-panel-card">
                 <div className="turn-panel-header">
                   {currentPlayer ? (
-                    <textarea
-                      aria-label="Your player name"
-                      className="drawer-title-input"
-                      placeholder="Player Name"
-                      rows={1}
-                      spellCheck={false}
-                      wrap="off"
-                      value={currentPlayer.name}
-                      onChange={(event) =>
-                        mutate((draft) => {
-                          const player = draft.players[currentPlayer.id]
-                          if (player) {
-                            player.name = event.target.value.replaceAll('\n', ' ')
-                          }
-                        })
-                      }
-                      onBlur={(event) =>
-                        mutate((draft) => {
-                          const player = draft.players[currentPlayer.id]
-                          if (player) {
-                            const trimmed = event.target.value.trim()
-                            const fallbackIndex = Math.max(0, draft.playerOrder.indexOf(currentPlayer.id))
-                            player.name = trimmed || `Player ${fallbackIndex + 1}`
-                          }
-                        })
-                      }
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
-                          event.preventDefault()
-                          event.currentTarget.blur()
+                    <div className="turn-player-name-row">
+                      <textarea
+                        aria-label="Your player name"
+                        className="drawer-title-input"
+                        placeholder="Player Name"
+                        rows={1}
+                        spellCheck={false}
+                        wrap="off"
+                        value={currentPlayer.name}
+                        onChange={(event) =>
+                          mutate((draft) => {
+                            const player = draft.players[currentPlayer.id]
+                            if (player) {
+                              player.name = event.target.value.replaceAll('\n', ' ')
+                            }
+                          })
                         }
-                      }}
-                    />
+                        onBlur={(event) =>
+                          mutate((draft) => {
+                            const player = draft.players[currentPlayer.id]
+                            if (player) {
+                              const trimmed = event.target.value.trim()
+                              const fallbackIndex = Math.max(0, draft.playerOrder.indexOf(currentPlayer.id))
+                              player.name = trimmed || `Player ${fallbackIndex + 1}`
+                            }
+                          })
+                        }
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault()
+                            event.currentTarget.blur()
+                          }
+                        }}
+                      />
+                      <button
+                        aria-label="Show player identity QR code"
+                        className="player-identity-button"
+                        onClick={() => {
+                          setIsIdentityQrOpen(true)
+                          setIdentityShareStatus('')
+                        }}
+                        title="Show player identity QR code"
+                      >
+                        <QrCodeIcon />
+                      </button>
+                    </div>
                   ) : (
                     <div className="turn-panel-join-copy">
                       <h2 className="turn-panel-title">Join This Room</h2>
@@ -3306,10 +3408,14 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                   <button aria-label="Close turn panel" className="panel-close" onClick={closeTurnPanel} title="Close turn panel" />
                 </div>
                 {!currentPlayer ? (
-                  <div className="button-row">
-                    <button onClick={joinRoom}>Join Room</button>
-                  </div>
+                  <>
+                    <div className="button-row">
+                      <button onClick={joinRoom}>Join Room</button>
+                    </div>
+                    {identityShareStatus ? <p className="field-note">{identityShareStatus}</p> : null}
+                  </>
                 ) : null}
+                {currentPlayer && identityShareStatus ? <p className="field-note identity-share-status">{identityShareStatus}</p> : null}
 
                 <section className="inspector-group">
                   <h4>Players</h4>
@@ -3345,6 +3451,42 @@ function RoomScreenInner({ roomUrl }: { roomUrl: AutomergeUrl }) {
                 </section>
               </section>
             </aside>
+          </div>
+        ) : null}
+
+        {isIdentityQrOpen && currentPlayer ? (
+          <div className="modal-scrim identity-qr-scrim" onClick={() => setIsIdentityQrOpen(false)}>
+            <section
+              aria-label="Player identity QR code"
+              aria-modal="true"
+              className="modal-card identity-qr-modal"
+              role="dialog"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <button
+                aria-label="Close player identity QR code"
+                className="panel-close"
+                onClick={() => setIsIdentityQrOpen(false)}
+                title="Close player identity QR code"
+              />
+              <div className="identity-qr-header">
+                <h2 className="turn-panel-title">Player Identity</h2>
+                <p className="field-note">Scan to join as {currentPlayer.name}.</p>
+              </div>
+              {identityQrCode?.matrix ? (
+                <div className="identity-qr-code" aria-hidden="true">
+                  <svg viewBox={`0 0 ${identityQrCode.matrix.size} ${identityQrCode.matrix.size}`} role="img">
+                    <rect width={identityQrCode.matrix.size} height={identityQrCode.matrix.size} fill="white" />
+                    <path d={identityQrCode.path} fill="black" />
+                  </svg>
+                </div>
+              ) : (
+                <p className="inline-error">{identityQrCode?.error ?? 'Identity QR code is not available.'}</p>
+              )}
+              <div className="button-row">
+                <button onClick={copyPlayerIdentityLink}>Copy Link</button>
+              </div>
+            </section>
           </div>
         ) : null}
 
